@@ -1,0 +1,176 @@
+;
+;    DivaPC ARM Assembler source
+;
+;    DEV.S.CD_HPCS - Assembly-language CD_Read & CD_Seek function
+;
+;
+; 2.12  1997.09.15 RW   Converted CD_Read & AudioStatus from C
+; 2.15  1997.10.14 RW   Converted CD_Seek from C
+;
+
+        GET  SYS.S.STDDEFS
+    
+	AREA	|Test$$Code|,CODE,READONLY
+
+	EXPORT	CD_Drives
+	EXPORT	GetDrive
+	EXPORT	AudioStatus
+	EXPORT	CD_Read
+	EXPORT	CD_Seek
+
+XCD_ReadData      EQU     &61241
+XCD_SeekTo	  EQU     &61242
+XCD_AudioStatus   EQU     &61254
+
+MAXDRIVES	*	8	; Note this must correspond with CD_HPC.C
+
+CD_Drives	%	MAXDRIVES*9*4	; 9 Words, 8 drives
+
+GetDrive
+	; R0 = int drvnum
+	BICS	R1,R0,#7		; If drvnum<0 or drvnum >= MAXDRIVES
+	MOVNE	R0,#0			;   return NULL
+	MOVNES	PC,R14
+	
+	ADR	R1,CD_Drives
+	ADD	R0,R0,R0,LSL#3		; R1 = drvnum*9
+	LDR	R0,[R1,R0,LSL#2]!	; R0 = CD_Drives[drvnum].flags
+	AND	R0,R0,#&100		; R0 = R0 & CD_WORKING
+	MOVS	R0,R0,LSR#8		; R0 = 1 iff flags & CD_WORKING
+					;      0 otherwise
+	MOVNE	R0,R1			; R0 = p
+	MOVS	PC,R14
+AudioStatus
+	; R0 = DRIVE *pDI
+	LDR	R12,[R0]	; R12 = flags
+	TST	R12,#1
+	BNE	as_audioplaying
+	AND	R0,R12,#3	; R0 = flags & (AUDIO_PLAYING|AUDIO_PAUSED)
+	MOVS	PC,R14
+as_audioplaying
+	STMFD	R13!,{R4-R8,R14}
+
+	MOV	R8,R0
+	ADD	R7,R8,#4	; R7 = pDI.CmdBlock
+	
+	SWI	XCD_AudioStatus	; "XCD_AudioStatus"
+	CMP	R0,#0
+	BICNE	R12,R12,#3	; flags &= ~(AUDIO_PLAYING|AUDIO_PAUSED)
+	STRNE	R12,[R8]
+	MOVNE	R0,#0
+	STRNE	R0,[R8,#7*4]	; PlayStart = 0
+	STRNE	R0,[R8,#8*4]	; PlayStop = 0
+	MOVEQ	R0,R12		; return flags & (AUDIO_PLAYING|PAUSED)
+	
+	LDMFD	R13!,{R4-R8,PC}^
+CD_Read
+	; R0 = struct CD_READ_PARAMS *pIn
+	; R1 = struct CD_READ_RESULT *pOut
+	STMFD	R13!,{R4-R11,R14}
+	
+	MOV	R11,R0		; R11= pIn
+	MOV	R9,R1		; R9 = pOut
+	LDR	R0,[R0,#4]	; R0 = pIn->drvnum
+	MOV	R0,R0,LSL#16
+	MOV	R0,R0,LSR#16	; Clear top bits
+	
+	BL	GetDrive
+	CMP	R0,#0
+	BEQ	CDR_baddrive
+	
+	MOV	R10,R0		; R10 = pDI
+	BL	AudioStatus
+	STRB	R0,[R9,#2]
+	MOV	R2,R0,LSR#8
+	STRB	R2,[R9,#3]
+	TST	R0,#1
+	LDREQ	R0,[R10]	; R0 = pDI->flags
+	BNE	CDR_audbusy
+
+	TST	R0,#&200
+	BNE	CDR_changed
+	
+	LDR	R2,[R11,#6]
+	MOV	R2,R2,LSL#16
+	MOV	R2,R2,LSR#16
+	CMP	R2,#(16384-16)>>11
+	BGT	CDR_badsectcount
+	
+	MOV	R0,#0
+	LDR	R1,[R11,#8]
+	ADD	R3,R9,#4
+	MOV	R4,#2048
+	ADD	R7,R10,#4
+	
+	SWI	XCD_ReadData		; "XCD_ReadData"
+	BVS	CDR_readerror
+	
+	MOV	R0,#0
+	STRB	R0,[R9]
+	STRB	R0,[R9,#1]
+
+	LDMFD	R13!,{R4-R11,PC}^
+CDR_baddrive
+	MOV	R0,#2		; CDERR_BADDRIVE
+	B	gen_error
+CDR_audbusy
+	MOV	R0,#2		; CDERR_BUSY
+	B	gen_error
+CDR_changed
+	BIC	R0,R0,#&200
+	STR	R0,[R10]	; flags &= ~CD_CHANGED
+	MOV	R0,#4		; CDERR_CHANGED
+	B	gen_error
+CDR_badsectcount
+	MOV	R0,#3		; CDERR_BADPARAMS
+	B	gen_error
+CDR_readerror
+	MOV	R0,#6		; CDERR_READERR
+gen_error
+	STRB	R0,[R9]
+	MOV	R0,R0,LSR#8
+	STRB	R0,[R9,#1]
+
+	LDMFD	R13!,{R4-R11,PC}^
+
+CD_Seek
+	; R0 = struct CD_READ_PARAMS *pIn
+	; R1 = struct CD_READ_RESULT *pOut
+	STMFD	R13!,{R4-R11,R14}
+	
+	MOV	R11,R0		; R11= pIn
+	MOV	R9,R1		; R9 = pOut
+	LDR	R0,[R0,#4]	; R0 = pIn->drvnum
+	MOV	R0,R0,LSL#16
+	MOV	R0,R0,LSR#16	; Clear top bits
+	
+	BL	GetDrive
+	CMP	R0,#0
+	BEQ	CDR_baddrive
+	
+	MOV	R10,R0		; R10 = pDI
+	BL	AudioStatus
+	STRB	R0,[R9,#2]
+	MOV	R2,R0,LSR#8
+	STRB	R2,[R9,#3]
+	TST	R0,#1
+	LDREQ	R0,[R10]	; R0 = pDI->flags
+	BNE	CDR_audbusy
+
+	TST	R0,#&200
+	BNE	CDR_changed
+
+	MOV	r0,#0
+	LDR	r1,[r11,#8]
+	ADD	R7,R10,#4
+		
+	SWI	XCD_ReadData		; "XCD_ReadData"
+	BVS	CDR_readerror
+	
+	MOV	R0,#0
+	STRB	R0,[R9]
+	STRB	R0,[R9,#1]
+
+	LDMFD	R13!,{R4-R11,PC}^
+
+	END

@@ -1,0 +1,5 @@
+echo ** Compiling %0.c.%1 (hidden inline fn names)
+
+| Normal compile, but hide inlined function names
+|
+cc %0.c.%1 -o o.%1%2 -g -c -throwback -ffah -I<Obey$Dir>,C: -DPC_%2

@@ -1,0 +1,887 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.MOUSE  - Mouse support
+*
+*
+*    06-02-92 INH  Original
+*    13-02-92      PC Mouse Event Support
+*    05-03-92      Bus mouse support
+*    12-03-92      Removed BIOS support
+*    15-04-92      Connect Mouse in WFE mode
+*    09-01-93      Fixed Y=-1 (mouse jumping) bug
+*    16-02-93      Configurable IRQ number
+*    02-07-93      BusMouse switch
+*    07-07-93      Rewritten for new vid BIOS
+*    30-03-94      No default int: always set by SYS.C.CONFIG
+*    13-07-94      Cursors are now 32x32
+*    26-06-96 W    Added debug code
+*/
+
+#include "kernel.h"
+#include "swis.h"
+
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "sys.h.FEstate"
+
+#include "vid.h.mouse"
+#include "vid.h.modes"
+#include "vid.h.vids"
+
+#include "module.h.PCSupport"
+
+#define MOUSE_FIRST        0x318
+#define MOUSE_LAST         0x31B
+
+#define DEBUG 0
+
+#if DEBUG
+#define debug(a) SYS_trace a
+#else
+#define debug(a)
+#endif
+
+/* Default definitions *********************************************** */
+
+#define PointerShapeNo 4
+
+struct PointerShape
+  {
+    int HotSpotX;
+    int HotSpotY;
+    int Height;
+    int Pixels[64];  /* Each line consists of two words describing
+                        32 2-bit pixels */
+  };
+
+
+static struct PointerShape ArrowPtr =
+{
+  1, 1,
+  14,
+  0x00000005, 0x0,   /* 11           */
+  0x0000001d, 0x0,   /* 131          */
+  0x0000007d, 0x0,   /* 1331         */
+  0x000001fd, 0x0,   /* 13331        */
+  0x000007fd, 0x0,   /* 133331       */
+  0x00001ffd, 0x0,   /* 1333331      */
+  0x00007ffd, 0x0,   /* 13333331     */
+  0x000055fd, 0x0,   /* 13331111     */
+  0x0000075d, 0x0,   /* 131131       */
+  0x00000745, 0x0,   /* 11 131       */
+  0x00001d00, 0x0,   /*     131      */
+  0x00001d00, 0x0,   /*     131      */
+  0x00007400, 0x0,   /*      131     */
+  0x00001000, 0x0    /*       1      */
+};
+
+static struct PointerShape CGAPtr =
+{
+  1, 1,
+  10,
+  0x00055555, 0x0,   /* 1111111111   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x00055555, 0x0    /* 1111111111   */
+};
+
+static struct PointerShape FixTextPtr =
+{
+  1, 1,
+  12,
+  0x00055555, 0x0,   /* 1111111111   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x00055555, 0x0,   /* 1111111111   */
+
+};
+
+static struct PointerShape EGAVGAPtr =
+{
+  1, 1,
+  16,
+  0x00055555, 0x0,   /* 1111111111   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007000d, 0x0,   /* 13      31   */
+  0x0007fffd, 0x0,   /* 1333333331   */
+  0x00055555, 0x0    /* 1111111111   */
+};
+
+/* Explanation:
+
+   This module simulates two sets of I/O ports. The first, at 318-31Bh
+   provides facilities for the PC to turn on and off the ARM's hardware
+   pointer and move it around the screen. The second, at 23C to 23Fh, is
+   an emulation of a bus mouse. The INT 33h mouse driver support in the
+   system is provided entirely by 386 code in the ROM; it merely uses the
+   ARM for reading in mouse movements and for producing a hardware pointer
+   on the screen.
+
+   This means that (i) the pointer needs to be unlinked (i.e. not directly
+   moved by mouse movement) and (ii) the mouse should not have any limits
+   (i.e. it is not bounded by the ARM screen).
+
+*/
+
+
+/* Global variables ********************************************** */
+
+static BYTE OSWordBlk [16];
+static _kernel_swi_regs regs;
+
+ /* General */
+extern bool MOU_Connected=FALSE;  /* True if 'connected' in window mode */
+
+ /* For hardware pointer */
+
+static int  MOU_PointerX;
+static int  MOU_PointerY;
+static bool MOU_PointerShowing;
+
+static struct PointerShape MOU_PointerData;
+static struct PointerShape *MOU_PointerShape;
+
+
+
+
+
+
+
+/* RISCOS interface routines ************************************ */
+
+
+static void SetPointerPosition ( int ArmX, int ArmY )
+{
+  OSWordBlk[0] = 5;              /* OS_Word 21, 5 = Set Pointer Position */
+  OSWordBlk[1] = ArmX      & 0xFF;
+  OSWordBlk[2] = (ArmX>>8) & 0xFF;
+  OSWordBlk[3] = ArmY      & 0xFF;
+  OSWordBlk[4] = (ArmY>>8) & 0xFF;
+
+  _kernel_osword ( 21, (int *)OSWordBlk );
+}
+
+/* ************************ */
+
+static void SetMousePosition ( int ArmX, int ArmY )
+{
+  OSWordBlk[0] = 3;              /* OS_Word 21, 3 = Set Mouse Position */
+  OSWordBlk[1] = ArmX      & 0xFF;
+  OSWordBlk[2] = (ArmX>>8) & 0xFF;
+  OSWordBlk[3] = ArmY      & 0xFF;
+  OSWordBlk[4] = (ArmY>>8) & 0xFF;
+
+  _kernel_osword ( 21, (int *)OSWordBlk );
+}
+
+
+/* ************************ */
+
+static void UpdatePointerShape ()
+{
+  int tmp;
+
+  tmp = (int) (MOU_PointerShape->Pixels);
+
+  OSWordBlk[0] = 0;              /* OS_Word 21, 0 = Set Pointer Params */
+  OSWordBlk[1] = PointerShapeNo;
+  OSWordBlk[2] = 8;              /* Width = 8 bytes = 32 pixels */
+  OSWordBlk[3] = MOU_PointerShape->Height;
+  OSWordBlk[4] = MOU_PointerShape->HotSpotX;
+  OSWordBlk[5] = MOU_PointerShape->HotSpotY;
+  OSWordBlk[6] = tmp       & 0xFF;
+  OSWordBlk[7] = (tmp>>8)  & 0xFF;
+  OSWordBlk[8] = (tmp>>16) & 0xFF;
+  OSWordBlk[9] = (tmp>>24) & 0xFF;
+
+  _kernel_osword ( 21, (int *)OSWordBlk );
+
+}
+
+/* ************************ */
+
+static void UpdatePointerShowing ()
+{
+
+  if ( SYS_FEState.FullFErunning || MOU_Connected )
+  {
+
+    /* This call also unlinks the hardware pointer from mouse movement */
+
+    if ( MOU_PointerShowing )
+      _kernel_osbyte ( 106, 0x80 | PointerShapeNo, 0 );
+    else
+      _kernel_osbyte ( 106, 0x80, 0 );
+  }
+
+}
+
+
+/*  **************************** */
+
+static void UpdatePointerPosition ()
+{
+  int x, y;
+
+  x = MOU_PointerX;
+  y = MOU_PointerY;
+
+  if ( VID_ModeType == MODE_TEXT )
+  {
+    x *= 8;
+    y *= VIDS_CharHeight;
+  }
+  else if ( VID_ModeType == MODE_CGA45 )
+    x *= 2;
+
+  if ( x > VID_PCXtotal ) x = VID_PCXtotal;
+  y = VID_PCYtotal - y - 1;
+  if ( y < 0 ) y = 0;
+
+  x = SYS_FEState.ArmLeftX + (SYS_FEState.Xratio*x);
+  y = SYS_FEState.ArmBottomY + (SYS_FEState.Yratio*y);
+
+  if ( SYS_FEState.WinFErunning )
+  {
+    if (x<SYS_FEState.WinXmin) x = SYS_FEState.WinXmin;
+    if (x>SYS_FEState.WinXmax) x = SYS_FEState.WinXmax;
+    if (y<SYS_FEState.WinYmin) y = SYS_FEState.WinYmin;
+    if (y>SYS_FEState.WinYmax) y = SYS_FEState.WinYmax;
+  }
+
+  if ( SYS_FEState.FullFErunning || MOU_Connected )
+    SetPointerPosition ( x, y );
+
+}
+
+
+/* ***************************************************************** */
+
+/* TranslatePointerShape() is used to convert one row of pointer
+   shape data from PC to Arm format. The PC data takes the form of
+   two 16-bit values, a 'mask' value and a 'data' value. Each value
+   is one bit-per-pixel, with the leftmost pixel being bit 15, rightmost
+   bit 0. The 'mask' and 'data' value work together as follows:
+
+   Mask Data   PC result       On ARM
+   0    0      Black Pixel     Colour 1
+   0    1      White Pixel     Colour 3
+   1    0      Leave as is     Colour 0 (transparent)
+   1    1      Invert pixel    Colour 2 (Blue?)
+
+*/
+
+
+static int TranslatePointerShape ( int PCmask, int PCdata )
+{
+  register int i, ArmPatt;
+
+  ArmPatt=0;
+
+  for ( i=0; i<16; i++)
+  {
+    ArmPatt <<= 2;
+
+    ArmPatt +=   ((PCdata & 1) ? 2 : 0)
+               + ((PCmask & 1) ? 0 : 1);
+
+    PCmask  >>= 1;
+    PCdata  >>= 1;
+  }
+
+  return ArmPatt;
+}
+
+/* ************************ */
+
+static void SetDOSPointerShape ( struct PointerShape *res, WORD *data )
+{
+  int i;
+
+  res->HotSpotX = data[0];
+  res->HotSpotY = data[1];
+  res->Height   = 16;
+
+  for (i=0; i<16; i++)
+  {
+    res->Pixels[i+i] =
+       TranslatePointerShape( data[i+2], data[i+18] );
+    res->Pixels[i+i+1] = 0;
+  }
+
+}
+
+/* The routines below translate the Windows 32x32-format pointer shape
+   in a similar way.  Windows supplies us the pattern in the following
+   format:
+
+   bytes 0..1 : X hot spot
+   bytes 2..3 : Y hot spot
+   bytes 4..5 : Height in lines (1-32)
+
+   bytes 6 and onwards:
+    8 bytes per line of cursor, as follows
+    +0  AND mask for pixels 0..7 (pix 0 = bit 7)
+    ..
+    +3  AND mask for pixels 24..31
+    +4  XOR mask for pixels 0..7
+    ..
+    +7  XOR mask for pixels 24..31
+
+*/
+
+static void SetWINPointerShape ( struct PointerShape *res, BYTE *data )
+{
+  int i;
+  res->HotSpotX = data[0] + (data[1] << 8);
+  res->HotSpotY = data[2] + (data[3] << 8);;
+  res->Height   = data[4] < 32 ? data[4] : 32;
+
+  data += 6;
+
+  for ( i=0; i < res->Height; i++ )
+  {
+    res->Pixels[i+i] = TranslatePointerShape (
+        data[1] + (data[0] <<8), data[5] + (data[4] <<8) );
+    res->Pixels[i+i+1] = TranslatePointerShape (
+        data[3] + (data[2] <<8), data[7] + (data[6] <<8) );
+    data += 8;
+  }
+}
+
+
+
+/*   Hardware pointer I/O ports *****************************
+*
+*    I have invented a few I/O ports for the mouse system as follows:
+*
+*    0x318 (Write)  X co-ord } If data bit 7 set, data bits 0..6 are co-ord
+*    0x319 (Write)  Y co-ord }  bits 7..13; if not they are co-ord 0..6
+*
+*    The X and Y co-ordinates are now given in PC pixels.
+*
+*
+*    0x31A (Write)  Pointer Shape data
+*    0x31B (Write)  Command:
+*                      0x01: Show pointer
+*                      0x02: Hide pointer
+*                      0x03: Update new pointer position
+*                      0x04: Start receiving new pointer shape
+*                      0x05: End receiving new pointer shape
+*                              (Select user graphics pointer)
+*                      0x06: Select text pointer
+*                      0x07: Select graphics pointer
+*
+*
+*   To set a new pointer shape, do
+*
+*   Send 04h to port 31Bh
+*   Send the following data to port 31Ah
+*
+*      X hotspot LSB, MSB
+*      Y hotspot LSB, MSB
+*      32 bytes of 'mask' data
+*      32 bytes of 'pixel' data
+*
+*   Send 05h to port 31Bh
+*
+*
+*
+*/
+
+
+
+/* I/O handlers *************************************************** */
+
+static int MOU_PtrPortRd8 ( int addr )
+{
+  debug (("Read mouse command port:%x",addr));
+  NotUsed(addr);
+  return 0xFF;
+}
+
+
+/* *********************************************** */
+
+static int  ShapeDataLength=0;
+static BYTE ShapeBuf[256+6];
+
+static void MOU_PtrPortWr8 ( int addr, int data )
+{
+  debug (("Write mouse command port:%x, data:%x",addr,data));
+  switch (addr)
+  {
+    case 0x318: if ( data & 0x80 )
+                  MOU_PointerX = (MOU_PointerX & 0x7F)+((data<<7) & 0x3F80);
+                else
+                  MOU_PointerX = (MOU_PointerX & 0x3F80)+(data & 0x7F);
+
+                break;
+
+    case 0x319: if ( data & 0x80 )
+                  MOU_PointerY = (MOU_PointerY & 0x7F)+((data<<7) & 0x3F80);
+                else
+                  MOU_PointerY = (MOU_PointerY & 0x3F80) + (data & 0x7F);
+
+                break;
+
+    case 0x31A: ShapeBuf[ShapeDataLength] = data;
+
+                if ( ++ShapeDataLength >= sizeof(ShapeBuf) )
+                  ShapeDataLength = sizeof(ShapeBuf)-1;
+                break;
+
+    case 0x31B:
+        switch ( data )
+        {
+          case 3: UpdatePointerPosition ();
+                  break;
+
+          case 2:
+                  MOU_PointerShowing = false;
+                  UpdatePointerShowing();
+                  break;
+
+          case 1:
+                  MOU_PointerShowing = true;
+                  UpdatePointerShowing();
+                  break;
+
+          case 4:
+                  ShapeDataLength = 0;
+                  break;
+
+          case 5:
+                  SetDOSPointerShape ( &MOU_PointerData, (WORD *)ShapeBuf );
+                  MOU_PointerShape = &MOU_PointerData;
+                  UpdatePointerShape();
+                  break;
+
+          case 8:
+                  SetWINPointerShape ( &MOU_PointerData, ShapeBuf );
+                  MOU_PointerShape = &MOU_PointerData;
+                  UpdatePointerShape();
+                  break;
+
+          case 6:
+                  if ( VID_ModeType == MODE_TEXT )
+                  {
+                    if ( VIDS_CharHeight >= 14 )
+                      MOU_PointerShape = &EGAVGAPtr;
+                    else if (  VIDS_CharHeight >= 10 )
+                      MOU_PointerShape = &FixTextPtr;
+                    else
+                      MOU_PointerShape = &CGAPtr;
+                  }
+                  else
+                    MOU_PointerShape = &CGAPtr;
+                  UpdatePointerShape();
+                  break;
+
+          case 7:
+                  MOU_PointerShape = &ArrowPtr;
+                  UpdatePointerShape();
+                  break;
+
+        }
+        break;
+
+    default:
+                break;
+  }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* Bus mouse ports ********************************************* */
+
+ /* For bus mouse */
+
+static int  MOU_IntNum;
+static bool MOU_IntPending;     /* True stops further interrupts */
+
+static int  MOU_PortBval;       /* 0x23D: 8255 port B */
+static int  MOU_PortCval;       /* 0x23E: 8255 port C - control port */
+
+#define PORTC_INTDISABLE 0x10
+#define PORTC_SEL_MSN    0x20
+#define PORTC_SEL_Y      0x40
+#define PORTC_HOLD       0x80
+
+static int  MOU_ArmX, MOU_ArmY, MOU_Buttons;
+static int  MOU_LastArmX, MOU_LastArmY, MOU_LastButtons;
+
+static int  MOU_DeltaX, MOU_DeltaY;
+
+static bool MOU_DisconnectReq; /* Debouncer for 'disconnection' */
+
+#define LButton 4              /* ARM values for buttons */
+#define CButton 2
+#define RButton 1
+
+/* Subroutines ******************************* */
+
+
+static bool MOU_Disconnect()
+{
+  if ( MOU_Connected )
+  {
+    _kernel_swi ( PCSupport_MouRemove, &regs, &regs );
+    MOU_Connected = false;
+    SetMousePosition( MOU_LastArmX, MOU_LastArmY );
+    SetPointerPosition( MOU_LastArmX, MOU_LastArmY );
+  }
+
+  MOU_DisconnectReq = false;
+  MOU_LastArmX = MOU_ArmX;
+  MOU_LastArmY = MOU_ArmY;
+
+  SYS_FEState.ModeChanged = true; /* bodge to make sure toolbar is updated */
+
+  return false;
+}
+
+
+static bool MOU_ConnectMouse()
+{
+  if ( MOU_Connected ) return false;
+
+  MOU_Connected = true;
+  MOU_DisconnectReq = false;
+
+  _kernel_swi ( PCSupport_MouInstall, &regs, &regs );
+  _kernel_swi ( PCSupport_MouGetState, &regs, &regs );
+  MOU_LastArmX    = regs.r[0];     /* Clear any previous events */
+  MOU_LastArmY    = regs.r[1];
+  MOU_LastButtons = regs.r[2];
+
+  UpdatePointerShape();
+  UpdatePointerShowing();
+  UpdatePointerPosition();
+
+  return false;
+}
+
+/* ******************************** */
+
+
+static bool MOU_GetMouseChanged()
+{
+
+ if ( SYS_FEState.FullFErunning )
+ {
+   _kernel_swi ( OS_Mouse, &regs, &regs );  /* Read a RISCOS mouse event */
+
+   if ( (regs.r[2] & CButton) != 0  &&
+        (CFG.SuspendOption & SO_MIDBUTTON) != 0 )
+   {
+     SYS_FEState.SuspendRequest = true;
+   }
+ }
+ else if ( MOU_Connected )
+ {
+   _kernel_swi ( PCSupport_MouGetState, &regs, &regs );
+
+   if ( regs.r[2] & CButton )      /* Wait for centre button to go */
+     MOU_DisconnectReq = true;       /* down then up */
+   else if ( MOU_DisconnectReq )
+   {
+     MOU_Disconnect();
+     return false;
+   }
+ }
+ else
+   return false;
+
+ MOU_ArmX    = regs.r[0];
+ if ( regs.r[1] != -1 ) MOU_ArmY = regs.r[1];
+                  /* Corrects apparent RISCOS bug */
+ MOU_Buttons = regs.r[2];
+
+ if ( MOU_ArmX != MOU_LastArmX || MOU_ArmY != MOU_LastArmY
+      || MOU_LastButtons != MOU_Buttons )
+    return true;
+ else
+    return false;
+
+}
+
+
+/* Port routines ********************************* */
+
+static void HoldCounters ()
+{
+ register int tmp;
+
+ tmp = (MOU_LastArmY - MOU_ArmY)/3;        /* ARM Y is inverted! */
+ if ( tmp < -127 )
+   tmp = -127;
+ if ( tmp >  127 )
+   tmp =  127;
+
+ MOU_DeltaY = tmp;
+
+ tmp = (MOU_ArmX - MOU_LastArmX)/3;        /* 3 = scaling factor */
+ if ( tmp < -127 )
+   tmp = -127;
+ if ( tmp >  127 )
+   tmp =  127;
+
+ MOU_DeltaX = tmp;
+
+}
+
+static void RunCounters()
+{
+  MOU_LastArmY = MOU_ArmY;
+  MOU_LastArmX = MOU_ArmX;
+  MOU_LastButtons = MOU_Buttons;
+  MOU_IntPending = false;
+}
+
+
+static int GetReadData()
+{
+  register int tmp;
+
+  tmp = MOU_PortCval & PORTC_SEL_Y ? MOU_DeltaY : MOU_DeltaX;
+
+  if ( MOU_PortCval & PORTC_SEL_MSN)
+    tmp = (tmp >> 4) & 0xF;
+  else
+    tmp = tmp & 0xF;
+
+  return  tmp + 0x50
+      + ((MOU_Buttons & RButton) ? 0 : 0x20 )
+      + ((MOU_Buttons & LButton) ? 0 : 0x80 ) ;
+}
+
+
+
+/* ------------------------------------------ */
+
+static BYTE IntLineWiggle[16] =
+{
+  0, 0, 8, 4,  2, 1, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0
+};
+
+
+static int MOU_BusRead8(int addr)
+{
+  debug (("Read mouse port:%x",addr));
+  switch ( addr )
+  {
+    case 0x23C: return GetReadData();          /* 8255 port A */
+    case 0x23D: return MOU_PortBval;
+
+    case 0x23E: /* This appears to be used for detecting which
+                    interrupt line the mouse is attached to. Microsoft
+                    MOUSE.COM reads it 10000 times consecutively; it looks
+                    for any of the bits changing. Bit 0 wiggling means
+                    interrupt 5, bit 3 means int 2, bit 2 means int 3,
+                    any other is int 4. If no bits change, & the ROM at
+                    FFFFE is not FDh, it uses IRQ 2 */
+
+                MOU_PortCval ^= IntLineWiggle[MOU_IntNum & 0xF];
+                return MOU_PortCval;
+
+    case 0x23F:
+    default:
+                break;
+  }
+
+  return 0xFF;
+}
+
+
+
+
+
+
+static void MOU_BusWrite8(int addr, int data)
+{
+  debug (("Write mouse port:%x, data:%x",addr,data));
+
+  switch ( addr )
+  {
+    case 0x23C: break;  /* Port A: should be read-only */
+
+    case 0x23D: MOU_PortBval = data;
+                return;
+
+    case 0x23E: if ( data & ~MOU_PortCval & PORTC_HOLD )
+                   HoldCounters();
+                else if ( ~data & MOU_PortCval & PORTC_HOLD )
+                   RunCounters();
+
+                if ( data & PORTC_INTDISABLE )
+                  MOU_IntPending  = false;
+
+                MOU_PortCval = (MOU_PortCval & 0xF) + (data & 0xF0);
+                return;
+
+    case 0x23F: /* 8255 command port init */
+    default:    break;
+  }
+}
+
+
+
+
+
+
+
+
+
+
+/* MOUSE event handlers ********************************************* */
+
+
+
+static bool MOU_Poll()
+{
+
+   if ( MOU_GetMouseChanged() && (MOU_PortCval & PORTC_INTDISABLE)==0 )
+   {
+     if ( !MOU_IntPending )
+     {
+       SYS_Interrupt ( MOU_IntNum );
+       MOU_IntPending = true;
+       SYS_Activity(2);
+     }
+   }
+
+   return false;
+}
+
+/* ******************************** */
+
+static bool MOU_StartFE()
+{
+  SetMousePosition ( 640, 512 );  /* Stop pointer becoming too wayward */
+  MOU_GetMouseChanged();
+  MOU_LastArmX    = MOU_ArmX;     /* Clear any previous events */
+  MOU_LastArmY    = MOU_ArmY;
+  MOU_LastButtons = MOU_Buttons;
+
+  UpdatePointerShape ();
+  UpdatePointerShowing ();
+  UpdatePointerPosition ();
+
+  return false;
+}
+
+/* ******************************** */
+
+/* If the pointer is showing, return to the desktop keeping
+   the pointer in the same place. If it isn't, return it to
+   the centre of the screen.
+*/
+
+static bool MOU_StopFE()
+{
+  if ( !MOU_PointerShowing )
+    SetPointerPosition ( 640, 512 );
+
+  return false;
+}
+
+/* ******************************** */
+
+static bool MOU_HardReset()
+{
+  MOU_PortBval = 0;
+  MOU_PortCval = PORTC_INTDISABLE;
+  MOU_LastArmX     = MOU_ArmX;
+  MOU_LastArmY     = MOU_ArmY;
+  MOU_LastButtons  = MOU_Buttons;
+  MOU_IntPending   = false;
+  MOU_DeltaX = 0;
+  MOU_DeltaY = 0;
+
+  MOU_PointerX = 0;
+  MOU_PointerY = 0;
+  MOU_PointerShowing = false;
+  MOU_PointerShape   = &MOU_PointerData;
+
+  if ( CFG.BusMouse )
+  {
+    SYS_registerIO  ( MOUSE_FIRST, MOUSE_LAST,
+        MOU_PtrPortRd8, MOU_PtrPortRd8, MOU_PtrPortWr8, MOU_PtrPortWr8, 0 );
+
+    SYS_registerIO  ( 0x23C, 0x23F,
+        MOU_BusRead8, MOU_BusRead8, MOU_BusWrite8, MOU_BusWrite8, 0 );         }
+
+  return false;
+}
+
+/* ******************************** */
+
+static bool MOU_SetConfig ( void )
+{
+  MOU_IntNum = CFG.BusMouseInt;
+
+  if ( !SYS_IntAvailable (MOU_IntNum) )
+    SYS_error ( true, "cemouint", MOU_IntNum );
+
+  return false;
+}
+
+/* ******************************** */
+
+bool MOU_Init()
+{
+  MOU_Connected = false;
+
+  SYS_registerEvent ( SYS_SetConfig, MOU_SetConfig, 0 );
+  SYS_registerEvent ( SYS_PollChain, MOU_Poll, 0 );
+  SYS_registerEvent ( SYS_StartFE, MOU_StartFE, 0 );
+  SYS_registerEvent ( SYS_StopFE,  MOU_StopFE, 0 );
+  SYS_registerEvent ( SYS_HardReset, MOU_HardReset, 0 );
+  SYS_registerEvent ( SYS_StopWinFE, MOU_Disconnect, 0 );
+  SYS_registerEvent ( SYS_ConnectMouse, MOU_ConnectMouse, 0 );
+
+  MOU_HardReset();
+  return true;
+}
+

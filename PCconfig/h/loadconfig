@@ -1,0 +1,21 @@
+/* Auto */
+
+/*extern char *strip_header(char *option);
+extern void set_cacheconfig(char *opt);
+extern void set_pcram(char *opt);
+extern void set_videoram(char *opt);
+extern int get_number_from_specified_string(char *string, char *preceeder);
+extern void set_windowmode(char *opt);
+extern void set_floppyboot(char *opt);
+extern void set_directparallel(char *opt);
+extern void set_directserial(char *opt);
+extern void set_riscosprinter(char *opt);
+extern void set_suspendoption(char *opt);
+extern void set_autostart(char *opt);
+extern void set_harddisc_d(char *opt);
+extern void set_harddisc_c(char *opt);
+extern void set_scsi_c(char *opt);
+extern void set_scsi_d(char *opt);
+extern void set_config_option(char *opt);
+extern void parse_config_file(void);*/
+extern BOOL load_config_file(void);

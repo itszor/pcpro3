@@ -1,0 +1,316 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.HPC_CD - HPC definitions for hard disk functions
+*
+*   09-11-95	  (2.00) Original
+*/
+
+#define HPC_CD_ID 0x0003
+
+#define HPC_CD_INIT       0x0000
+#define HPC_CD_READ       0x0001
+#define HPC_CD_SEEK       0x0002
+#define HPC_CD_PLAY       0x0003
+#define HPC_CD_PLAYSTATUS 0x0004
+#define HPC_CD_DISKINFO   0x0005
+#define HPC_CD_TRACKINFO  0x0006
+#define HPC_CD_QCHANNEL   0x0007
+#define HPC_CD_CONTROL    0x0008
+
+/* -------------------- */
+
+struct CD_COMMON_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+};
+
+/* ------------ */
+
+struct CD_COMMON_RESULT
+{
+  LONG retcode;
+};
+
+/* ------------ */
+
+struct CD_INIT_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+};
+
+/* ------------ */
+
+struct CD_INIT_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  WORD ndrives;
+};
+
+/* ------------ */
+
+#define CD_MAX_RD_LEN (16384-16)
+
+struct CD_READ_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD sect_count;
+  LONG sect_start;
+  WORD readahead;
+};
+
+/* ------------ */
+
+struct CD_READ_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  BYTE read_data[1];
+};
+
+/* ------------ */
+
+struct CD_SEEK_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD nsects;
+  LONG sect_start;
+};
+
+/* ------------ */
+
+struct CD_SEEK_RESULT
+{
+  WORD status;
+  WORD audiostat;
+};
+
+/* ------------ */
+
+struct CD_PLAY_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD pad2;
+  LONG sect_start;
+  LONG play_len;
+};
+
+/* ------------ */
+
+struct CD_PLAY_RESULT
+{
+  WORD status;
+  WORD audiostat;
+};
+
+/* ------------ */
+
+struct CD_PLAYSTATUS_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct CD_PLAYSTATUS_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  LONG playstart;
+  LONG playpos;
+  LONG playstop;
+};
+
+/* ------------ */
+
+struct CD_DISKINFO_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct CD_DISKINFO_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  LONG disksize;
+};
+
+/* ------------ */
+
+struct CD_TRACKINFO_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD trknum;
+#define TRKNUM_WHOLE_CD 0xFFFF
+};
+
+/* ------------ */
+
+struct CD_TRACKINFO_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  LONG trkstart;
+  BYTE firsttrk;
+  BYTE lasttrk;
+  BYTE trkflags;
+#define TRKFLAGS_DATA 0x40
+#define TRKFLAGS_4CH  0x80
+};
+
+/* ------------ */
+
+struct CD_QCHANNEL_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct CD_QCHANNEL_RESULT
+{
+  WORD status;
+  WORD audiostat;
+  BYTE Qdata[10];
+};
+
+/* ------------ */
+
+struct CD_CONTROL_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD fncode;
+#define CONTROL_RESET   0
+#define CONTROL_CHANGED 1
+#define CONTROL_PAUSE   2
+#define CONTROL_RESUME  3
+#define CONTROL_UNLOCK  4
+#define CONTROL_LOCK    5
+#define CONTROL_OPEN    6
+#define CONTROL_CLOSE   7
+};
+
+/* ------------ */
+
+struct CD_CONTROL_RESULT
+{
+  WORD status;
+  WORD audiostat;
+};
+
+
+/* ------------ */
+
+union CD_HPC_PARAMS
+{
+struct CD_COMMON_PARAMS     common;
+struct CD_INIT_PARAMS       Init;
+struct CD_READ_PARAMS       Read;
+struct CD_SEEK_PARAMS       Seek;
+struct CD_PLAY_PARAMS       Play;
+struct CD_PLAYSTATUS_PARAMS PlayStatus;
+struct CD_DISKINFO_PARAMS   DiskInfo;
+struct CD_TRACKINFO_PARAMS  TrackInfo;
+struct CD_QCHANNEL_PARAMS   QChannel;
+struct CD_CONTROL_PARAMS    Control;
+};
+
+/* ------------ */
+
+union CD_HPC_RESULT
+{
+struct CD_COMMON_RESULT     common;
+struct CD_INIT_RESULT       Init;
+struct CD_READ_RESULT       Read;
+struct CD_SEEK_RESULT       Seek;
+struct CD_PLAY_RESULT       Play;
+struct CD_PLAYSTATUS_RESULT PlayStatus;
+struct CD_DISKINFO_RESULT   DiskInfo;
+struct CD_TRACKINFO_RESULT  TrackInfo;
+struct CD_QCHANNEL_RESULT   QChannel;
+struct CD_CONTROL_RESULT    Control;
+};
+
+/* ------------ */
+
+typedef union
+{
+  union CD_HPC_PARAMS in;
+  union CD_HPC_RESULT out;
+}
+  CD_HPC_IN_OUT;
+
+
+/* Error codes ---------------- */
+
+#ifndef HPCERR_NOTPRESENT
+  #define HPCERR_NOTPRESENT 0xFFFFFFFF
+#endif
+
+#define CDERR_OK	0
+#define CDERR_BADFUNC	1
+#define CDERR_BADDRIVE  2
+#define CDERR_BADPARAMS 3
+#define CDERR_CHANGED   4
+#define CDERR_BUSY	5
+#define CDERR_READERR   6
+#define CDERR_DRIVEFAIL 7
+
+#define AUDIO_STOPPED   0
+#define AUDIO_PLAYING   1
+#define AUDIO_PAUSED    2
+
+
+/* EXPORTED ROUTINES */
+extern bool CDR_Init ( void );
+
+extern void CD_Init ( struct CD_INIT_PARAMS *pIn,
+                      struct CD_INIT_RESULT *pOut );
+
+extern void CD_Read ( struct CD_READ_PARAMS *pIn,
+                      struct CD_READ_RESULT *pOut );
+
+extern void CD_Seek ( struct CD_SEEK_PARAMS *pIn,
+                      struct CD_SEEK_RESULT *pOut );
+
+extern void CD_Play ( struct CD_PLAY_PARAMS *pIn,
+                      struct CD_PLAY_RESULT *pOut );
+
+extern void CD_PlayStatus ( struct CD_PLAYSTATUS_PARAMS *pIn,
+                            struct CD_PLAYSTATUS_RESULT *pOut );
+
+extern void CD_DiskInfo ( struct CD_DISKINFO_PARAMS *pIn,
+                          struct CD_DISKINFO_RESULT *pOut );
+
+extern void CD_TrackInfo ( struct CD_TRACKINFO_PARAMS *pIn,
+                           struct CD_TRACKINFO_RESULT *pOut );
+
+extern void CD_QChannel ( struct CD_QCHANNEL_PARAMS *pIn,
+                          struct CD_QCHANNEL_RESULT *pOut );
+
+//extern void CD_Control ( struct CD_CONTROL_PARAMS *pIn,
+//                         struct CD_CONTROL_RESULT *pOut );
+extern int CD_PhysToMMSSFF ( int addr );
+
+extern int CD_LogicalToMMSSFF ( int addr );

@@ -1,0 +1,5 @@
+Set ChooseCfg$Dir <Obey$Dir>.ChooseCfg
+Prefix <Obey$Dir>
+Makatic.Small @
+Print version { >> <Diva$Dir>.!ChooseCfg.ChooseCfg }
+

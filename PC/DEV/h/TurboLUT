@@ -1,0 +1,9 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.TurboLUT     Header file for Turbodriver lookup table
+*
+*   1998-03-12   MB   Original
+*/
+
+extern char turbodriver_lut[255];

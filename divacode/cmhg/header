@@ -1,0 +1,17 @@
+; CMHG file for DivaCode module
+
+module-is-runnable:
+
+help-string: DivaCode 0.10
+
+title-string: DivaCode
+
+service-call-handler: service_handler &11 
+
+swi-handler-code:      DivaCode_SWI
+swi-chunk-base-number: 0xC2700
+swi-decoding-table:    DivaCode, Generate
+
+command-keyword-table: DivaCode_CLI
+  Desktop_DivaCode( min-args:0, max-args:0,
+                    help-text: "Syntax\tDesktop_DivaCode" )

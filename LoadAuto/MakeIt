@@ -1,0 +1,5 @@
+RMEnsure DDEUtils 1.54 RMLoad System:Modules.DDEUtils
+Set ChooseCfg$Dir <Obey$Dir>.ChooseCfg
+Prefix <Obey$Dir>
+Makatic.Small @
+Print ver { >> <Diva$Dir>.LoadAuto }

@@ -1,0 +1,18 @@
+/*
+ * Name   : booting.h
+ * Desc   : Handlers for switching component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 1-Jun-1995
+ */
+
+
+#ifndef __booting_h
+#define __booting_h
+
+extern void do_booting_initialise(void);
+extern void setup_booting_window(void);
+extern void update_booting_window(void);
+extern int booting_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+extern int data_saveack_handler(WimpMessage *msg, void *h);
+
+#endif

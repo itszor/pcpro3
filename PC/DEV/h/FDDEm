@@ -1,0 +1,77 @@
+/*
+*    !PC floppy drive emulation
+*
+*    structs 'n' stuff
+*/
+
+#include "kernel.h"
+
+#define FDC_OUTPUT 0x3F2
+#define FDC_STATUS 0x3F4
+#define FDC_DATA   0x3F5
+#define FDC_INPUT  0x3F7
+
+#define FDC_CMD_MASK 0x1F /* bottom five bits of first command byte */
+
+#define FDC_CMD_READ      6
+#define FDC_CMD_READDEL   12
+#define FDC_CMD_WRITE     5
+#define FDC_CMD_WRITEDEL  9
+#define FDC_CMD_READTRK   2
+#define FDC_CMD_FORMAT    13
+#define FDC_CMD_READID    10
+#define FDC_CMD_CALIBRATE 7
+#define FDC_CMD_CHECKINT  8
+#define FDC_CMD_FIXDRIVE  3
+#define FDC_CMD_CHECKDRV  4
+#define FDC_CMD_PARK      15
+/* Extended command set sounds boring */
+
+extern int fdc_command_length[];
+
+struct fdc_command {
+
+  struct {
+    unsigned int multi : 1;
+    unsigned int mfm   : 1;
+    unsigned int skip  : 1;
+    unsigned int cmd   : 5;
+  } type; /* Should be a byte! */
+
+  struct {
+    unsigned int num   : 2;
+    unsigned int head  : 1;
+  } drive; /* Another byte */
+
+  union {
+    struct {
+      unsigned char cylinder;
+      unsigned char head;
+      unsigned char sector;
+      unsigned char sector_size;
+      unsigned char length; /* Track length / max. sector number */
+      unsigned char gap3_length;
+      unsigned char data_length;
+    } rw;
+    struct {
+      unsigned char sector_size;
+      unsigned char length;
+      unsigned char gap3_length;
+      unsigned char fill;
+    } format;
+    char whatever[16];
+  } data;
+};
+
+struct fdc_reg_status_struct {
+  unsigned int acta : 1;
+  unsigned int actb : 1;
+  unsigned int actc : 1;
+  unsigned int actd : 1;
+  unsigned int busy : 1;
+  unsigned int ndma : 1;
+  unsigned int dio  : 1;
+  unsigned int mrq  : 1;
+};
+
+extern bool FDDEm_Init(void);

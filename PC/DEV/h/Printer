@@ -1,0 +1,11 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.PRINTER - header file
+*
+*/
+
+
+/* EXPORTED ROUTINES */
+
+extern bool PRN_Init ( void );

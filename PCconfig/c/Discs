@@ -1,0 +1,707 @@
+#include "stdio.h"
+#include "string.h"
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "swis.h"
+#include "utils.h"
+#include "window.h"
+#include "wimplib.h"
+#include "discs.h"
+#include "vars.h"
+
+#include "miscfile.h"
+
+#include "debugit.h"
+
+extern int discs_last_disc_created = 0;
+extern int old_number_of_discs     = 0;
+
+void do_discs_initialise(void)
+{
+  tmp_config.discs.drive_c_use_partition   = config.discs.drive_c_use_partition = TRUE;
+  tmp_config.discs.drive_d_use_partition   = config.discs.drive_d_use_partition = TRUE;
+  tmp_config.discs.drive_c_direct_scsi_id  = config.discs.drive_c_direct_scsi_id = 0;
+  tmp_config.discs.drive_d_direct_scsi_id  = config.discs.drive_d_direct_scsi_id = 0;
+/*  strcpy(config.discs.drive_c_path_name, "adfs::4.$.pccard.drive_c");
+  strcpy(config.discs.drive_d_path_name, "adfs::4.$.pccard.drive_d");*/
+  strcpy(config.discs.drive_c_path_name, lookup_token("no_partition"));
+  strcpy(config.discs.drive_d_path_name, lookup_token("no_partition"));
+
+#if DISCS_1
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_PARTITION_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_SCSI_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_PARTITION_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_SCSI_SELECTED,discs_window_other_event_handler,0));
+#endif
+  raise_error(event_register_toolbox_handler(discs_window,NumberRange_ValueChanged,discs_window_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,ActionButton_Selected, discs_window_click_handler,0));
+  raise_error(event_register_toolbox_handler(createdisc_window,NumberRange_ValueChanged,createdisc_update_riscossize, NULL));
+
+  update_discs_window();
+}
+
+void update_discs_window(void)
+{
+  char buff[20];
+  int  z;
+  numberrange_set_value(0,discs_window, DISCS_NUMBER, config.discs.drives);
+
+  if(config.discs.drive_c_use_partition)
+  {
+    writablefield_set_value(0,discs_window, DISCS_DRIVE_C_DISPLAY,config.discs.drive_c_path_name);
+    for (z=0; z!=256; z++) config.discs.drive_c_path_name[z]=0;
+    writablefield_get_value(0,discs_window, DISCS_DRIVE_C_DISPLAY, config.discs.drive_c_path_name, 256, NULL);
+    radiobutton_set_state(0, discs_window, DISCS_DRIVE_C_PARTITION, 1);
+  }
+  else
+  {
+    numberrange_set_value(0,discs_window,DISCS_DRIVE_C_MENU_ICON, config.discs.drive_c_direct_scsi_id);
+    radiobutton_set_state(0, discs_window, DISCS_DRIVE_C_DIRECT_SCSI, 1);
+
+    sprintf(buff,"%d",config.discs.drive_c_scsi_heads);
+    raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_C_SCSI_HEADS,buff));
+
+    sprintf(buff,"%d",config.discs.drive_c_scsi_sectors);
+    raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_C_SCSI_SECTORS,buff));
+  }
+
+  if(config.discs.drive_d_use_partition)
+  {
+    writablefield_set_value(0,discs_window, DISCS_DRIVE_D_DISPLAY,config.discs.drive_d_path_name);
+    for (z=0; z!=256; z++) config.discs.drive_d_path_name[z]=0;
+    writablefield_get_value(0,discs_window, DISCS_DRIVE_D_DISPLAY, config.discs.drive_d_path_name, 256, NULL);
+    radiobutton_set_state(0, discs_window, DISCS_DRIVE_D_PARTITION, 1);
+  }
+  else
+  {
+    numberrange_set_value(0,discs_window,DISCS_DRIVE_D_MENU_ICON, config.discs.drive_d_direct_scsi_id);
+    radiobutton_set_state(0, discs_window, DISCS_DRIVE_D_DIRECT_SCSI, 1);
+
+    sprintf(buff,"%d",config.discs.drive_d_scsi_heads);
+    raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_D_SCSI_HEADS,buff));
+
+    sprintf(buff,"%d",config.discs.drive_d_scsi_sectors);
+    raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_D_SCSI_SECTORS,buff));
+
+  }
+
+  if(config.discs.drives == 0)
+  {
+    shade_discs(1);
+    shade_discs(2);
+  }
+
+  if(config.discs.drives == 1)
+  {
+    unshade_discs(1);
+    shade_discs(2);
+    update_partition_state(1);
+  }
+
+  if(config.discs.drives == 2)
+  {
+    unshade_discs(1);
+    unshade_discs(2);
+    update_partition_state(2);
+  }
+}
+
+void setup_discs_window(void)
+{
+  tmp_config.discs.drives                  = config.discs.drives;
+  tmp_config.discs.drive_c_use_partition   = config.discs.drive_c_use_partition;
+  tmp_config.discs.drive_d_use_partition   = config.discs.drive_d_use_partition;
+  tmp_config.discs.drive_c_direct_scsi_id  = config.discs.drive_c_direct_scsi_id;
+  tmp_config.discs.drive_d_direct_scsi_id  = config.discs.drive_d_direct_scsi_id;
+
+  tmp_config.discs.drive_c_scsi_heads      = config.discs.drive_c_scsi_heads;
+  tmp_config.discs.drive_c_scsi_sectors    = config.discs.drive_c_scsi_sectors;
+  tmp_config.discs.drive_d_scsi_heads      = config.discs.drive_d_scsi_heads;
+  tmp_config.discs.drive_d_scsi_sectors    = config.discs.drive_d_scsi_sectors;
+
+  strcpy(tmp_config.discs.drive_c_path_name, config.discs.drive_c_path_name);
+  strcpy(tmp_config.discs.drive_d_path_name, config.discs.drive_d_path_name);
+
+  update_discs_window();
+  toolbox_show_object(0,discs_window,0,0,0,0);
+  createdisc_update_riscossize(0,NULL,NULL,NULL);
+}
+
+void ensure_discs(int num)
+{
+  int x;
+
+    numberrange_get_value(0,discs_window,DISCS_NUMBER,&x);
+    if (num == 1 && x<1)
+      numberrange_set_value(0,discs_window,DISCS_NUMBER,1);
+    if (num == 2 && x<2)
+      numberrange_set_value(0,discs_window,DISCS_NUMBER,2);
+    if (num == 1)
+      tmp_config.discs.drive_c_use_partition = TRUE;
+    if (num == 2)
+      tmp_config.discs.drive_d_use_partition = TRUE;
+    if (num == 2)
+      unshade_discs(2);
+    unshade_discs(1);
+    if (num == 2)
+      update_partition_state(2);
+    update_partition_state(1);
+}
+
+/*
+ * This function will register a DOS partition dragged to the DISCS window
+ */
+
+int discs_data_load_handler(WimpMessage *message,void *handle)
+{
+    ObjectId    window_handle;
+    ComponentId component_handle;
+    int wimp_window_handle;
+    WimpGetPointerInfoBlock p;
+    int z;
+    /* Check for correct file type first */
+
+    /* This seems pointless but it's too overcome a bug in the Toolbox which
+       causes all sorts of trouble when calling window_get_pointer_info over a window
+       that contains user created icons _not_ gadgets */
+
+    raise_error(wimp_get_pointer_info(&p));
+    //if(p.window_handle == advanced_window_wimp)
+    //return(1);
+
+    raise_error(window_get_pointer_info(0,NULL,NULL,NULL,&window_handle,&component_handle));
+    raise_error(window_get_wimp_handle(0,discs_window,&wimp_window_handle));
+
+    if(window_handle != discs_window)
+      return(1);
+
+    if(message->data.data_load.file_type != 0xfc8)
+    {
+      /*
+        _kernel_oserror *e;
+
+        e->errnum = 1;
+
+        strcpy(e->errmess, "Please drag a PC DOS Partition to this window");
+        wimp_report_error(e,Wimp_ReportError_OK,"PC Config","!PC_Config",1,0);
+        */
+        werr(0,lookup_token("nodrag"));
+        return(1);
+    }
+
+    numberrange_get_value(0,discs_window,DISCS_NUMBER,&z);
+    if(component_handle == 0 && z == 0)
+      { ensure_discs(1); component_handle = DISCS_DRIVE_C_DISPLAY; }
+    if(component_handle == 0 && z == 1)
+      { ensure_discs(2); component_handle = DISCS_DRIVE_D_DISPLAY; }
+
+    if(component_handle == DISCS_DRIVE_C_DISPLAY  || component_handle == DISCS_DRIVE_C_DRAGGABLE)
+    {
+      strcpy(tmp_config.discs.drive_c_path_name, message->data.data_save_ack.leaf_name);
+      raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_C_DISPLAY,tmp_config.discs.drive_c_path_name));
+      tmp_config.discs.drive_c_use_partition = TRUE;
+      /*update_partition_state(1);*/
+
+      return(1);
+    }
+
+    if(component_handle == DISCS_DRIVE_D_DISPLAY  ||  component_handle == DISCS_DRIVE_D_DRAGGABLE)
+    {
+      tmp_config.discs.drive_d_use_partition = TRUE;
+      /*update_partition_state(2);*/
+      strcpy(tmp_config.discs.drive_d_path_name, message->data.data_save_ack.leaf_name);
+      raise_error(writablefield_set_value(0,discs_window,DISCS_DRIVE_D_DISPLAY,tmp_config.discs.drive_d_path_name));
+      return(1);
+    }
+    return(1);
+}
+
+void unshade_discs(int num)
+{
+  if(num == 1)
+  {
+#if DISCS
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DISPLAY,0);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DRAGGABLE,0);
+#endif
+#if DISCS_1
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_PARTITION,0);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DIRECT_SCSI,0);
+    if(tmp_config.discs.drive_d_use_partition)
+      gadget_set_flags(0,discs_window,DISCS_D_CREATE,0);
+
+    if(tmp_config.discs.drive_c_use_partition)
+    {
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DISPLAY,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DRAGGABLE,0);
+      gadget_set_flags(0,discs_window,DISCS_C_CREATE,0);
+    }
+    else
+    {
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DEVICE_NUMBER,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_MENU_ICON,0);
+
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_HEADS_LABEL,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SCSI_HEADS,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SECTORS_LABEL,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SCSI_SECTORS,0);
+    }
+#endif
+  }
+  if(num == 2)
+  {
+#if DISCS
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DISPLAY,0);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DRAGGABLE,0);
+#endif
+#if DISCS_1
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_PARTITION,0);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DIRECT_SCSI,0);
+
+    if(tmp_config.discs.drive_d_use_partition)
+    {
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DISPLAY,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DRAGGABLE,0);
+      gadget_set_flags(0,discs_window,DISCS_D_CREATE,0);
+    }
+    else
+    {
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DEVICE_NUMBER,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_MENU_ICON,0);
+
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_HEADS_LABEL,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SCSI_HEADS,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SECTORS_LABEL,0);
+      gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SCSI_SECTORS,0);
+    }
+#endif
+  }
+}
+
+void shade_discs(int num)
+{
+  if(num == 1)
+  {
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DISPLAY, (unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DRAGGABLE,(unsigned)1<<31);
+#if DISCS_1
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DEVICE_NUMBER,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_MENU_ICON,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_PARTITION,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_DIRECT_SCSI,(unsigned)1<<31);
+    /*gadget_set_flags(0,discs_window,DISCS_C_CREATE,(unsigned)1<<31);*/
+    gadget_set_flags(0,discs_window,DISCS_D_CREATE,(unsigned)1<<31);
+
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_HEADS_LABEL,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SCSI_HEADS,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SECTORS_LABEL,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_C_SCSI_SECTORS,(unsigned)1<<31);
+
+#endif
+
+  }
+  if(num == 2)
+  {
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DISPLAY, (unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DRAGGABLE,(unsigned)1<<31);
+#if DISCS_1
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DEVICE_NUMBER,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_MENU_ICON,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_PARTITION,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_DIRECT_SCSI,(unsigned)1<<31);
+    /*gadget_set_flags(0,discs_window,DISCS_D_CREATE,(unsigned)1<<31);*/
+
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_HEADS_LABEL,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SCSI_HEADS,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SECTORS_LABEL,(unsigned)1<<31);
+    gadget_set_flags(0,discs_window,DISCS_DRIVE_D_SCSI_SECTORS,(unsigned)1<<31);
+#endif
+  }
+}
+
+int discs_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int z;
+
+  if(id_block->self_component == DISCS_C_CREATE)
+  {
+    /*if (config.discs.drives<1) config.discs.drives = 1;
+    update_discs_window();*/
+    /*raise_error(writablefield_get_value(0,discs_window,DISCS_DRIVE_C_DISPLAY,tmp_config.discs.drive_c_path_name,512,NULL));*/
+    discs_last_disc_created = DISCS_DRIVE_C_DISPLAY;
+    create_pc_partition("Drive_C");
+
+    return(1);
+  }
+  if(id_block->self_component == DISCS_D_CREATE)
+  {
+    /*if (config.discs.drives<2) config.discs.drives = 2;
+    update_discs_window();*/
+    /*raise_error(writablefield_get_value(0,discs_window,DISCS_DRIVE_D_DISPLAY,tmp_config.discs.drive_d_path_name,512,NULL));*/
+    discs_last_disc_created = DISCS_DRIVE_D_DISPLAY;
+    create_pc_partition("Drive_D");
+    return(1);
+  }
+
+  if(id_block->self_component == DISCS_OK)
+  {
+    int radio_check_c, radio_check_d, num_discs;
+    char buff[20], disc_check_c[256], disc_check_d[256];
+
+    radiobutton_get_state(0,discs_window,DISCS_DRIVE_C_PARTITION,&radio_check_c,&num_discs);
+    radiobutton_get_state(0,discs_window,DISCS_DRIVE_D_PARTITION,&radio_check_d,&num_discs);
+    writablefield_get_value(0,discs_window,DISCS_DRIVE_C_DISPLAY,disc_check_c,255,0);
+    writablefield_get_value(0,discs_window,DISCS_DRIVE_D_DISPLAY,disc_check_d,255,0);
+    raise_error(numberrange_get_value(0,discs_window,DISCS_NUMBER,&num_discs));
+    if (!file_exists(disc_check_c) && radio_check_c && num_discs > 0)
+    {
+      toolbox_show_object(0,discs_window,0,0,0,0);
+      werr(0, lookup_token("drive_c_not_found"));
+      return(1);
+    }
+    if (!file_exists(disc_check_d) && radio_check_d && num_discs > 1)
+    {
+      toolbox_show_object(0,discs_window,0,0,0,0);
+      werr(0, lookup_token("drive_d_not_found"));
+      return(1);
+    }
+
+    if(tmp_config.discs.drive_c_use_partition)
+    {
+      for (z=0; z!=256; z++) tmp_config.discs.drive_c_path_name[z]=0;
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_C_DISPLAY,tmp_config.discs.drive_c_path_name,255,0);
+      tmp_config.discs.drive_c_use_partition = TRUE;
+    }
+    else
+    {
+      numberrange_get_value(0,discs_window,DISCS_DRIVE_C_MENU_ICON,&tmp_config.discs.drive_c_direct_scsi_id);
+      tmp_config.discs.drive_c_use_partition = FALSE;
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_C_SCSI_HEADS,buff,20,0);
+      tmp_config.discs.drive_c_scsi_heads = atoi(buff);
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_C_SCSI_SECTORS,buff,20,0);
+      tmp_config.discs.drive_c_scsi_sectors = atoi(buff);
+    }
+
+    if(tmp_config.discs.drive_d_use_partition)
+    {
+      for (z=0; z!=256; z++) tmp_config.discs.drive_d_path_name[z]=0;
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_D_DISPLAY,tmp_config.discs.drive_d_path_name,255,0);
+      tmp_config.discs.drive_d_use_partition = TRUE;
+    }
+    else
+    {
+      numberrange_get_value(0,discs_window,DISCS_DRIVE_D_MENU_ICON,&tmp_config.discs.drive_d_direct_scsi_id);
+      tmp_config.discs.drive_d_use_partition = FALSE;
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_D_SCSI_HEADS,buff,20,0);
+      tmp_config.discs.drive_d_scsi_heads = atoi(buff);
+      writablefield_get_value(0,discs_window,DISCS_DRIVE_D_SCSI_SECTORS,buff,20,0);
+      tmp_config.discs.drive_d_scsi_sectors = atoi(buff);
+    }
+
+    check_for_modified_data((int)&config.discs, (int)&tmp_config.discs, sizeof(config.discs));
+    /*fwrite(&tmp_config.discs, sizeof(hd), 1, stderr);
+    fprintf(stderr, "\n\n");
+    fwrite(&config.discs, sizeof(hd), 1, stderr);*/
+
+    config.discs.drive_c_direct_scsi_id = tmp_config.discs.drive_c_direct_scsi_id;
+    config.discs.drive_d_direct_scsi_id = tmp_config.discs.drive_d_direct_scsi_id;
+    config.discs.drive_c_scsi_heads     = tmp_config.discs.drive_c_scsi_heads;
+    config.discs.drive_c_scsi_sectors   = tmp_config.discs.drive_c_scsi_sectors;
+    config.discs.drive_d_scsi_heads     = tmp_config.discs.drive_d_scsi_heads;
+    config.discs.drive_d_scsi_sectors   = tmp_config.discs.drive_d_scsi_sectors;
+    config.discs.drive_d_use_partition  = tmp_config.discs.drive_d_use_partition;
+    config.discs.drive_c_use_partition  = tmp_config.discs.drive_c_use_partition;
+    strcpy(config.discs.drive_c_path_name, tmp_config.discs.drive_c_path_name);
+    strcpy(config.discs.drive_d_path_name, tmp_config.discs.drive_d_path_name);
+    config.discs.drives = tmp_config.discs.drives;
+
+  }
+  return(1);
+}
+
+int discs_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int discs;
+  /*window_set_title(1,discs_window,"PC Card configuration *");*/
+  NumberRangeValueChangedEvent *ev = (NumberRangeValueChangedEvent *)event;
+  discs = ev->new_value;
+
+  switch(discs)
+  {
+    case 0:
+      if(old_number_of_discs == 2)
+       shade_discs(2);
+      shade_discs(1);
+      tmp_config.discs.drives = 0;
+    break;
+
+    case 1:
+      unshade_discs(1);
+      shade_discs(2);
+      tmp_config.discs.drives = 1;
+    break;
+
+    case 2:
+      unshade_discs(1);
+      unshade_discs(2);
+      tmp_config.discs.drives = 2;
+    break;
+  }
+  return(1);
+}
+
+extern int createdisc_update_riscossize(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int v;
+
+  raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &v));
+  raise_error(numberrange_set_value(0, createdisc_window, CREATEDISC_RISCOSSIZE, (v*954)/1000 ));
+}
+
+#if DISCS_1
+int discs_window_other_event_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int drive = 0;
+  switch(event_code)
+  {
+    case DISCS_C_PARTITION_SELECTED:
+     if(tmp_config.discs.drive_c_use_partition)
+      return(1);
+     tmp_config.discs.drive_c_use_partition = TRUE;
+     drive = 1;
+    break;
+
+    case DISCS_C_SCSI_SELECTED:
+     if(!tmp_config.discs.drive_c_use_partition)
+      return(1);
+     tmp_config.discs.drive_c_use_partition = FALSE;
+     drive = 1;
+    break;
+
+    case DISCS_D_PARTITION_SELECTED:
+     if(tmp_config.discs.drive_d_use_partition)
+      return(1);
+     tmp_config.discs.drive_d_use_partition = TRUE;
+     drive = 2;
+    break;
+
+    case DISCS_D_SCSI_SELECTED:
+     if(!tmp_config.discs.drive_d_use_partition)
+      return(1);
+     tmp_config.discs.drive_d_use_partition = FALSE;
+     drive = 2;
+    break;
+  }
+  update_partition_state(drive);
+  return(1);
+}
+
+void update_partition_state(int drive)
+{
+  if(drive == 1)
+  {
+    if(tmp_config.discs.drive_c_use_partition)
+    {
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DISPLAY,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DRAGGABLE,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_C_CREATE,0));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DEVICE_NUMBER,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_MENU_ICON,(unsigned)1<<31));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_HEADS_LABEL,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SCSI_HEADS,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SECTORS_LABEL,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SCSI_SECTORS,(unsigned)1<<31));
+
+      raise_error(radiobutton_set_state(0, discs_window, DISCS_DRIVE_C_PARTITION, 1));
+    }
+    else
+    {
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DISPLAY,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DRAGGABLE,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_C_CREATE,(unsigned)1<<31));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_DEVICE_NUMBER,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_MENU_ICON,0));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_HEADS_LABEL,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SCSI_HEADS,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SECTORS_LABEL,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_C_SCSI_SECTORS,0));
+
+      raise_error(radiobutton_set_state(0, discs_window, DISCS_DRIVE_C_DIRECT_SCSI,1));
+    }
+
+  }
+  if(drive == 2)
+  {
+    if(tmp_config.discs.drive_d_use_partition)
+    {
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DISPLAY,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DRAGGABLE,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_D_CREATE,0));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DEVICE_NUMBER,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_MENU_ICON,(unsigned)1<<31));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_HEADS_LABEL,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SCSI_HEADS,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SECTORS_LABEL,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SCSI_SECTORS,(unsigned)1<<31));
+
+      raise_error(radiobutton_set_state(0, discs_window, DISCS_DRIVE_D_PARTITION, 1));
+
+    }
+    else
+    {
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DISPLAY,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DRAGGABLE,(unsigned)1<<31));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_D_CREATE,(unsigned)1<<31));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_DEVICE_NUMBER,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_MENU_ICON,0));
+
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_HEADS_LABEL,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SCSI_HEADS,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SECTORS_LABEL,0));
+      raise_error(gadget_set_flags(0,discs_window, DISCS_DRIVE_D_SCSI_SECTORS,0));
+
+      raise_error(radiobutton_set_state(0, discs_window, DISCS_DRIVE_D_DIRECT_SCSI,1));
+    }
+  }
+}
+
+/*void create_pc_partition(char *path_name)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = 5;
+  r.r[1] = (int)path_name;
+  raise_error(_kernel_swi(OS_File,&r,&r));
+  if(r.r[0] != 0)
+  {
+    int ret;
+    ret = cancel_ok("A PC Partition already exists with this name, do you wish to overwrite it?");
+    if(ret == 1)
+    {
+      char buff[512];
+      sprintf(buff, "<PC_Config$Dir>.Resources.!PCFormat %s\0",path_name);
+      r.r[0] = (int)buff;
+      raise_error(_kernel_swi(Wimp_StartTask,&r,&r));
+      return;
+    }
+  }
+  else
+  {
+      char buff[512];
+      sprintf(buff, "<PC_Config$Dir>.Resources.!PCFormat %s\0",path_name);
+      r.r[0] = (int)buff;
+      raise_error(_kernel_swi(Wimp_StartTask,&r,&r));
+      return;
+  }
+}*/
+
+void create_pc_partition(char *leaf_name)
+{
+  writablefield_set_value(0, createdisc_window, CREATEDISC_NAME, leaf_name);
+  numberrange_set_value(0, createdisc_window, CREATEDISC_SIZE, 100);
+  radiobutton_set_state(0, createdisc_window, CREATEDISC_INITDOS, 1);
+  createdisc_update_riscossize(0,0,0,0);
+  toolbox_show_object(0,createdisc_window,0,0,0,0);
+}
+
+int dragended_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  DraggableDragEndedEvent    *event_a;
+  WimpMessage                 msg;
+  int                         th, x;
+  char                       *b;
+
+  event_a = (DraggableDragEndedEvent*) event;
+
+  raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &(msg.data.data_save.estimated_size)));
+  raise_error(writablefield_get_value(0, createdisc_window, CREATEDISC_NAME, msg.data.data_save.leaf_name, 220, &x));
+  if (strstr(msg.data.data_save.leaf_name, ".") != NULL)
+  {
+    b = msg.data.data_save.leaf_name+strlen(msg.data.data_save.leaf_name)-1;
+    while(*(--b) != '.');
+    strcpy(msg.data.data_save.leaf_name, b+1);
+  }
+
+  msg.hdr.size = 256;
+  msg.hdr.my_ref = 0;
+  msg.hdr.action_code = Wimp_MDataSave;
+  msg.data.data_save.destination_window = event_a->window_handle;
+  msg.data.data_save.destination_icon = event_a->icon_handle;
+  msg.data.data_save.estimated_size = msg.data.data_save.estimated_size * 1024;
+  msg.data.data_save.file_type = 0xFC8;
+
+  wimp_send_message(17, &msg, event_a->window_handle, event_a->icon_handle, &th);
+  return(1);
+}
+
+int data_saveack_handler(WimpMessage *msg, void *h)
+{
+  char path_stripped[256];
+
+  strcpy(path_stripped, msg->data.data_save_ack.leaf_name);
+  path_stripped[strlen(path_stripped) - 3]=0;
+
+  if (msg->data.data_save_ack.estimated_size == -1 || strcmp(msg->data.data_save_ack.leaf_name, "<Wimp$Scrap>") == 0)
+  {
+    werr(0, lookup_token("silly_place"));
+    return(1);
+  }
+  writablefield_set_value(0, createdisc_window, CREATEDISC_NAME, msg->data.data_save_ack.leaf_name);
+
+  return(1);
+}
+
+int create_fc8_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  char path_name[256], cmd[256], initdos[10]="\0";
+  _kernel_swi_regs r;
+  int ret = 1, size, initdosflag, x;
+
+  raise_error(writablefield_get_value(0, createdisc_window, CREATEDISC_NAME, path_name, 256, &x));
+  raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &size));
+  raise_error(optionbutton_get_state(0, createdisc_window, CREATEDISC_INITDOS, &initdosflag));
+  if (initdosflag)
+    strcpy(initdos, "-initdos");
+  if (strstr(path_name, ".") == NULL)
+  {
+    werr(0, lookup_token("full_path_please"));
+    toolbox_show_object(0,createdisc_window,0,0,0,0);
+    return(1);
+  }
+
+  r.r[0] = 5;
+  r.r[1] = (int)path_name;
+  raise_error(_kernel_swi(OS_File,&r,&r));
+  if(r.r[0] != 0)
+    ret = cancel_ok(lookup_token("file_exists"), "Overwrite,Cancel");
+  if (!ret)
+  {
+    toolbox_show_object(0,createdisc_window,0,0,0,0);
+    return(1);
+  }
+
+  system("Wimpslot -next 32k");
+  sprintf(cmd, "<PC_Config$Dir>.MkDOSDisc %s %d %s", path_name, size, initdos);
+  hourglass_on();
+  raise_error(wimp_start_task(cmd, &x));
+  hourglass_off();
+  var_read("Sys$ReturnCode", cmd);
+  if (cmd[0] == '0')
+  {
+    writablefield_set_value(0,discs_window,discs_last_disc_created,path_name);
+    if (discs_last_disc_created == DISCS_DRIVE_C_DISPLAY)
+      ensure_discs(1);
+    else
+      ensure_discs(2);
+  }
+}
+
+#endif

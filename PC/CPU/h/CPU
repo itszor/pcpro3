@@ -1,0 +1,40 @@
+/*
+*   DIVAPC C source
+*
+*   CPU.H.CPU  Header for CPU.C.CPU functions used elsewhere
+*
+*   Versions
+*
+*        20-03-95 INH  Original
+* 2.15 1997.10.14 RW   Moved CPU_Timerword here
+*      1998.09.06 MB   Added CPU_L2Cache
+*/
+
+/* Temporarily turn off L2 cache */
+extern bool CPU_L2Cache( bool on );
+
+/* Called from a handler function, stops CPU emulation immediately */
+extern void CPU_StopRun ( void );
+
+/* Called to indicate reset was successful */
+extern void CPU_ResetOK ( void );
+
+/* Request Bus Hold to the CPU */
+extern void CPU_BusRequest ( int mode, uint first, uint last );
+
+/* Translate address region - for use by DMA only */
+extern BYTE * CPU_PCtoARMaddr ( uint PCaddr );
+extern int    CPU_PCtoARMcheck ( uint PCaddr, int len );
+
+/* Traces IO Traps in CPUs */
+extern void CPU_TraceIO (int addr, int value, int mode);
+
+/* Called for VESA modes to divert video access to handlers or real memory */
+extern void CPU_FrameVideoAccess ( bool copy_on_switch );
+
+extern int *CPU_pTimerWord;
+
+
+
+
+

@@ -1,0 +1,8 @@
+extern int compare_versions(char *hic, char *illic);
+extern void size_archives(void);
+extern void do_scan_system(void);
+extern void do_set_install_flags(void);
+extern char *what_am_i(void);
+
+extern char netlinks_driver_namelist[];
+extern char *netlinks_driver_path[];

@@ -1,0 +1,703 @@
+/*
+ * PCConfig application
+ *
+ * Version: 0.46 Wed 23rd August 1995
+ *
+ * © Dean Murphy / Matthew Bloch
+ *
+ */
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+#include "debugit.h"
+
+#include "wimp.h"
+#include "toolbox.h"
+#include "gadgets.h"
+#include "event.h"
+#include "swis.h"
+#include "window.h"
+#include "menu.h"
+#include "wimplib.h"
+#include "dcs.h"
+#include "proginfo.h"
+
+#include "Discs.h"
+#include "Windows.h"
+#include "Utils.h"
+#include "Memory.h"
+#include "printing.h"
+#include "serial.h"
+#include "multicfg.h"
+#include "network.h"
+//#include "startup.h"
+#include "aspi.h"
+#include "switching.h"
+#include "booting.h"
+#include "saveconf.h"
+#include "loadconfig.h"
+
+#include "vars.h"
+#include "types.h"
+
+//#include "pcdbox.h"
+
+extern  ObjectId       iconbar_icon = 0,
+                       main_window = 0,
+                       discs_window = 0,
+                       createdisc_window = 0,
+                       printing_window = 0,
+                       serial_window = 0,
+                       windows_window = 0,
+                       //start_up_window = 0,
+                       aspi_window = 0,
+                       switching_window = 0,
+                       booting_window = 0,
+                       memory_window = 0,
+                       dcs_window = 0,
+                       //advanced_window = 0,
+                       adv_window = 0,
+                       network_window = 0,
+                       update_window = 0,
+                       proginfo_window = 0,
+                       addrename_window = 0;
+
+//extern  int            advanced_window_wimp = 0;
+
+extern  MessagesFD     messages = 0;
+
+extern  ComponentId    last_component = 0;
+
+extern  BOOL           still_running = TRUE; /* When this is true, the event poll loop will be terminated */
+
+//static  BOOL           advanced_config_loaded = FALSE;
+
+static  WimpPollBlock  poll_block;
+static  IdBlock        id_block;
+
+extern  options        config = 0;
+extern  options        tmp_config = 0;
+extern  options        def_config = 0;
+
+extern  BOOL           configuration_changed  = FALSE;
+extern  BOOL           window_title_updated   = FALSE;
+extern  BOOL           asked_to_quit          = FALSE;
+
+static  BOOL           update_window_open = FALSE;
+
+int null_event_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle);
+
+//int change_config_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+void raise_error (_kernel_oserror *e);
+
+/*
+ * Event handler to be called when toolbox event 1
+ * is generated (by click on the 'Quit' entry of
+ * the iconbar menu.
+ */
+
+int quit_event(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  event_code = event_code;
+  event = event;
+  id_block = id_block;
+  handle = handle;
+
+  if(configuration_changed)
+  {
+    asked_to_quit = TRUE;
+    dcs_set_message(0,dcs_window,lookup_token("dcs_quit"));
+    raise_error(toolbox_show_object(0,dcs_window,0,0,0,0));
+    return(1);
+  }
+  still_running = FALSE;
+  /*exit(0);*/
+  return(1);
+}
+
+int update_data_load_handler(WimpMessage *message, void *h)
+{
+  char f[256];
+
+  if (message->data.data_load.file_type != 0x2000)
+  /* Users this stupid don't deserve an error message */
+    return(1);
+
+  sprintf(f, "%s.Config", message->data.data_save_ack.leaf_name);
+  if (!file_exists(f))
+  {
+    werr(0,lookup_token("diva_empty"));
+    return(1);
+  }
+  raise_error(displayfield_set_value(0, update_window, UPDATE_PCPATH, message->data.data_save_ack.leaf_name));
+  raise_error(gadget_set_flags(0, update_window, UPDATE_CONVERT, 0));
+}
+
+int update_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  char b[256];
+
+  raise_error(displayfield_get_value(0, update_window, UPDATE_PCPATH, b, 256, NULL));
+  if (id_block->self_component == UPDATE_CONVERT)
+  {
+    multicfg_new_config_dir(b);
+    multicfg_reimport_all();
+  }
+  if (id_block->self_component == UPDATE_DEFAULT)
+    multicfg_new_config_dir(NULL);
+  multicfg_zero_last();
+  about_to_change_config = 0;
+  configuration_changed = FALSE;
+  multicfg_readlist();
+  raise_error(toolbox_show_object(0, iconbar_icon, 0, NULL, 0, 0));
+}
+
+int dcs_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  event_code = event_code;
+  event = event;
+  id_block = id_block;
+  handle = handle;
+
+  switch(event_code)
+  {
+    case DCS_Save:
+     build_configuration();
+    case DCS_Discard:
+     if (asked_to_quit)
+     {
+       still_running = FALSE;
+     }
+     else
+     {
+       configuration_changed = FALSE;
+       multicfg_change_config();
+     }
+     break;
+  }
+  asked_to_quit = FALSE;
+
+  return(1);
+}
+
+#define ADD    0
+#define RENAME 1
+static int addrename_status;
+
+void open_addrename(int add_or_rename)
+{
+  raise_error(stringset_get_selected(0,main_window,MAIN_CONFIGSEL,config.name,64,NULL));
+  raise_error(writablefield_set_value(0, addrename_window, ADDRENAME_NAME, config.name));
+  if (add_or_rename == ADD)
+  {
+    raise_error(actionbutton_set_text(0, addrename_window, ADDRENAME_OK, lookup_token("ar_add_action")));
+    raise_error(window_set_title(0, addrename_window, lookup_token("ar_add_title")));
+    addrename_status = ADD;
+  }
+  else
+  {
+    raise_error(actionbutton_set_text(0, addrename_window, ADDRENAME_OK, lookup_token("ar_rename_action")));
+    raise_error(window_set_title(0, addrename_window, lookup_token("ar_rename_title")));
+    addrename_status = RENAME;
+  }
+  raise_error(toolbox_show_object(0, addrename_window, Toolbox_ShowObject_AtPointer, NULL, 0, 0));
+}
+
+int addrename_do_it(void)
+{
+  char new[64];
+
+  raise_error(writablefield_get_value(0, addrename_window, ADDRENAME_NAME, new, 64, NULL));
+  raise_error(displayfield_set_value(0, main_window, MAIN_CONFIGNAME, new));
+
+  if (addrename_status == ADD)
+    do_multicfg_saveasnew(new);
+}
+
+int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+  switch (id_block->self_component)
+  {
+    case HARD_DISC_OPTIONS:
+    case HARD_DISC_OPTIONS_T:
+     setup_discs_window();
+    break;
+    case PC_CARD_MEMORY:
+    case PC_CARD_MEMORY_T:
+     setup_memory_window();
+    break;
+    case PRINTING_OPTIONS:
+    case PRINTING_OPTIONS_T:
+     setup_printing_window();
+    break;
+    case SERIAL_PORT_OPTIONS:
+    case SERIAL_PORT_OPTIONS_T:
+     setup_serial_window();
+    break;
+    case WINDOWS_VIDEO_OPTIONS:
+    case WINDOWS_VIDEO_OPTIONS_T:
+     setup_windows_window();
+    break;
+//    case START_UP_OPTIONS:
+//    case START_UP_OPTIONS_T:
+//     setup_start_up_window();
+//    break;
+    case ASPI_OPTIONS:
+    case ASPI_OPTIONS_T:
+     setup_aspi_window();
+    break;
+    case SWITCHING_OPTIONS:
+    case SWITCHING_OPTIONS_T:
+     setup_switching_window();
+    break;
+    case BOOT_OPTIONS:
+    case BOOT_OPTIONS_T:
+     setup_booting_window();
+    break;
+    case NETWORK_OPTIONS:
+    case NETWORK_OPTIONS_T:
+     setup_network_window();
+    break;
+    case ADVANCED_OPTIONS:
+    case ADVANCED_OPTIONS_T:
+     //open_advanced_configuration_window(0, NULL, NULL, NULL);
+     setup_adv_window();
+    break;
+    case MAIN_SAVEASNEW:
+     open_addrename(ADD);
+     //do_multicfg_saveasnew();
+    break;
+    case MAIN_RENAME:
+     open_addrename(RENAME);
+    break;
+    case MAIN_DELETE:
+     do_multicfg_delete();
+    break;
+    case MAIN_LAUNCH:
+     still_running = FALSE;
+     //raise_error(toolbox_hide_object(0, main_window));
+     system("Filer_Run <Diva$Dir>.!Run");
+    case MAIN_OK:
+     build_configuration();
+     multicfg_readlist();
+    break;
+  }
+  return(1);
+}
+
+int pointer_entering(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+  /*_swix(256+7,0);*/
+
+  /* Allow NULL events now */
+
+  event_set_mask(Wimp_Poll_KeyPressedMask             |
+                 Wimp_Poll_LoseCaretMask              |
+                 Wimp_Poll_GainCaretMask              |
+                 Wimp_Poll_PollWordNonZeroMask        |
+                 Wimp_Poll_UserMessageMask            |
+                 Wimp_Poll_UserMessageRecordedMask    |
+                 Wimp_Poll_UserMessageAcknowledgeMask
+                 );
+
+  //event_register_wimp_handler(-1, Wimp_ENull, null_event_handler, NULL);
+
+  return(1);
+}
+
+int pointer_leaving(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+  /*_swix(256+7,0);*/
+
+  /* Mask out NULL events again */
+
+  event_set_mask(Wimp_Poll_NullMask                   |
+                 Wimp_Poll_KeyPressedMask             |
+                 Wimp_Poll_LoseCaretMask              |
+                 Wimp_Poll_GainCaretMask              |
+                 Wimp_Poll_PollWordNonZeroMask        |
+                 Wimp_Poll_UserMessageMask            |
+                 Wimp_Poll_UserMessageRecordedMask    |
+                 Wimp_Poll_UserMessageAcknowledgeMask
+                 );
+
+  return(1);
+}
+
+int null_event_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+  int x,y,buttons;
+  ObjectId window;
+  ComponentId component;
+  WimpGetPointerInfoBlock p;
+
+  raise_error(wimp_get_pointer_info(&p));
+  //if(p.window_handle == advanced_window_wimp)
+  // return(1);
+
+  window_get_pointer_info(0,&x,&y,&buttons,&window,&component);
+
+  if(window != main_window)
+   return(1);
+
+  switch(component)
+  {
+    case HARD_DISC_OPTIONS:
+    case HARD_DISC_OPTIONS_T:
+    if(last_component != HARD_DISC_OPTIONS && last_component != HARD_DISC_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("disc_help"));
+    break;
+
+    case PC_CARD_MEMORY:
+    case PC_CARD_MEMORY_T:
+
+    if(last_component != PC_CARD_MEMORY && last_component != PC_CARD_MEMORY_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("ram_help"));
+    break;
+
+    case PRINTING_OPTIONS:
+    case PRINTING_OPTIONS_T:
+
+    if(last_component != PRINTING_OPTIONS && last_component != PRINTING_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("printing_help"));
+    break;
+
+    case SERIAL_PORT_OPTIONS:
+    case SERIAL_PORT_OPTIONS_T:
+
+    if(last_component != SERIAL_PORT_OPTIONS && last_component != SERIAL_PORT_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("serial_help"));
+    break;
+
+    case WINDOWS_VIDEO_OPTIONS:
+    case WINDOWS_VIDEO_OPTIONS_T:
+
+    if(last_component != WINDOWS_VIDEO_OPTIONS && last_component != WINDOWS_VIDEO_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("windows_help"));
+    break;
+
+/*    case START_UP_OPTIONS:
+    case START_UP_OPTIONS_T:
+
+    if(last_component != START_UP_OPTIONS && last_component != START_UP_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("start_help"));
+    break;*/
+
+    case SWITCHING_OPTIONS:
+    case SWITCHING_OPTIONS_T:
+
+    if(last_component != SWITCHING_OPTIONS && last_component != SWITCHING_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("switching_help"));
+    break;
+
+    case BOOT_OPTIONS:
+    case BOOT_OPTIONS_T:
+
+    if(last_component != BOOT_OPTIONS && last_component != BOOT_OPTIONS_T)
+      displayfield_set_value(0,main_window,0x25,lookup_token("boot_help"));
+    break;
+
+    default:
+
+    if(component != last_component)
+      displayfield_set_value(0,main_window,0x25,"");
+    break;
+  }
+
+  last_component = component;
+
+  return(1);
+
+}
+
+/*
+ * Message handler to be called on receipt of a
+ * Quit or PreQuit message from the Wimp.
+ */
+
+
+int quit_message(WimpMessage *message,void *handle)
+{
+  message = message;
+  handle = handle;
+  still_running = FALSE;
+  /*exit(0);*/
+  return(1);
+}
+
+int external_edit_message(WimpMessage *message, void *handle)
+{
+  char *new_path_name = message->data.bytes+4;
+  int   new_number = message->data.words[1];
+
+  if (message->data.words[0] != 0x100 || message->data.words[0] != 0x101)
+    return(1); /* Only this reason code requests an external edit */
+
+  if (message->data.words[0] == 0x100 && !file_exists(new_path_name))
+  {
+    werr(0, lookup_token("external_bad"));
+    return(1);
+  }
+
+  if (message->data.words[0] == 0x101)
+  {
+    about_to_change_config = new_number;
+  }
+  else
+  {
+    external_edit = 1;
+    strcpy(config_path_name, new_path_name);
+  }
+
+  multicfg_change_config();
+}
+
+int load_advanced_configuration_files(int event_code,ToolboxEvent  *event,IdBlock *id_block,void *handle)
+{/*
+  WimpGetWindowStateBlock bl;
+
+  bl.window_handle = advanced_window_wimp;
+
+  raise_error(wimp_get_window_state(&bl));
+
+  DEBUG debug_output("la","Visible area xmin = %d\n",bl.visible_area.xmin);
+  DEBUG debug_output("la","Visible area xmax = %d\n",bl.visible_area.xmax);
+  DEBUG debug_output("la","Visible area ymin = %d\n",bl.visible_area.ymin);
+  DEBUG debug_output("la","Visible area ymax = %d\n",bl.visible_area.ymax);
+
+  DEBUG debug_output("la","Scroll x = %d\n",bl.xscroll);
+  DEBUG debug_output("la","Scroll y = %d\n",bl.yscroll);
+
+  bl.xscroll = 0;
+  bl.yscroll = 688;
+  raise_error(wimp_open_window((WimpOpenWindowBlock *)&bl));
+  */
+
+  /*if(advanced_config_loaded)
+   return(1);
+  pcdbox_initialise();
+  advanced_config_loaded = TRUE;
+  return(1);*/
+}
+
+int main_data_load_handler(WimpMessage *message,void *handle)
+{
+    WimpGetPointerInfoBlock p;
+
+    raise_error(wimp_get_pointer_info(&p));
+    /*if(p.window_handle == advanced_window_wimp)
+    {
+      pcdbox_data_load_handler(message, handle);
+      return(1);
+    }
+    else
+    {*/
+      if (update_window_open)
+        update_data_load_handler(message, handle);
+      else
+        discs_data_load_handler(message, handle);
+      return(1);
+    //}
+}
+
+int set_version(int event_code,ToolboxEvent *event,IdBlock *id_block,void *handle)
+{
+    BOOL d = FALSE, m = FALSE;
+    _kernel_swi_regs r;r.r[0] = 129;r.r[1] = 205;r.r[2] = 0xff;_kernel_swi(OS_Byte, &r,&r);
+    if((r.r[1] == 0xff) && (r.r[2] == 0xff)) d = TRUE;r.r[0] = 129;r.r[1] = 154;r.r[2] = 0xff;
+    _kernel_swi(OS_Byte,&r,&r);if((r.r[1] == 0xff) && (r.r[2] == 0xff)) m = TRUE;
+    if(d && m) proginfo_set_version(0,proginfo_window,"Written by Dean Murphy"); else
+    raise_error(proginfo_set_version(0,proginfo_window,lookup_token("Ver"))); return(1);
+}
+
+void launch_help(void)
+{
+  int x;
+
+  raise_error(wimp_start_task("Resources:$.Apps.!Help", &x));
+}
+
+void read_default_config(void)
+{
+  IdBlock fake;
+
+  fake.self_component = ADV_OK;
+  adv_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = ASPI_OK;
+  aspi_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = BOOTING_OK;
+  booting_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = DISCS_OK;
+  discs_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = MEMORY_OK;
+  memory_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = NETWORK_OK;
+  network_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = PRINTING_OK;
+  printing_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = SERIAL_OK;
+  serial_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = SWITCHING_OK;
+  switching_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+  fake.self_component = WINDOWS_OK;
+  windows_window_click_handler(ActionButton_Selected, NULL, &fake, NULL);
+
+  def_config = config;
+}
+
+int main()
+{
+    int    toolbox_events = 0,
+           wimp_messages = 0,
+           event_code;
+    char   b[256];
+
+    //itemlist = 0;
+
+
+    DEBUG debug_set_var_name("pc_config$debug");
+
+    DEBUG debug_output("main","This is a test, PC Config starting\n");
+
+    /*
+     * register ourselves with the Toolbox.
+     */
+
+    raise_error(toolbox_initialise (0, WimpVersion, &wimp_messages, &toolbox_events, "<PC_Config$Dir>",
+                        &messages, &id_block, 0, 0, 0));
+
+    raise_error(toolbox_create_object(0,"Iconbar",&iconbar_icon));
+    raise_error(toolbox_create_object(0,"Main",&main_window));
+
+#if DISCS
+    raise_error(toolbox_create_object(0,"Discs",&discs_window));
+#endif
+#if DISCS_1
+    raise_error(toolbox_create_object(0,"Discs_1",&discs_window));
+#endif
+#if DISCS_2
+    raise_error(toolbox_create_object(0,"Discs_1",&discs_window));
+#endif
+    raise_error(toolbox_create_object(0,"CreateDisc",&createdisc_window));
+    raise_error(toolbox_create_object(0,"ProgInfo",&proginfo_window));
+    raise_error(toolbox_create_object(0,"Serial",&serial_window));
+    raise_error(toolbox_create_object(0,"Windows",&windows_window));
+    raise_error(toolbox_create_object(0,"Printing",&printing_window));
+    //raise_error(toolbox_create_object(0,"Start",&start_up_window));
+    raise_error(toolbox_create_object(0,"SCSI",&aspi_window));
+    raise_error(toolbox_create_object(0,"Switching",&switching_window));
+    raise_error(toolbox_create_object(0,"Booting",&booting_window));
+    raise_error(toolbox_create_object(0,"Memory",&memory_window));
+    raise_error(toolbox_create_object(0,"DCS",&dcs_window));
+    raise_error(toolbox_create_object(0,"Adv",&adv_window));
+    raise_error(toolbox_create_object(0,"Network",&network_window));
+    raise_error(toolbox_create_object(0,"Update",&update_window));
+    raise_error(toolbox_create_object(0,"AddRename",&addrename_window));
+
+    //raise_error(window_get_wimp_handle(0,advanced_window,&advanced_window_wimp));
+
+
+    /*setup_advanced_window();*/
+
+    /*
+     * initialise the event library.
+     */
+
+    raise_error(event_initialise (&id_block));
+
+    raise_error(event_set_mask(Wimp_Poll_NullMask                   |
+                               Wimp_Poll_KeyPressedMask             |
+                               Wimp_Poll_LoseCaretMask              |
+                               Wimp_Poll_GainCaretMask              |
+                               Wimp_Poll_PollWordNonZeroMask        |
+                               Wimp_Poll_UserMessageMask            |
+                               Wimp_Poll_UserMessageRecordedMask    |
+                               Wimp_Poll_UserMessageAcknowledgeMask |
+                               0x44681 /* External edit message */
+                               ));
+
+    raise_error(event_register_toolbox_handler(-1,0x82a91,quit_event,0));
+    raise_error(event_register_message_handler(Wimp_MQuit,quit_message,0));
+    raise_error(event_register_message_handler(Wimp_MPreQuit,quit_message,0));
+    raise_error(event_register_message_handler(0x44681,external_edit_message,0));
+
+    raise_error(event_register_wimp_handler(-1,Wimp_EPointerEnteringWindow,pointer_entering,0));
+    raise_error(event_register_wimp_handler(-1,Wimp_EPointerLeavingWindow,pointer_leaving,0));
+    raise_error(event_register_toolbox_handler(createdisc_window, Draggable_DragEnded, dragended_handler, NULL));
+
+    raise_error(event_register_wimp_handler(main_window,Wimp_EMouseClick,click_handler,0));
+    raise_error(event_register_toolbox_handler(addrename_window,ActionButton_Selected,(ToolboxEventHandler*)addrename_do_it,0));
+
+
+    raise_error(event_register_toolbox_handler(dcs_window,-1,dcs_handler,0));
+/*    raise_error(event_register_toolbox_handler(dcs_window,DCS_Discard,dcs_handler,0));
+    raise_error(event_register_toolbox_handler(dcs_window,DCS_Save,dcs_handler,0));
+    raise_error(event_register_toolbox_handler(dcs_window,DCS_Cancel,dcs_handler,0));*/
+
+    /*raise_error(event_register_message_handler(Wimp_MDataSaveAck, discs_data_save_handler, 0));*/
+    raise_error(event_register_message_handler(Wimp_MDataSaveAck, data_saveack_handler, 0));
+    raise_error(event_register_message_handler(Wimp_MDataLoad, main_data_load_handler, 0));
+
+    //raise_error(event_register_toolbox_handler(-1,0x50,load_advanced_configuration_files,0));
+    //raise_error(event_register_toolbox_handler(-1,0x90,open_advanced_configuration_window,0));
+    raise_error(event_register_toolbox_handler(-1,0xFC8,create_fc8_handler,0));
+    raise_error(event_register_wimp_handler(main_window, MAIN_HELP, (WimpEventHandler*) launch_help, NULL));
+
+    raise_error(event_register_toolbox_handler(proginfo_window,ProgInfo_AboutToBeShown,set_version,0));
+
+    raise_error(event_register_toolbox_handler(update_window, ActionButton_Selected, update_window_click_handler, 0));
+
+    do_windows_initialise();
+    do_memory_initialise();
+    do_discs_initialise();
+    do_printing_initialise();
+    do_serial_initialise();
+    do_network_initialise();
+    //do_start_up_initialise();
+    //do_aspi_initialise();
+    do_switching_initialise();
+    do_booting_initialise();
+    //pcdbox_initialise(); advanced_config_loaded = TRUE;
+    do_adv_initialise();
+    read_default_config(); /* defaults stored in Res file */
+    if (do_multicfg_initialise())
+      raise_error(toolbox_show_object(0,iconbar_icon,0,NULL,0,0));
+    else
+    {
+      update_window_open = TRUE; /* for the main DataLoad handler */
+      raise_error(toolbox_show_object(0,update_window,3,NULL,0,0));
+    }
+
+    if (!file_exists("<PC_Config$Dir>.^.!PC.PCBits.Netlinks.Startup") &&
+        !file_exists("<Diva$Dir>.PCBits.Netlinks.Startup"))
+    {
+      gadget_set_flags(0, main_window, NETWORK_OPTIONS, 1<<31);
+      gadget_set_flags(0, main_window, NETWORK_OPTIONS_T, 1<<31);
+    }
+
+    if (do_aspi_initialise() ||
+        (!file_exists("<PC_Config$Dir>.^.!PC.PCBits.ARMASPI.Startup") &&
+         !file_exists("<Diva$Dir>.PCBits.ARMASPI.Startup"))
+       )
+    {
+      gadget_set_flags(0, main_window, ASPI_OPTIONS, 1<<31);
+      gadget_set_flags(0, main_window, ASPI_OPTIONS_T, 1<<31);
+    }
+
+    broadcast_pc_message(0x44681, 0, config_dir); /* See 'Protocol' file */
+
+/*    if(!load_config_file())
+      still_running = FALSE;*/
+
+    /*
+     * poll loop
+     */
+
+    while (still_running)
+    {
+        event_poll (&event_code, &poll_block, 0);
+    }
+    broadcast_pc_message(0x44681, 1, config_dir); /* See 'Protocol' file */
+}

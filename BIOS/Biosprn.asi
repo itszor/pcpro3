@@ -1,0 +1,336 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSPRN.ASI	BIOS Printer Services
+;
+; Versions
+; 0.1	12-08-91 INH	Original
+;	07-07-92	timeout bug fix
+;	13-07-92	AL preserved as well
+;	02-02-93	Preserve regs for invalid DX values
+;	26-03-93	Initialise 4 bytes in PRN_timetbl
+;	06-12-93	Print-screen routine
+;	27-01-94	Limit to 3 printers for XDataSeg
+; *****************************************************************
+
+LPT_Timeout_Err	EQU	01H
+LPT_IO_Err	EQU	08H
+
+PRN_Init PROC NEAR
+
+	CLI
+
+	MOV	word ptr [PRN_timetbl], 0C0Ch	; Set timeout value
+	MOV	word ptr [PRN_timetbl+2], 0C0Ch	; for all printers
+
+	AND	[SYS_equipmt], 03FFFH		; Adjust equipment word:
+						; start with 0 printers
+
+	; Set up port addresses according to CMOS RAM configuration
+
+	MOV	SI, IO_LPT1_Base		; 1st port base into SI
+	MOV	DI, IO_LPT2_Base		; 2nd port base into DI
+
+	RDCMOS	CMOS_iocfg
+
+	TEST	AL, 2				; Are ports reversed?
+	JZ	PRN_I1
+	XCHG	SI, DI				; Swap ports if so
+PRN_I1:
+
+	MOV	BX, offset PRN_porttbl
+	MOV	DX, SI				; 1st LPT port
+	CALL	TestPRNport			; does it work?
+	JC	PRN_NoLPT1
+
+	ADD	[SYS_equipmt], 04000H		; Indicate one more printer
+	MOV	[BX], SI
+	ADD	BX, 2
+PRN_NoLPT1:
+
+	MOV	DX, DI				; 2st LPT port
+	CALL	TestPRNport			; does it work?
+	JC	PRN_NoLPT2
+
+	ADD	[SYS_equipmt], 04000H		; Indicate one more printer
+	MOV	[BX], DI
+PRN_NoLPT2:
+
+	STI
+
+	MOV	AH, 1				; Reset 1st printer
+	MOV	DX, 0
+	INT	017H
+
+	MOV	AH, 1				; Reset 2nd printer
+	MOV	DX, 1
+	INT	017H
+
+	RET	
+
+PRN_Init ENDP
+
+; TestPRNport -----------------------------------------------
+
+; This is the subject of a bit of controversy. It doesn't seem
+; to work if you have a ?Canon Bubblejet? plugged in.
+; 08-Nov-94: Tests 100 times
+; 29-Nov-94: Tests for non-FF value - should allow *anything* !
+
+TestPRNport PROC NEAR		; Quick 'n' dirty check to see if an LPT
+				; port is there: DX = port base
+	ADD	DX, LPT_Control	; Address Control register
+	MOV	AL, 0Ch		; Set default line configuration
+	OUT	DX, AL
+	MOV	CX, 20		; Should be enough goes!
+TPP_Loop:
+	IOWAIT
+	IOWAIT
+	IN	AL, DX
+	CMP	AL, 0FFh	; Is it (a) emulated & (b) nothing there
+	JE	TPP_NoPort	; If so, exit
+	LOOP	TPP_Loop
+	CLC
+	RET
+
+TPP_NoPort:
+	STC
+	RET
+
+TestPRNport ENDP
+
+; INT 17H interrupt ************************************************
+
+PRN_Int	PROC FAR
+	STI
+	PUSH	DS
+	PUSH	BX
+	PUSH	CX
+	PUSH	DX
+	PUSH	AX
+
+	MOV	DS, CS:DataSeg@
+
+	CMP	DX,2			; Up to 3 ports in porttbl[]
+	JA	prn_err
+
+	MOV	BX, DX			; CL holds timeout value
+	MOV	CL, PRN_timetbl[BX]
+	ADD	BX, DX			; BX holds port address
+	MOV	BX, PRN_porttbl[BX]
+	CMP	BX, 0
+	JE	prn_err			; If no printer, error
+
+	CMP	AH,1
+	JB	prn_write
+	JE	prn_reset
+	CMP	AH, 2
+	JNE	prn_err
+
+prn_status:
+	MOV	CH, 0
+prn_statCH:				; CH = 1 if timeout
+	INBX	LPT_Status
+	AND	AL,0F8H
+	XOR	AL,048H
+	OR	CH,AL			; CH holds printer status
+prn_exit:
+	POP	AX
+	MOV	AH, CH
+	POP	DX
+	POP	CX
+	POP	BX
+	POP	DS
+	IRET
+
+prn_err:
+	MOV	CH, AH			;On error - preserve regs
+	JMP	prn_exit
+
+; Initialise printer ********************************************
+
+prn_reset:
+	MOV	AL, 08H			;Put reset bit low
+	OUTBX	LPT_Control
+
+	
+	MOV	CX, 02000H		;Wait for a few ms
+prn_r1:	LOOP	prn_r1
+
+	MOV	AL, 0CH			;Put it back high again
+	OUT	DX, AL
+	JMP	prn_status
+
+; Write Char to Printer *****************************************
+
+prn_write:
+	MOV	DX, BX
+	ADD	DX, LPT_Status
+
+	MOV	CH, 080H		;Put ready bit in CH
+	CALL	Port_Wait
+	JNE	prn_timeout		;If OK, send char
+
+	OUTBX	LPT_Data		;Set up data on data bus
+	IOWAIT
+
+	MOV	AL, 0DH			;Then issue strobe pulse
+	OUTBX	LPT_Control
+	IOWAIT
+
+	MOV	AL, 0CH			;Put strobe low
+	OUT	DX, AL
+	IOWAIT
+	JMP	prn_status
+
+prn_timeout:
+	MOV	CH, LPT_Timeout_Err
+	JMP	prn_statCH
+
+PRN_Int	ENDP
+
+
+; Port_Wait routine ***********************************************
+
+; Polls the port indicated by DX for the bits indicated in CH to
+; become set, within the time limit given by CL (in units of 16 ticks).
+; Exits with Z flag set if successful, otherwise NZ.
+; All regs preserved.
+
+Port_Wait	PROC	NEAR
+
+	PUSH	AX
+	PUSH	BX
+
+	MOV	BX, [TIC_daytime]	; BX holds time at start
+
+PWait_loop:
+	IN	AL, DX
+	AND	AL, CH			; Test bits
+	CMP	AL, CH
+	JE	wait_over
+
+	MOV	AX, [TIC_daytime]	; Set AX = number of ticks
+	SUB	AX, BX			; since start
+
+	SHR	AX,4			; Convert AX to seconds nearly
+
+	CMP	AL, CL			; Compare to given limit
+
+	JB	PWait_loop		; If below, try again
+					; Else fail..
+	OR	AL, 1			; Clear Z flag
+
+wait_over:
+	POP	BX
+	POP	AX
+	RET
+
+Port_Wait	ENDP
+
+
+; Print Screen routine ---------------------------------------------
+
+; Dumps the screen to LPT1
+
+PRN_PrintScreen PROC FAR
+	PUSHA
+	PUSH	DS
+	MOV	DS, CS:DataSeg@
+
+	MOV	AL, 1			; Already in progress?
+	XCHG	AL, PRN_ScreenLock
+	CMP	AL, 1			; If so, exit
+	JE	PRN_PS_Exit
+
+	STI
+
+	; Save cursor position -----
+
+	MOV	AH, 03h
+	INT	10h
+	PUSH	DX
+
+	; Check printer status -----
+	MOV	AH, 2
+	MOV	DX, 0
+	INT	17h
+
+	CMP	AH, 2			; No LPT1?
+	JE	PRN_PS_Error
+	XOR	AH, 80h
+	TEST	AH, 0A8h		; Busy/Paper/IO error?
+	JNZ	PRN_PS_Error		; If so, exit with error
+
+	; Get chars from screen: DX is position counter --------
+
+	MOV	CH, 0
+
+PRN_PS_Row:
+	MOV	CL, 0
+
+PRN_PS_Char:
+	MOV	AH, 02h			; Set cursor position
+	MOV	BH, VID_actpage
+	MOV	DX, CX
+	INT	10h
+	MOV	AH, 08h			; Read char. at cursor pos.
+	INT	10h
+	CMP	AL, 0			; If zero or non-char,
+	JNZ	PRN_PS_C1		; print a space.
+	MOV	AL, ' '
+PRN_PS_C1:
+
+	; Print char in AL ------------------
+
+	MOV	AH, 0
+	MOV	DX, 0
+	INT	17h			; Print to LPT1
+	TEST	AH, 29h			; Any errors?
+	JNE	PRN_PS_Error
+
+	; Next column ----------
+
+	INC	CL
+	CMP	CL, byte ptr VID_ncols
+	JB	PRN_PS_Char
+
+	; Next row : send CRLF ------
+
+	MOV	AX, 000Dh
+	MOV	DX, 0
+	INT	17h
+	TEST	AH, 29h
+	JNE	PRN_PS_Error
+	MOV	AX, 000Ah
+	INT	17h
+	TEST	AH, 29h
+	JNE	PRN_PS_Error
+
+	; All done?
+
+	INC	CH
+	CMP	CH, VID_lastrow
+	JBE	PRN_PS_Row
+	MOV	BL, 0
+	JMP	short PRN_PS_End
+
+	; Restore cursor position --
+
+PRN_PS_Error:
+	MOV	BL, 0FFh
+PRN_PS_End:
+	POP	DX
+	MOV	AH, 2
+	INT	10h
+
+	CLI
+	MOV	PRN_ScreenLock, BL
+PRN_PS_Exit:
+	POP	DS
+	POPA
+	IRET
+PRN_PrintScreen ENDP
+
+

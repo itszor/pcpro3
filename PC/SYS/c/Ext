@@ -1,0 +1,44 @@
+/*
+*
+*     SYS.C.license - functions for decoding license file
+*
+*      1998.06.01  MB  Original
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.ext"
+
+int SYS_SerialNumber=0;
+
+static int ext[64];
+
+extern bool EXT_Init(void)
+{
+  int  x;
+  FILE *fh;
+
+  fh = fopen("<Diva$Dir>.Ext", "rb");
+  if (fh == NULL)
+  {
+    SYS_error(1, "extprob");
+    return(0);
+  }
+  fread(ext, 1, 256, fh);
+  fclose(fh);
+  /*srand(SYS_SerialNumber);
+  for (x=0; x!=64; x++)
+    ext[x] = ext[x] ^ rand();*/
+}
+
+extern void EXT_Find(int *code)
+{
+  int  x, o;
+
+  o=*code;
+  for (x=0; x!=64 && *code != 0; x++)
+    *code = ext[x] ^ o;
+}

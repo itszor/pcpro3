@@ -1,0 +1,17 @@
+/*
+ * Name   : Memory.h
+ * Desc   : Handlers for Memory component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 31-May-1995
+ */
+
+#ifndef __memory_h
+#define __memory_h
+
+extern void setup_memory_window(void);
+extern void update_memory_window(void);
+extern void do_memory_initialise(void);
+extern int  memory_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+extern int  memory_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

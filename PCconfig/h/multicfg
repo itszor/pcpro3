@@ -1,0 +1,11 @@
+#include "toolbox.h"
+#include "types.h"
+
+extern BOOL do_multicfg_initialise(void);
+extern void do_multicfg_saveasnew(char *newname);
+extern void do_multicfg_delete(void);
+extern void multicfg_zero_last(void);
+extern void multicfg_reimport_all(void);
+extern void multicfg_change_config(void);
+extern void multicfg_read_list(void);
+extern void multicfg_new_config_dir(char *import_config_dir);

@@ -1,0 +1,52 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "kernel.h"
+#include "wimplib.h"
+
+#include "misc.h"
+#include "create.h"
+
+void werr(int fatal, char* format, ...)
+{
+   va_list va;
+   _kernel_oserror e;
+   e.errnum = 0;
+   va_start(va, format);
+   vsprintf(&e.errmess[0], format, va);
+   va_end(va);
+   wimp_report_error(&e, 0, "MkDOSDisc");
+}
+
+int err(char *msg)
+{
+  char wimp_state[256];
+  
+  var_read("Wimp$State", wimp_state);
+  if (strcmp(wimp_state, "commands") == 0)
+    printf(msg);
+  else
+    werr(0, msg);
+  exit(1);
+  return(0);
+}
+
+void exitproc(void)
+{
+  disable_escape(0);
+}
+
+int main(int argc, char *argv[])
+{
+  disable_escape(1);
+  atexit(exitproc);
+  if (argc < 3 || argc > 4 || (argc == 4 && strcmp(argv[3], "-initdos") != 0))
+    err("Syntax: MkDOSDisc <filename> <size> [-initdos]\n<size> is specified in Mb\n");
+  
+  if (argc == 4)
+    return(!CreateDisk(argv[1], atoi(argv[2]), TRUE));
+  else
+    return(!CreateDisk(argv[1], atoi(argv[2]), FALSE));
+}

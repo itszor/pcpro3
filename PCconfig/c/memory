@@ -1,0 +1,134 @@
+/*
+ * PCConfig application
+ *
+ * Version: 0.46 Wed 23rd August 1995
+ *
+ * © Dean Murphy
+ */
+#include "kernel.h"
+#include "stdio.h"
+#include "stdlib.h"
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "swis.h"
+#include "utils.h"
+#include "vars.h"
+#include "debugit.h"
+
+#include "memory.h"
+#include "miscfile.h"
+
+int memory_steps[16] = {1,2,3,4,5,6,7,8,10,12,14,16,20,24,28,32};
+
+void setup_memory_window(void)
+{
+  update_memory_window();
+  toolbox_show_object(0,memory_window,0,0,0,0);
+}
+
+static int memory_window_vram_adjust(void);
+
+void do_memory_initialise(void)
+{
+  /*config.memory.memory_allocated = 2;*/
+  raise_error(event_register_toolbox_handler(memory_window,NumberRange_ValueChanged,memory_window_handler,0));
+  raise_error(event_register_toolbox_handler(memory_window,ActionButton_Selected, memory_window_click_handler,0));
+  raise_error(event_register_toolbox_handler(memory_window,StringSet_ValueChanged, (ToolboxEventHandler*)memory_window_vram_adjust,0));
+  raise_error(event_register_toolbox_handler(memory_window,OptionButton_StateChanged, (ToolboxEventHandler*)memory_window_vram_adjust,0));
+
+  update_memory_window();
+}
+
+void update_memory_window(void)
+{
+  _kernel_swi_regs r;
+  int temp =0;
+
+  char buffer[10];
+
+  while(config.memory.memory_allocated != memory_steps[temp++] && temp <= 15);
+  /*config.memory.memory_allocated = --temp;*/
+  DEBUG debug_output("memory","temp = %d\n",temp);
+  /*raise_error(numberrange_set_value(0,memory_window,MEMORY_MEMORY_TO_ALLOCATE,--temp));*/
+
+  /* Update writable icon with current configured value */
+
+  sprintf(buffer,"%d\0",config.memory.memory_allocated);
+  raise_error(stringset_set_selected(0,memory_window,MEMORY_USER_SELECTED,buffer));
+  /*raise_error(writablefield_set_value(0,memory_window,MEMORY_USER_ALLOCATED,buffer));*/
+  raise_error(numberrange_set_value(0,memory_window,MEMORY_DISPLAY_MIN,config.memory.display_min));
+  raise_error(optionbutton_set_state(0,memory_window,MEMORY_INCLUDEVRAM,config.memory.includevram));
+
+  raise_error(_kernel_swi(OS_ReadMemMapInfo,&r,&r));
+  sprintf(buffer,"%d\0",(r.r[0]*r.r[1])/1024/1024);
+  raise_error(displayfield_set_value(0,memory_window, MEMORY_MEMORY_AVAILABLE,buffer));
+
+  r.r[0] = -1;
+  r.r[1] = -1;
+  raise_error(_kernel_swi(Wimp_SlotSize,&r,&r));
+
+  sprintf(buffer,"%d\0",r.r[2]/1024/1024);
+  raise_error(displayfield_set_value(0,memory_window, MEMORY_EXISTING_MEMORY,buffer));
+  memory_window_vram_adjust();
+
+}
+
+int memory_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  char buffer[4];
+  NumberRangeValueChangedEvent *ev = (NumberRangeValueChangedEvent *)event;
+
+  tmp_config.memory.memory_allocated = memory_steps[ev->new_value];
+
+  sprintf(buffer,"%d",tmp_config.memory.memory_allocated); /*ev->new_value);*/
+  raise_error(writablefield_set_value(0,memory_window,MEMORY_USER_ALLOCATED,buffer));
+  return(1);
+}
+
+int memory_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+
+  if(id_block->self_component == MEMORY_OK)
+  {
+      int diff = 255,count = 0,nearest = 0;
+      char buffer[20];
+      /*raise_error(writablefield_get_value(0,memory_window,MEMORY_USER_ALLOCATED,buffer,20,0));*/
+      raise_error(stringset_get_selected(0,memory_window,MEMORY_USER_SELECTED,buffer,20,NULL));
+      tmp_config.memory.memory_allocated = atoi(buffer);
+      raise_error(optionbutton_get_state(0,memory_window,MEMORY_INCLUDEVRAM,&tmp_config.memory.includevram));
+      raise_error(numberrange_get_value(0,memory_window,MEMORY_DISPLAY_MIN,&tmp_config.memory.display_min));
+
+      /* Find nearest legal memory allocation */
+      for(count = 0; count <= 15; count++)
+      {
+        if(memory_steps[count] - tmp_config.memory.memory_allocated < diff)
+        {
+          diff = memory_steps[count] - tmp_config.memory.memory_allocated;
+          if(diff<0)
+           diff = -diff;
+          nearest = count;
+        }
+      }
+      tmp_config.memory.memory_allocated = memory_steps[nearest];
+      DEBUG debug_output("memory","memory = %d, count = %d\n",tmp_config.memory.memory_allocated,nearest);
+
+      check_for_modified_data((int)&config.memory, (int)&tmp_config.memory, sizeof(config.memory));
+      config.memory = tmp_config.memory;
+  }
+
+  return(1);
+}
+
+static int memory_window_vram_adjust(void)
+{
+  char buffer[20];
+  int  ram, inc_vram;
+
+  raise_error(stringset_get_selected(0, memory_window, MEMORY_USER_SELECTED, buffer, 20, NULL));
+  ram = atoi(buffer);
+  raise_error(optionbutton_get_state(0, memory_window, MEMORY_INCLUDEVRAM, &inc_vram));
+  if (inc_vram) ram -= vram_size()>>20;
+  sprintf(buffer, "%d", ram);
+  raise_error(displayfield_set_value(0, memory_window, MEMORY_DISPLAY_ACTUAL, buffer));
+}

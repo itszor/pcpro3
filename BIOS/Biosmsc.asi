@@ -1,0 +1,288 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSMSC.ASI	BIOS Miscellaneous Routines
+;
+; Versions
+; 0.1	16-08-91 INH	Original
+;			Boot loader added
+; 1.11	01-04-93	Tries floppy 3 times
+; 1.23  24-11-93	Disable-floppy-boot bit in CMOS RAM
+;	20-06-94	MSC_SendCR added
+;     1998-03-19 MB     Only tries to reboot 3 times before halting
+; *****************************************************************
+
+; System routines called by other BIOS modules *********************
+
+; MSC_InstallVec routine *******************************************
+
+; BX points to an array of 4-byte entries of the form
+; Int vector number (word), Int vector address (word)
+; ending with Int vector number = 0FFFFH
+
+MSC_InstallVec	PROC NEAR
+
+	PUSH	DS		; Address Int vector table in low RAM
+	MOV	AX, 0
+	MOV	DS, AX
+
+MSC_IV_1:
+	MOV	SI, CS:[BX]
+	CMP	SI, 0FFFFH
+	JE	MSC_IV_Exit
+	MOV	AX, CS:[BX+2]
+
+	SHL	SI, 2
+	MOV	[SI], AX
+	MOV	[SI+2], CS
+
+	ADD	BX, 4
+	JMP	MSC_IV_1
+
+MSC_IV_Exit:
+	POP	DS
+	RET
+
+MSC_InstallVec	ENDP
+
+
+; MSC_MultiOut routine *********************************************
+
+; Sends a sequence of bytes to output ports
+; BX points to an array of 3-byte entries in the form
+; Port (word), Data (byte). The Data is sent to the given port,
+; ending when the port value if 0FFFFH
+
+MSC_MultiOut	PROC NEAR
+
+	MOV	DX, CS:[BX]
+	CMP	DX, 0FFFFH
+	JE	MSC_MO_Exit
+
+	MOV	AL, CS:[BX+2]
+	OUT	DX, AL
+	ADD	BX, 3
+	JMP	MSC_MultiOut
+
+MSC_MO_Exit:
+	RET
+
+MSC_MultiOut	ENDP
+
+; MSC_SendCR routine ***********************************************
+
+MSC_SendCR	PROC NEAR
+	MOV	SI, offset CS:MSC_CRLF
+	JMP	short MSC_SendMsg
+MSC_SendCR	ENDP
+
+MSC_CRLF	DB	13, 10, 0
+
+; MSC_SendMsg routine **********************************************
+
+; This is entered with CS:SI pointing to a null-terminated ASCII
+; string - it will display the result on the screen using INT 10h
+; video services. All regs preserved except SI (& poss DI)
+
+MSC_SendMsg	PROC	NEAR
+	PUSH	AX
+	PUSH	BX
+
+MSC_SM_loop:
+	MOV	AL, CS:[SI]
+	CMP	AL, 0
+	JE	MSC_SM_exit
+
+	MOV	AH, 0EH
+	MOV	BX, 07H
+	INT	10H
+	INC	SI
+	JMP	short MSC_SM_loop
+
+MSC_SM_exit:
+	POP	BX
+	POP	AX
+
+	RET
+
+MSC_SendMsg	ENDP
+
+; MSC_SendNum routine ******************************************
+
+; This is entered with an unsigned number in AX to be diplayed
+; (without leading zeros) on the screen
+
+; Also included is MSC_SendHex which displays a hex number as 4 digits
+; (including leading zeros)
+
+; All regs are preserved
+
+MSC_SendNum	PROC NEAR
+
+	PUSH	AX
+	PUSH	BX
+	PUSH	DX
+	PUSH	SI
+
+	MOV	SI, offset CS:SendNtbl
+
+MSC_SN_Skip0:
+	MOV	BX, CS:[SI]
+	CMP	AX, BX
+	JAE	MSC_SN_DoDigit
+	CMP	BX, 1
+	JE	MSC_SN_DoDigit
+
+	ADD	SI, 2
+	JMP	MSC_SN_Skip0
+
+MSC_SN_DoDigit:				;At this point, SI points to the
+					;table entry for the power of
+					;10 appropriate for this digit, BX
+					;holds the value at [SI], AX holds
+					;what's left of the number to be
+					;displayed
+
+	MOV	DX, 0			;Get current digit's value into AX
+	DIV	BX			;remainder into DX
+
+	MOV	BX, offset CS:SendCTbl	;Convert digit to ASCII and
+	XLAT	CS:[BX]
+	MOV	AH, 0EH			;display it
+	MOV	BX, 07H
+	INT	10H
+
+	MOV	AX, DX
+	ADD	SI, 2
+	MOV	BX, CS:[SI]
+	CMP	BX, 0
+	JNE	MSC_SN_DoDigit
+
+	POP	SI
+	POP	DX
+	POP	BX
+	POP	AX
+
+	RET
+
+SendNtbl	DW 10000, 1000, 100, 10, 1, 0
+SendHtbl	DW 01000H, 0100H, 010H, 1, 0
+SendCtbl	DB '0123456789ABCDEF'
+
+MSC_SendNum	ENDP
+
+
+MSC_SendHex	PROC	NEAR
+
+	PUSH	AX
+	PUSH	BX
+	PUSH	DX
+	PUSH	SI
+
+	MOV	SI, offset CS:SendHtbl
+	MOV	BX, CS:[SI]
+	JMP	MSC_SN_DoDigit
+
+MSC_SendHex	ENDP
+
+; General delay routine ******************************************
+
+; Timer must be running!!
+; CX = no. of ticks to wait
+; All regs preserved
+
+MSC_MidDelay PROC NEAR		; Waits for CX ticks
+
+	PUSH	AX
+	PUSH	BX
+
+	MOV	BX, [TIC_daytime]	; BX holds time at start
+
+MDly_loop:
+
+	MOV	AX, [TIC_daytime]	; Set AX = number of ticks
+	SUB	AX, BX			; since start
+	CMP	AX, CX			; Compare to given limit
+
+	JB	MDly_loop		; If below, try again
+
+	POP	BX
+	POP	AX
+	RET
+
+
+MSC_MidDelay ENDP
+
+
+; OS Boot loader *************************************************
+
+MSC_BootInt	PROC FAR
+
+	RDCMOS  CMOS_gencfg
+	TEST	AL, 2			; CMOS_gencfg bit 2 is
+	JNZ	MSC_BI_NoFloppy
+
+	MOV	CX, 65535			; 3 attempts at booting
+MSC_BootLoop:
+	MOV	DL, 0h				;Try floppy first
+	MOV	SI, offset CS:FDBoot_msg
+	CALL	MSC_TryBoot
+
+	MOV	DL, 0h				;Try again
+	MOV	SI, offset CS:FDBoot_msg
+	CALL	MSC_TryBoot
+
+MSC_BI_NoFloppy:				;Try hard disk
+	MOV	DL, 80h
+	MOV	SI, offset CS:HDBoot_msg
+	CALL	MSC_TryBoot
+
+	INT	18h				;Go to BASIC if poss
+	MOV	SI, offset CS:NoBoot_msg
+	CALL	MSC_SendMsg
+	LOOP	MSC_BootLoop			;Retry (from floppy even
+						;if disabled)
+	MOV	SI, offset CS:GiveUpBoot_msg
+	CALL	MSC_SendMsg
+MSC_BI_stophere:
+	JMP	MSC_BI_stophere
+
+MSC_BootInt	ENDP
+
+MSC_TryBoot	PROC NEAR
+
+	LES	BX, CS:BootPtr
+
+	MOV	AX, 0201H		; Read 1 sector
+	MOV	CX, 0001H		; Track 0 Sector 1
+	MOV	DH, 0			; Head 0
+
+	INT	13h			;
+	CMP	AH, 06h			; Disk changed?
+	JE	MSC_TryBoot		; If so, do it again.
+	CMP	AX, 0001H		; Is status OK, read 1 sector?
+	JNE	MSC_TB_Fail
+	CMP	word ptr ES:[BX + 01FEh], 0AA55h
+	JNE	MSC_TB_Fail
+
+	CALL	MSC_SendMsg
+
+	MOV	SS, CS:Boot_SS
+	MOV	SP, CS:Boot_SP
+
+	JMP	CS:[BootPtr]
+
+MSC_TB_Fail:
+	RET
+MSC_TryBoot	ENDP
+
+BootPtr		DD far ptr 0:7C00H	;Location = 0:7C00h
+Boot_SP		DW 0100h
+Boot_SS		DW 0h
+
+
+FDBoot_msg	DB "Booting from floppy", 13, 10, 0
+HDBoot_msg	DB "Booting from hard disk", 13, 10, 0
+NoBoot_msg	DB "No boot device! Re-trying...", 13, 10, 0
+GiveUpBoot_msg	DB "Failed to boot-- please check your configuration and restart !PC.", 13, 10, 0

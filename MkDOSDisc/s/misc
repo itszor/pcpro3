@@ -1,0 +1,29 @@
+ AREA   misc, CODE, READONLY
+ 
+ EXPORT hourglass_on, hourglass_off, var_read, disable_escape
+
+hourglass_on
+	SWI	&406C0
+	MOV	PC,R14
+hourglass_off
+	SWI	&406C1
+	MOV	PC,R14
+
+var_read	STMFD	R13!,{R1-R4,R14}
+		MOV	R2,#256
+		MOV	R3,#0
+		MOV	R4,#0
+		SWI	&23 + 1<<17 ; XOS_ReadVarVal
+		MOV	R3,#0
+		STRB	R3,[R1,R2] ; Terminate string with 0
+		MOVVC	R0,#0
+		LDMFD	R13!,{R1-R4,PC}
+
+disable_escape	STMFD	R13!,{R14}
+		MOV	R1,R0
+		MOV	R0,#229
+		MOV	R2,#0
+		SWI	6 ; OS_Byte
+		LDMFD	R13!,{PC}
+
+ END

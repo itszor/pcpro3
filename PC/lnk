@@ -1,0 +1,4 @@
+echo ** Linking via %0
+| add -debug for a debug image
+drlink -o tmp -via %0
+Settype tmp ff8

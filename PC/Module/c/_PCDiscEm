@@ -1,0 +1,106 @@
+/*
+*    !PC floppy / hard drive emulation
+*
+*    Module
+*/
+
+#define DEBUG 0
+
+#include <stdio.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.StdTypes"
+#include "module.h.PCDevHelp"
+#include "module.h.PCSupport"
+#include "module.h.PCDiscEm"
+
+#define FDC_INT_CLEAR_ADDRESS ((short int*)0x3200000 + 0x14)
+#define FDC_INT_CLEAR_BIT     (1<<12)
+
+FILE  *debug_log = NULL;
+
+char* fdc_register_mapping[] = { /* starting at 3F2 */
+  (char*) 0x3010FC8,
+  0,
+  (char*) 0x3010FD0,
+  (char*) 0x3010FD4,
+  0,
+  (char*) 0x3010FDC,
+  0
+};
+
+_kernel_oserror our_err = {0, "\0"}, *other_err;
+int claimed = 0;
+
+extern int  PCDiscEm_Read8(int addr)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return(0);
+  if (DEBUG)
+    fprintf(debug_log, "Read8: %Xh\n", addr);
+  if (addr == 0x3F4)
+    return( (*fdc_register_mapping[addr-0x3F2]) & 0xDF/* No DMA emulated */);
+
+  return(*fdc_register_mapping[addr-0x3F2]);
+}
+
+extern void PCDiscEm_Write8(int addr, int data)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return;
+  if (DEBUG)
+    fprintf(debug_log, "Write8: %Xh -> %Xh\n", data, addr);
+  *fdc_register_mapping[addr-0x3F2] = data;
+
+  /*PCDiscEm_CatchFDCInt(1);*/
+}
+
+extern void PCDiscEm_CatchFDCInt(int claim)
+{
+  _kernel_swi_regs R;
+
+  if (claimed == claim)
+    return;
+
+  R.r[0] = 12;
+  R.r[1] = (int) PCDiscEm_FDCInt;
+  R.r[2] = 0;
+
+  if (claim)
+    _kernel_swi(OS_ClaimDeviceVector, &R, &R);
+  else
+    _kernel_swi(OS_ReleaseDeviceVector, &R, &R);
+
+  claimed = claim;
+}
+
+void PCDiscEm_Final(void)
+{
+  if (DEBUG)
+    fclose(debug_log);
+}
+
+extern _kernel_oserror *PCDiscEm_Init( char *cmd_tail, int podule_base, int pw )
+{
+  Handler   PCDiscEm_handler;
+  _kernel_swi_regs R;
+
+  PCDiscEm_handler.Read8 = PCDiscEm_handler.Read16 = PCDiscEm_Read8;
+  PCDiscEm_handler.Write8 = PCDiscEm_handler.Write16 = PCDiscEm_Write8;
+  PCDiscEm_handler.R12value = pw;
+
+  if (DEBUG)
+    debug_log = fopen("<Diva$Dir>.DiscDebug", "w");
+
+  R.r[0] = (int) &PCDiscEm_handler; R.r[1] = 0x3F0; R.r[2] = 0x3F7;
+  _kernel_swi(PCDevHelp_RegisterIO, &R, &R);
+
+  _kernel_swi(PCSupport_GetInternalAddr, &R, &R);
+  addr_SWI_PCSupport_IrqRequest = R.r[0];
+
+  atexit(PCDiscEm_Final);
+
+  return(0);
+}

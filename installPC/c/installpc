@@ -1,0 +1,699 @@
+/* InstallPC source
+** by Matthew Bloch, 1997
+** for Aleph One
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "iconbar.h"
+#include "menu.h"
+#include "saveas.h"
+#include "wimplib.h"
+#include "window.h"
+
+#include "init.h"
+#include "installer.h"
+#include "messages.h"
+#include "misc.h"
+#include "DivaSrc:sys.h.divaserial"
+
+extern int   task_handle = 0, child_task_handle = 0;
+
+IdBlock	     id_block;
+ObjectId     AboutToWin, BootWin, BannerWin, InfoWin, NetLinksWin,
+             NewWin, NewFinWin, OldFinWin, ProgressWin, RegWin, TypeWin,
+             WhereWin;
+int          current_wimp = 0, interested = 0, quit = 0;
+char         directory[32] = "<InstallPC$Dir>";
+void	     *sprite_area;
+void         *er;
+
+/* =1 if user is updating an old copy of !PC and they have a copy
+** of the PCNE2 module inside it.
+*/
+static int   already_got_netlinks=0;
+
+enum install_stages {
+  scan_system,
+  type_of_install,
+  new_or_old_install,
+  new_pc_location, old_pc_location,
+  netlinks_install,
+  add_to_boot,
+  registration_code,
+  about_to,
+  copy_files,
+  start_new_config
+} install_progress = scan_system;
+
+#define ER(x) if (x != NULL) wimp_report_error((void*) x, 0, "InstallPC")
+
+int next_stage_handler(void);
+int prev_stage_handler(void);
+
+void whinge(char *msg)
+{
+  _kernel_oserror    err;
+
+  err.errnum = 0;
+  strcpy(err.errmess, msg);
+  wimp_report_error(&err, 0, "InstallPC");
+}
+
+static char default_title[256] = '\0';
+void polite_whinge(char *title, char *msg)
+{
+  if (title == NULL)
+    window_set_title(0, InfoWin, default_title);
+  else
+    window_set_title(0, InfoWin, title);
+  button_set_value(0, InfoWin, 0, msg);
+  toolbox_show_object(0, InfoWin, 4, NULL, 0, 0);
+}
+
+extern void FERR(_kernel_oserror *err)
+{
+  char fatal[256];
+
+  if (err == NULL)
+    return;
+
+  sprintf(fatal, "Fatal error (%s)-- !PC will not be installed / updated correctly.  Contact Aleph One for advice.", err->errmess);
+
+  whinge(fatal);
+  quit = TRUE;
+}
+
+extern void installer_progress(char *msg)
+{
+  int              event_code;
+  WimpPollBlock    poll_block;
+
+  event_poll(&event_code, &poll_block, NULL); /* Oh what a lovely kludge... */
+  button_set_value(0, ProgressWin, 5, msg);
+  event_poll(&event_code, &poll_block, NULL);
+}
+
+void show_window_centred(ObjectId window)
+{
+  WimpGetWindowOutlineBlock outline;
+  int                       screen_x, screen_y, top_left[2];
+
+  window_get_wimp_handle(0, window, &outline.window_handle);
+  wimp_get_window_outline(&outline);
+  get_screen_size(&screen_x, &screen_y);
+
+  top_left[0] = (screen_x >> 1) - ( (outline.outline.xmax - outline.outline.xmin) >> 1 );
+  top_left[1] = (screen_y >> 1) + ( (outline.outline.ymax - outline.outline.ymin) >> 1 );
+
+  toolbox_show_object(0, window, 2, top_left, NULL, NULL);
+}
+
+void update_wherewin(void)
+{
+  gadget_set_flags(0, WhereWin, 0xE, 0);
+
+  if (pc_location[0] != 0 && free_space(pc_location) < 1024*1024)
+  {
+    whinge(msg_lookup("pc_no_room"));
+    pc_location[0]=0;
+  }
+
+  if (pc_location[0] != 0 && no_fresh_install && file_exists("InstallPCRes:Software") && compare_versions(installed_pc_version, update_pc_version) == -1)
+  {
+    whinge(msg_lookup("installed_too_old"));
+    gadget_set_flags(0, WhereWin, 0xE, (unsigned int) 1<<31);
+  }
+
+  if (pc_location[0] == 0)
+    displayfield_set_value(0, WhereWin, 0, msg_lookup("drag_to"));
+  else
+  {
+    char f[256];
+
+    displayfield_set_value(0, WhereWin, 0, pc_location);
+    sprintf(f, "%s.PCNE2", pc_location);
+    already_got_netlinks = file_exists(f);
+  }
+
+  if (pc_location[0] == 0)
+    gadget_set_flags(0, WhereWin, 0xE, (unsigned int) 1<<31);
+
+  /*fprintf(stderr, "Installed: v%s\nUpdate: v%s\nThis one later?: %d\n",
+  installed_pc_version,
+  update_pc_version,
+  compare_versions(this_pc_version, update_pc_version)
+  );*/
+}
+
+void read_boot_flags()
+{
+  int x;
+
+  for (x=0; x!=BOOT_OPTS; x++)
+  {
+    unsigned int g;
+
+    FERR(optionbutton_get_state(0, BootWin, 0x100+x, &boot_flags[x]));
+    FERR(gadget_get_flags(0, BootWin, 0x100+x, &g));
+    if (g>>31) boot_flags[x]=0;
+  }
+}
+
+int extract_v(char *help_string)
+{
+  char *h=help_string;
+  int maj, min;
+
+  while (*(++h)!=9); while(*(++h)==9);
+  sscanf(h, "%d.%d", &maj, &min);
+  return((maj*100)+min);
+}
+
+int module_version(char *module)
+{
+  int  maj, min, v1=0, v2=0;
+  char *h, *title=module, buf[256];
+  FILE *fh;
+
+  if (strstr(title, ".") != 0)
+  {
+    title += strlen(module);
+    while(*(--title) != '.');
+    title++;
+  }
+
+  if (strcmp(title, "DCS_Quit") == 0)
+    strcpy(buf, "DCS"),
+    title = buf; // bodge for oddball DCS module!
+
+  if ((h = get_module_help(title)) != NULL) v1=extract_v(h);
+
+  if ((fh = fopen(module, "rb")) != NULL)
+  {
+    fseek(fh, 20, SEEK_SET);
+    fread(&maj, 4, 1, fh);
+    fseek(fh, maj, SEEK_SET);
+    fread(buf, 256, 1, fh);
+    fclose(fh);
+    v2 = extract_v(buf);
+  }
+  if (v1 > v2)
+    return(v1);
+  return(v2);
+}
+
+void grey_and_tick(ObjectId w, ComponentId c, int yesno)
+{
+  gadget_set_flags(0, w, c, (yesno)<<31);
+  if (yesno)
+    optionbutton_set_state(0, w, c, yesno);
+}
+
+void update_bootwin(void)
+{
+  int x;
+
+  for (x=0; x!=BOOT_OPTS; x++)
+    optionbutton_set_state(0, BootWin, 0x100+x, boot_flags[x]);
+
+  grey_and_tick(BootWin, 0x100, (
+    (file_exists("Boot:Utils.UnplugTBox") ||
+     file_exists("Boot:Choices.Boot.PreDesk.UnplugTBox") ) &&
+    module_version("<System$Dir>.310.Modules.Toolbox.Toolbox") >= 143 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.Window")  >= 154 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.Menu")    >=  32 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.Iconbar") >= 118 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.ProgInfo")>=  14 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.SaveAs")  >=  15 &&
+    module_version("<System$Dir>.310.Modules.Toolbox.DCS_Quit")>= 108 ));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_CDFX,
+    (file_exists("Boot:Choices.Boot.PreDesk.!CDFix.!Run")));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_WKBD,
+    (file_exists("Boot:Choices.Boot.PreDesk.!WinKbdPat.!Run")));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_DSFS,
+    (module_version("DOSFS") >= 62 ||
+     module_version("Win95FS") > 0 ||
+     file_exists("Boot:Choices.Boot.PreDesk.DOSFS")));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_PCSL,
+    (file_exists("Boot:Choices.Boot.PreDesk.PCSleep.PCSleep")));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_DMAP,
+    (file_exists("Boot:Choices.Boot.Tasks.DOSMap")));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_GRDD,
+    (file_exists("Boot:Choices.Boot.PreDesk.!GuardDD.!Run") ||
+     file_exists("Boot:Choices.Boot.Tasks.!GuardDD.!Run")   ));
+  grey_and_tick(BootWin, 0x100+BOOT_OPT_FLRP,
+    (file_exists("Boot:Choices.Boot.PreDesk.!FilerPtch.!Run") ||
+     file_exists("Boot:Choices.Boot.PreDesk.!FilerPtch") ));
+}
+
+int bootwin_click_handler(int event_code, ToolboxEvent *event, IdBlock *id, void *handle)
+{
+  char msg[256], title[256], b[64];
+
+  if (id->self_component >= 0x200 && id->self_component <= 0x200+BOOT_OPTS)
+  {
+    sprintf(msg, "bootinf%d", id->self_component-0x200);
+    strcpy(msg, msg_lookup(msg));
+    optionbutton_get_label(0, BootWin, 0x100+(id->self_component-0x200), b, 64, NULL);
+    sprintf(title, "%s : %s ?", msg_lookup("whatsthis"), b);
+    polite_whinge(title, msg);
+  }
+
+  if (id->self_component == 0x300)
+  {
+    int n;
+
+    read_boot_flags();
+    for (n=0; n!=BOOT_OPTS; n++)
+      if (boot_flags[n]) do_update_boot(n, 0);
+    update_bootwin();
+  }
+
+  return(1);
+}
+
+void exit_handler(void)
+{
+  int                 blk[8];
+
+  if (child_task_handle != 0)
+  {
+    blk[0]=32; blk[3]=0; blk[4]=0;
+    wimp_send_message(17, blk, child_task_handle, NULL, NULL);
+  }
+
+  wimp_start_task("Delete <Wimp$ScrapDir>._uz", &child_task_handle);
+}
+
+void init_stage(enum install_stages stage, int direction)
+{
+  int           radio_state, x, event_code, fail=0;
+  char          cmd[256];
+  WimpPollBlock poll_block;
+
+  //fprintf(stderr, "init_stage = %d\n", stage);
+
+  switch (stage)
+  {
+    case scan_system         :
+      show_window_centred(BannerWin);
+      event_poll(&event_code, &poll_block, NULL);
+      event_poll(&event_code, &poll_block, NULL);
+      FERR(wimp_start_task("Copy InstallPCRes:_uz <Wimp$ScrapDir>._uz A~C~DF~L~N~P~Q~R~S~T~V", &x));
+      do_scan_system();
+      size_archives();
+      button_set_value(0, TypeWin, 0x12, what_am_i());
+      /*if (file_exists("InstallPCRes:NetLinks"))
+      {
+        stringset_set_available(0, NetLinksWin, 0x1B, netlinks_driver_namelist);
+        stringset_set_selected(1, NetLinksWin, 0x1B, 0);
+      }*/
+      toolbox_hide_object(0, BannerWin);
+      if (no_fresh_install)
+        gadget_set_flags(0, TypeWin, 0, (unsigned int) 1<<31);
+      gadget_set_flags(0, WhereWin, 0x10, 0);
+    case type_of_install     :
+      if (pc_location[0] == 0)
+      {
+        ER(radiobutton_set_state(0, TypeWin, 1, 0));
+        radiobutton_set_state(0, TypeWin, 0, 1);
+      }
+      show_window_centred(TypeWin);
+      install_progress = type_of_install;
+      break;
+    case new_or_old_install :
+      radiobutton_get_state(0, TypeWin, 0, &x, &radio_state);
+      if (radio_state == 0)
+        init_stage(new_pc_location, 0);
+      else
+        init_stage(old_pc_location, 0);
+      break;
+    case new_pc_location :
+      if (new_install_location[0] == 0)
+      {
+        displayfield_set_value(0, NewWin, 1, "PC");
+        gadget_set_flags(0, NewWin, 0, (unsigned int) 1<<31);
+      }
+      else
+        displayfield_set_value(0, NewWin, 1, new_install_location);
+      show_window_centred(NewWin);
+      install_progress = new_pc_location;
+      break;
+    case old_pc_location :
+      update_wherewin();
+      show_window_centred(WhereWin);
+      new_install_location[0] = 0;
+      install_progress = old_pc_location;
+      break;
+    case netlinks_install :
+      if (!file_exists("InstallPCRes:NetLinks") &&
+          new_install_location[0] == 0          &&
+          already_got_netlinks
+          )
+        whinge(msg_lookup("no_new_netlinks"));
+      if (!file_exists("InstallPCRes:NetLinks"))
+        { fail = 1; break; }
+      install_progress = netlinks_install;
+      show_window_centred(NetLinksWin);
+      break;
+    case add_to_boot         :
+      if (!file_exists("InstallPCRes:Boot"))
+        { fail = 1; break; }
+      install_progress = add_to_boot;
+      update_bootwin();
+      show_window_centred(BootWin);
+      break;
+    case registration_code       :
+      install_progress = registration_code;
+      if ((fail = no_registration_code) == 1)
+        break;
+      show_window_centred(RegWin);
+      break;
+    case about_to          :
+      {
+        unsigned int p, s, l;
+        char b1[16], b2[16];
+        ER(writablefield_get_value(0, RegWin, 0, b1, 16, NULL));
+        ER(writablefield_get_value(0, RegWin, 1, b2, 16, NULL));
+
+        if (!no_registration_code && (DivaSerial_decode(DivaSerial_frombase33(b1), DivaSerial_frombase33(b2), &p, &s, &l) ||  (p!=0 && p!=1)) )
+        {
+          whinge(msg_lookup("invalid_serial"));
+          show_window_centred(RegWin);
+          break;
+        }
+        regcode = p | (s<<8) | (l<<24);
+        sprintf(regstring, "%s-%s", b1, b2);
+      }
+      FERR(optionbutton_get_state(0, NetLinksWin, 0x22, &install_netlinks));
+      read_boot_flags();
+      show_window_centred(AboutToWin);
+      install_progress = about_to;
+      break;
+    case copy_files        :
+      if (file_exists("<Diva$Dir>.^.old!PC") && !no_fresh_install)
+      {
+        whinge(msg_lookup("old_pc_present"));
+        init_stage(about_to, 0);
+        break;
+      }
+      button_set_value(0, ProgressWin, 5, msg_lookup("starting_install"));
+      slider_set_value(0, ProgressWin, 2, 0);
+      show_window_centred(ProgressWin);
+      do_copy_files();
+      install_progress = copy_files;
+      break;
+    case start_new_config:
+      toolbox_hide_object(0, ProgressWin);
+      if (new_install_location[0] != 0)
+      {
+        show_window_centred(NewFinWin);
+        sprintf(cmd, "Filer_OpenDir %s", new_install_location); system(cmd);
+      }
+      else
+      {
+        show_window_centred(OldFinWin);
+        /*button_set_value(0, OldFinWin, 0xc, no_dot(*/
+      }
+      break;
+  }
+  if (!fail)
+    return;
+
+  install_progress = stage;
+  if (direction == 1)
+    next_stage_handler();
+  else
+    prev_stage_handler();
+}
+
+int next_stage_handler(void)
+{
+  toolbox_hide_object(0, InfoWin);
+  switch(install_progress)
+  {
+    case scan_system     : init_stage(type_of_install, 1); break;
+    case type_of_install : init_stage(new_or_old_install, 1); break;
+    case new_pc_location : init_stage(netlinks_install, 1); break;
+    case old_pc_location : init_stage(netlinks_install, 1); break;
+    case netlinks_install: init_stage(add_to_boot, 1); break;
+    case add_to_boot     : init_stage(registration_code, 1); break;
+    case registration_code   : init_stage(about_to, 1); break;
+    case about_to        : init_stage(copy_files, 1); break;
+    case copy_files      : init_stage(start_new_config, 1); break;
+  }
+  return(1);
+}
+
+int prev_stage_handler(void)
+{
+  toolbox_hide_object(0, InfoWin);
+  switch(install_progress)
+  {
+    case new_pc_location : init_stage(type_of_install, -1); break;
+    case old_pc_location : init_stage(type_of_install, -1); break;
+    case netlinks_install: init_stage(new_or_old_install, -1); break;
+    case add_to_boot     : init_stage(netlinks_install, -1); break;
+    case registration_code   : init_stage(add_to_boot, -1); break;
+    case about_to        : init_stage(registration_code, -1); break;
+  }
+  return(1);
+}
+
+int details_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  int x;
+
+  if (new_install_location[0] == 0)
+    wimp_start_task("Filer_Run InstallPCRes:ExplUpdate", &x);
+  else
+    wimp_start_task("Filer_Run InstallPCRes:ExplNew", &x);
+
+  return(1);
+}
+
+/* Called when user presses '-' key in the reg. code window */
+int regcode2_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  FERR(gadget_set_focus(0, RegWin, 1));
+  return(1);
+}
+
+int stop_progress_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  _kernel_oserror     stop_question;
+  void                *spr;
+
+  wimp_base_of_sprites(&spr, &spr);
+
+  strcpy(stop_question.errmess, msg_lookup("premature_exit"));
+  stop_question.errnum = 0;
+
+  if (wimp_report_error(&stop_question, 0x17, msg_lookup("really_quit")) == 1)
+    quit = TRUE;
+
+  return(1);
+}
+
+int dragended_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  DraggableDragEndedEvent    *event_a;
+  WimpMessage                 msg;
+  int                         th;
+
+  event_a = (DraggableDragEndedEvent*) event;
+
+  msg.hdr.size = 256;
+  msg.hdr.my_ref = 0;
+  msg.hdr.action_code = Wimp_MDataSave;
+  msg.data.data_save.destination_window = event_a->window_handle;
+  msg.data.data_save.destination_icon = event_a->icon_handle;
+  msg.data.data_save.estimated_size = 0;
+  msg.data.data_save.file_type = 0x2000;
+  strcpy(msg.data.data_save.leaf_name, "PC");
+
+  wimp_send_message(17, &msg, event_a->window_handle, event_a->icon_handle, &th);
+  return(1);
+}
+
+int saveack_handler(WimpMessage *msg, void *h)
+{
+  char path_stripped[256];
+
+  strcpy(path_stripped, msg->data.data_save_ack.leaf_name);
+  path_stripped[strlen(path_stripped) - 3]=0;
+
+  if (msg->data.data_save_ack.estimated_size == -1 ||
+      strcmp(msg->data.data_save_ack.leaf_name, "<Wimp$Scrap>") == 0)
+  {
+    whinge(msg_lookup("stupid_place"));
+    return(1);
+  }
+
+  if (file_exists(msg->data.data_save_ack.leaf_name))
+  {
+    whinge(msg_lookup("pc_there"));
+    return(1);
+  }
+
+/*  fprintf(stderr, path_stripped);*/
+
+  if (free_space(path_stripped) < 1024*1024)
+  {
+    whinge(msg_lookup("new_pc_no_room"));
+    return(1);
+  }
+
+  strcpy(new_install_location, msg->data.data_save_ack.leaf_name);
+  displayfield_set_value(0, NewWin, 1, new_install_location);
+  gadget_set_flags(0, NewWin, 0, 0);
+
+  return(1);
+}
+
+int taskwindow_output_handler(WimpMessage *msg, void *h)
+{
+  int  data_length = msg->data.words[0], c;
+  char *data       = (msg->data.bytes)+4;
+
+/*  data[data_length]=0;
+  strcpy(wmsg, data);
+  whinge(wmsg);
+
+  return(1);*/
+
+  for (c=0; c!=data_length; c++)
+    if (*(data+c) == 10)
+      copied_files++;
+
+  fwrite(data, 1, data_length, stderr);
+  fprintf(stderr, " (%d) ", copied_files);
+
+  ER(slider_set_bounds(7, ProgressWin, 2, 0, files_to_copy, 1));
+  ER(slider_set_value(0, ProgressWin, 2, copied_files));
+  return(1);
+}
+
+int taskwindow_dies_handler(WimpMessage *msg, void *h)
+{
+  if (copied_files == files_to_copy)
+    next_stage_handler();
+  else
+    do_copy_files();
+
+  if (copied_files == files_to_copy)
+    next_stage_handler();
+
+  /*whinge(msg_lookup("taskwin_bomb")); quit = TRUE;*/
+
+  child_task_handle = 0;
+
+  return(1);
+}
+
+int autocreate_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  ToolboxObjectAutoCreatedEvent    *event_a;
+
+  event_a = (ToolboxObjectAutoCreatedEvent*) event;
+
+  if (strcmp(event_a->template_name, "AboutToWin") == 0)
+    AboutToWin = id_block->self_id;
+/*  if (strcmp(event_a->template_name, "BootDiscWin") == 0)
+    BootDiscWin = id_block->self_id;*/
+  if (strcmp(event_a->template_name, "BannerWin") == 0)
+    BannerWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "BootWin") == 0)
+  {
+    BootWin = id_block->self_id;
+    event_register_toolbox_handler(BootWin, ActionButton_Selected, bootwin_click_handler, NULL);
+  }
+  if (strcmp(event_a->template_name, "InfoWin") == 0)
+    InfoWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "NetLinksWin") == 0)
+    NetLinksWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "NewWin") == 0)
+    NewWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "NewFinWin") == 0)
+    NewFinWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "OldFinWin") == 0)
+    OldFinWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "ProgressWin") == 0)
+    ProgressWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "RegWin") == 0)
+    RegWin = id_block->self_id;
+  if (strcmp(event_a->template_name, "TypeWin") == 0)
+  {
+    TypeWin = id_block->self_id;
+    init_stage(scan_system, 0);
+  }
+  if (strcmp(event_a->template_name, "WhereWin") == 0)
+    WhereWin = id_block->self_id;
+
+  return(1);
+}
+
+int dataload_handler(WimpMessage *message, void *h)
+{
+  int handle;
+  char autoexec_check[128], config_check[128], win_check[128];
+
+  window_get_wimp_handle(0, WhereWin, &handle);
+  if (message->data.data_load.destination_window != handle)
+    return(0);
+  if (message->data.data_load.file_type == 0x2000)
+  {
+    strcpy(pc_location, message->data.data_load.leaf_name);
+    strcpy(installed_pc_version, "?.??");
+    do_scan_system(); update_wherewin();
+    return(1);
+  }
+  return(0);
+}
+
+int quit_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  if (event_code == 0x101)
+    system("Filer_Run <Diva$Dir>.^.!PCConfig");
+  quit = 1;
+  return(1);
+}
+
+int main(void)
+{
+  int              event_code;
+  WimpPollBlock    poll_block;
+
+  event_register_message_handler(Wimp_MQuit, (WimpMessageHandler*) quit_handler, NULL);
+  event_register_message_handler(Wimp_MDataLoad, dataload_handler, NULL);
+  event_register_message_handler(Wimp_MDataSaveAck, saveack_handler, NULL);
+  event_register_message_handler(0x808C1 /* TaskWindow_Output */, taskwindow_output_handler, NULL);
+  event_register_message_handler(0x808C3 /* TaskWindow_Morio */, taskwindow_dies_handler, NULL);
+  event_register_toolbox_handler(-1, Draggable_DragEnded, dragended_handler, NULL);
+  event_register_toolbox_handler(-1, Toolbox_ObjectAutoCreated, autocreate_handler, NULL);
+  event_register_toolbox_handler(-1, 0x100, (ToolboxEventHandler*) quit_handler, NULL);
+  event_register_toolbox_handler(-1, 0x101, (ToolboxEventHandler*) quit_handler, NULL);
+  event_register_toolbox_handler(-1, 0x200, (ToolboxEventHandler*) next_stage_handler, NULL);
+  event_register_toolbox_handler(-1, 0x201, (ToolboxEventHandler*) prev_stage_handler, NULL);
+  event_register_toolbox_handler(-1, 0x220, stop_progress_handler, NULL);
+  event_register_toolbox_handler(-1, 0x230, details_handler, NULL);
+  event_register_toolbox_handler(-1, 0x240, regcode2_handler, NULL);
+
+  ER(event_initialise(&id_block));
+
+  ER(toolbox_initialise(0, 310, &interested, &interested, directory, &msg_block,
+                     &id_block, &current_wimp, &task_handle, &sprite_area));
+  ER(event_set_mask(0));
+  strcpy(default_title, msg_lookup("pcsmsg"));
+
+  atexit(exit_handler);
+
+  while (!quit)
+    event_poll(&event_code, &poll_block, NULL);
+}

@@ -1,0 +1,73 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSEXT.ASI   Extension module support; protection for saleable
+;                 parts of !PC
+;
+; 2.23  1998.06.02  MB  Original
+; ****************************************************************
+ .386
+
+;	ALIGN 4
+
+;	DD 1C7C434Ch	; Random number to search for from main code
+;EXT_start:
+;	DD 56E423FCh	; !PC fills in serial number here
+;	DB 64 dup (0)
+
+EXT_Init proc near
+
+	MOV	DX, 0ECh
+	MOV	AL, 0F0h
+	OUT	DX, AL
+	MOV	DX, 0EDh
+	IN	AL, DX	; Trigger load of ext file to 40000h
+	MOV	AX, 4000h
+	MOV	ES, AX
+	MOV	SI, 4
+	MOV	CX, 16
+	MOV	EBX, ES:[SI-4]
+EXT_decode:
+	XOR	ES:[SI], EBX
+	ADD	SI, 4
+	ROR	EBX, CL
+	LOOP	EXT_decode
+
+	MOV	SI, 4
+	MOV	CX, 16
+EXT_out:
+	MOV	EBX, ES:[SI]
+	CMP	EBX, 28167E26h ; Random no. meaning 'VESA 2.0 enable'
+	JNE	no_v2
+	TraceB	0fah
+	MOV	DX, 10011010b
+	MOV	DX, [SVGA_ModeAttributes]
+no_v2:
+	;MOV	DX, 310h
+	;OUT	DX, EAX
+	;MOV	EBX, EAX
+	;TraceW	BX
+	;SHR	EBX, 16
+	;TraceW	BX
+	MOV	EAX, EBX
+	MOV	DX, 0EDh
+	OUT	DX, AL
+	SHR	EAX, 8
+	OUT	DX, AL
+	SHR	EAX, 8
+	OUT	DX, AL
+	SHR	EAX, 8
+	OUT	DX, AL
+	ADD	SI, 4
+	LOOP	EXT_out
+
+	CMP	EBX, 1C7C434Ch	; Last word must be...
+	JE	EXT_Valid
+EXT_NotValid:
+	JMP	EXT_NotValid
+EXT_Valid:
+	RET
+EXT_Init endp
+
+ .286

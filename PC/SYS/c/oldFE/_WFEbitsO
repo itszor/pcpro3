@@ -1,0 +1,770 @@
+/*
+*    DivaPC C source
+*
+*    SYS.C.WFEBITS
+*
+*    Miscellaneous front-end functions for DivaPC
+*
+*    02-04-92 INH  Split from SYS.C.MAIN
+*    13-11-92      Window-redrawing functions moved here
+*    05-09-94      8-bpp windows driver support
+*    06-04-95      Revised for 256-clr palette support
+*  1997.09.20 W    Start-up banner added
+*  1998.02.03 MB   Fixed to save new-format sprites
+*/
+
+#include <string.h>
+
+/* WIMP includes ********************** */
+
+#include "wimp.h"
+#include "wimpt.h"
+#include "win.h"
+#include "event.h"
+#include "menu.h"
+#include "template.h"
+#include "dbox.h"
+#include "colourtran.h"
+#include "sprite.h"
+#include "os.h"
+#include "bbc.h"
+
+/* this definition is from dbox.c, but we don't want to include all of that
+  We need it for WFE_banner */
+
+typedef struct dbox__str {
+  struct dbox__str *next;  /* if user wants to link dboxes into a list */
+  wimp_w w;                /* only used in live dialog boxes */
+  int posatcaret;          /* Every time it is shown, it appears "near" the
+                            * caret.
+                            */
+  int showing;
+  wimp_caretstr caretstr;   /* save between fillin's. */
+  dbox_handler_proc eventproc;
+  void *eventprochandle;
+  dbox_raw_handler_proc raweventproc;
+  void *raweventprochandle;
+
+  dbox_field field;     /* button last pressed */
+  int fieldwaiting;     /* a button waiting to be picked up */
+  int eventdepth;       /* for delaying disposal */
+  int disposepending;
+
+  char name[12];
+  char *workspace;
+  int workspacesize;
+  wimp_wind window;
+  /* any icons follow directly after this. */
+} dbox__str;
+
+/* System includes *********************** */
+
+#include "sys.h.stdtypes"
+#include "sys.h.FEstate"
+#include "sys.h.WFEbits"
+#include "sys.h.sys"
+#include "sys.h.version"
+#include "sys.h.config"
+#include "sys.h.wfes"
+#include "sys.h.cpu"      /* For Hardware ID field */
+
+/* Field number of version string within "info" box */
+
+#define InfoBox_VersionField    4
+#define InfoBox_HardwareField   10
+
+char *WFE_VersionString = VERSION_STRING;
+
+
+/* Window Redrawing Routines ***************************************** */
+
+/* SetupMasks () ==============================================
+
+   SetupMasks sets the WFEs_LHmask, WFEs_RHmask and WFEs_MidCount
+   values for a set of X pixels between 'firstX' and 'lastX' inclusive.
+   It assumes 4 bits per pixel (8 pixels per word).
+*/
+
+static int LHmasks[8] =
+ { 0xFFFFFFFF, 0xFFFFFFF0, 0xFFFFFF00, 0xFFFFF000,
+   0xFFFF0000, 0xFFF00000, 0xFF000000, 0xF0000000
+ };
+
+static int RHmasks[8] =
+ { 0x0000000F, 0x000000FF, 0x00000FFF, 0x0000FFFF,
+   0x000FFFFF, 0x00FFFFFF, 0x0FFFFFFF, 0xFFFFFFFF
+ };
+
+static void SetupMasks ( int firstX, int lastX )
+{
+  if ( (lastX >> 3) <= (firstX >>3) )  /* All pixels in one word */
+  {
+    WFEs_LHmask = LHmasks[ firstX & 7 ] & RHmasks[ lastX & 7 ];
+    WFEs_RHmask = 0;
+    WFEs_MidCount = 0;
+  }
+  else
+  {
+    WFEs_LHmask = LHmasks[ firstX & 7 ];
+    WFEs_RHmask = RHmasks[ lastX & 7 ];
+    WFEs_MidCount = (lastX >>3) - (firstX >>3) - 1;
+  }
+
+}
+
+
+/* RedrawBox44 ======================================================
+
+   RedrawBox44 will copy a portion of the PC's screen sprite onto the
+   RISCOS screen, doing a 4-bit to 4-bit pixel colour translation as
+   it does so.
+   Both RISCOS screen and PC sprite must be 4bpp. WFEs_ScreenBase and
+   WFEs_ScreenWidthBytes must be valid. Parameters are as follows:
+
+   destX, destY: co-ords of top-left corner of box in 'real' pixels. (0,0
+   is top left of screen).
+   extX, extY: number of pixels in X and Y directions to be copied.
+   srcX, srcY: position of 'real' pixel on RISCOS screen which would
+     correspond to the top left corner of the PC screen.
+*/
+
+static void RedrawBox44( int destX, int destY, int extX, int extY,
+    int srcX, int srcY )
+{
+  register BYTE *dst, *src;
+  BYTE *PC_base;
+  int   PC_width;
+  sprite_header *sh = (sprite_header *) SYS_FEState.spriteid.s.addr;
+
+  /* Change srcX, srcY to be X,Y offsets into PC source bitmap */
+  srcX = destX-srcX;
+  srcY = destY-srcY;
+
+  /* Calculate address of top left of PC screen data */
+
+  PC_base = (BYTE *) sh + sh->image;
+  PC_width = (sh->width+1) * 4;       /* Width of PC sprite in bytes */
+
+  /* Do source-to-dest alignment details */
+
+  if ( (srcX & 7) >= (destX & 7) )     /* source is aligned with dest */
+  {                                    /* using a right shift. This is */
+    src = PC_base +                    /* fine if source starts at a   */
+           (srcY*PC_width) +           /* higher bit position than dest */
+           (srcX >>3) * 4;
+  }
+  else
+  {                                    /* but if not, we have to adjust */
+    src = PC_base +                    /* src to fetch some bits from   */
+           (srcY*PC_width) +           /* the previous word */
+           (srcX >>3)*4 - 4;
+  }
+
+  WFEs_AlignVal = ((srcX-destX) & 7)*4;
+
+  /* Set destination masks and addresses */
+
+  SetupMasks ( destX, destX+extX-1 );
+
+  dst = WFEs_ScreenBase + (destY * WFEs_ScreenWidthBytes) +
+            (destX >> 3) * 4;
+
+  /* Do the blit */
+
+  while ( extY-- > 0 )
+  {
+    WFEs_XlateLine ( dst, src );
+    dst += WFEs_ScreenWidthBytes;
+    src += PC_width;
+  }
+
+}
+
+/* RedrawBox88 ======================================================
+
+   RedrawBox88 will copy a portion of the PC's screen sprite onto the
+   RISCOS screen, doing a 8-bit to 8-bit pixel colour translation as
+   it does so.
+   Both RISCOS screen and PC sprite must be 8bpp.
+   This is as simple as doubling all the X co-ordinates and passing
+   the results on to RedrawBox44, because RedrawBox44 translates
+   two 4-bit pixels (aligned to byte boundaries) at a time.
+*/
+
+static void RedrawBox88( int destX, int destY, int extX, int extY,
+    int srcX, int srcY )
+{
+  RedrawBox44 ( destX+destX, destY, extX+extX, extY, srcX+srcX, srcY );
+}
+
+/* Drawing variables ================================================== */
+
+/* WFE_RedrawMethod determines which method is used for
+   converting PC pixels to ARM pixels */
+#define DRW_NONE       0
+#define DRW_FAST44     1    /* 4bpp->4bpp */
+#define DRW_FAST88     2    /* 8bpp->8bpp */
+#define DRW_SLOW_LO    3    /* 4bpp or 8bpp -> 1/2/4/8/16/32bpp,
+                                 excluding the above */
+#define DRW_SLOW_HI2LO 4    /* 16bpp or 32bpp to 1/2/4/8bpp, using
+                               weird "32K." table lookup method */
+#define DRW_SLOW_HI2HI 5    /* 16bpp or 32bpp to 16 or 32bpp, no
+                               xlate tables needed */
+
+static int             WFE_RedrawMethod;
+
+static sprite_factors  WFE_ScaleFactors;
+
+/* Multi-format translate table */
+
+static sprite_pixtrans WFE_XlateTbl[256];
+
+/* MakeXlateTable() *********************************************** */
+
+/* Makes a translate table for translating PC pixel values to
+     values in a given mode. 'Modenum' is -1 for the current mode. */
+
+static void MakeXlateTable ( void )
+{
+  int i, clrs;
+
+  if ( SYS_FEState.PCbpp > 8 )
+    return;
+
+  clrs = 1 << SYS_FEState.PCbpp;
+
+  /* Get colourtrans to do it 16 colours at a time */
+
+  for ( i=0; i<clrs; i+= 16 )
+  {
+    colourtran_select_table( 27,    /* Src mode = 27 => 16 RGB colours */
+      (wimp_paletteword*)(&SYS_FEState.ColourTable[i]), /* Src palette */
+             -1,                                    /* Current mode */
+      (wimp_paletteword*) -1,                       /* Current palette */
+             &WFE_XlateTbl[i]);                     /* Result */
+  }
+}
+
+/* WFE_RedrawBox() ************************************************ */
+
+/* dest is a wimp_box containing the (RISCOS) co-ords of the box to
+   be redrawn. Xorg, Yorg are the RISCOS co-ords of where the
+   BOTTOM LEFT of the full PC screen would appear.
+*/
+
+
+void WFE_RedrawBox ( wimp_box *dest, int Xorg, int Yorg )
+{
+
+  switch ( WFE_RedrawMethod )
+  {
+    case DRW_NONE:
+       break;
+
+    case DRW_FAST44:
+       RedrawBox44 (                       dest->x0 >> WFEs_Xshift,
+                      WFEs_ScreenHeight - (dest->y1 >> WFEs_Yshift),
+                                (dest->x1-dest->x0) >> WFEs_Xshift,
+                                (dest->y1-dest->y0) >> WFEs_Yshift,
+                                               Xorg >> WFEs_Xshift,
+                          WFEs_ScreenHeight - (Yorg >> WFEs_Yshift)
+                                      - SYS_FEState.Ypixels
+                   );
+       break;
+
+    case DRW_FAST88:
+       RedrawBox88 (                       dest->x0 >> WFEs_Xshift,
+                      WFEs_ScreenHeight - (dest->y1 >> WFEs_Yshift),
+                                (dest->x1-dest->x0) >> WFEs_Xshift,
+                                (dest->y1-dest->y0) >> WFEs_Yshift,
+                                               Xorg >> WFEs_Xshift,
+                          WFEs_ScreenHeight - (Yorg >> WFEs_Yshift)
+                                      - SYS_FEState.Ypixels
+                   );
+       break;
+
+    case DRW_SLOW_LO:
+    case DRW_SLOW_HI2LO:
+       sprite_put_scaled (SYS_FEState.s_area,
+                   &SYS_FEState.spriteid, 0,
+                   Xorg , Yorg,
+                   &WFE_ScaleFactors,
+                    WFE_XlateTbl);
+       break;
+
+    case DRW_SLOW_HI2HI: /* As above, but no translation */
+       sprite_put_scaled (SYS_FEState.s_area,
+                   &SYS_FEState.spriteid, 0,
+                   Xorg , Yorg,
+                   &WFE_ScaleFactors,
+                    NULL);
+       break;
+
+  }
+
+}
+
+
+
+/* WFE_PaletteSetup() ============================================== */
+
+/* Called when the PC or ARM palette changes */
+
+void WFE_PaletteSetup()
+{
+
+  if ( SYS_FEState.FullFErunning )
+    return;
+
+  /* Get PC-palette-to-ARM mapping */
+
+  switch ( WFE_RedrawMethod )
+  {
+     case DRW_SLOW_LO:
+     case DRW_FAST88:
+       MakeXlateTable ();
+       break;
+
+     case DRW_FAST44:
+       MakeXlateTable ();
+       {
+         /* WFE_XlateTbl needs to be a 8-bit-to-8-bit lookup table
+            for the 'fast' drawing routines. So we expand the 4-to-4
+            result from ColourTrans.
+         */
+         register int i;
+
+         for (i=0; i<0x100; i++)
+           WFE_XlateTbl[i] = (WFE_XlateTbl[i & 0xF] & 0xF) +
+                          (WFE_XlateTbl[i>>4] << 4);
+       }
+       break;
+
+     case DRW_SLOW_HI2LO:  /* Make a '32K' translate table */
+       {
+         sprite_header *sh = (sprite_header *) (SYS_FEState.spriteid.s.addr);
+         colourtran_select_table( sh->mode,   /* src mode = 16 or 32bpp */
+           (wimp_paletteword*) -1,            /* src palette = N/A */
+                               -1,            /* dst mode = current mode*/
+           (wimp_paletteword*) -1,            /* dst palette = current one */
+             WFE_XlateTbl);                                   /* Result */
+       }
+       break;
+
+     case DRW_SLOW_HI2HI:  /* No palettes to worry about */
+     default:
+       break;
+  }
+
+  SYS_FEState.PaletteChanged = false;
+
+}
+
+
+/* SetScaleFactors() ====================================================
+
+   Returns 'true' if the scale factors are not 1-to-1 i.e. some
+   scaling is needed.
+*/
+
+static bool SetScaleFactors()
+{
+  int Xf = wimpt_dx();         /* RISCOS units for 1 WIMP pixel */
+  int Yf = wimpt_dy();
+
+  WFE_ScaleFactors.xmag = WFE_ScaleFactors.xdiv = 1;
+  WFE_ScaleFactors.ymag = WFE_ScaleFactors.ydiv = 1;
+
+  if (!CFG.ScaleToFit)         /* Ensure 1:1 mapping */
+  {
+    SYS_FEState.Xratio = Xf;   /* 1 PC pixel is (Xf,Yf) RISCOS units */
+    SYS_FEState.Yratio = Yf;   /* i.e. 1 WIMP pixel */
+    return false;
+  }
+
+  /* If 'Scale To Fit' is on, entire PC screen must fit in 1280 by
+     1024 RISCOS units
+  */
+
+  SYS_FEState.Xratio = (1280 / SYS_FEState.Xpixels);
+  SYS_FEState.Yratio = (1024 / SYS_FEState.Ypixels);
+
+  /* If this is a 1:1 mapping anyway, finish early */
+
+  if ( SYS_FEState.Xratio == Xf && SYS_FEState.Yratio == Yf )
+    return false;
+
+  /* Otherwise set non-unity scale factors */
+
+  WFE_ScaleFactors.xmag= SYS_FEState.Xratio;
+  WFE_ScaleFactors.ymag= SYS_FEState.Yratio;
+  WFE_ScaleFactors.xdiv= Xf;
+  WFE_ScaleFactors.ydiv= Yf;
+
+  /* Normalise them */
+
+  while (WFE_ScaleFactors.xmag > 1 && WFE_ScaleFactors.xdiv > 1)
+  {
+    WFE_ScaleFactors.xmag >>= 1;
+    WFE_ScaleFactors.xdiv >>= 1;
+  }
+
+  while (WFE_ScaleFactors.ymag > 1 && WFE_ScaleFactors.ydiv > 1)
+  {
+    WFE_ScaleFactors.ymag >>= 1;
+    WFE_ScaleFactors.ydiv >>= 1;
+  }
+
+  return true;
+
+}
+
+/* ----------------------- */
+
+static int GetRedrawType ( int from, int to )
+{
+  switch ( from )
+  {
+    case 4:
+      return (to == 4) ? DRW_FAST44 : DRW_SLOW_LO;
+
+    case 8:
+      return (to == 8) ? DRW_FAST88 : DRW_SLOW_LO;
+
+    case 16:
+    case 32:
+      return (to > 8) ? DRW_SLOW_HI2HI : DRW_SLOW_HI2LO;
+  }
+
+  return DRW_NONE;
+}
+
+/* WFE_ModeSetup() ============================================== */
+
+/* Called when the WIMP or PC mode changes; should only be done
+   while running in a window
+*/
+
+void WFE_ModeSetup( void )
+{
+  WFEs_XlatePtr = (BYTE *)WFE_XlateTbl;
+
+  WFEs_SetParams();  /* Read info on current mode */
+
+  WFE_RedrawMethod = GetRedrawType ( SYS_FEState.PCbpp, WFEs_WIMPbpp );
+  if ( WFE_RedrawMethod == DRW_NONE )
+    return;
+
+  /* Is scaling needed? If so, we can't use 'Fast' redraws */
+
+  if ( SetScaleFactors() )
+  {
+    if ( WFE_RedrawMethod == DRW_FAST44 || WFE_RedrawMethod == DRW_FAST88 )
+      WFE_RedrawMethod = DRW_SLOW_LO;
+  }
+
+}
+
+
+
+
+
+
+
+/* ProgInfoBox function **************************** */
+
+void WFE_ProgInfoBox(void)
+{
+  dbox  d;  /* Dialogue box handle */
+
+  /* Create the dialogue box */
+
+  d = dbox_new("ProgInfo");
+  if (d == NULL)
+    return;
+
+  /* Fill in the version number */
+  dbox_setfield(d, InfoBox_VersionField,  WFE_VersionString );
+  dbox_setfield(d, InfoBox_HardwareField, CPU_HardwareID );
+
+  /* Show the dialogue box */
+  dbox_show(d);
+
+  /* Keep it on the screen as long as needed */
+  dbox_fillin(d);
+
+  /* Dispose of the dialogue box */
+  dbox_dispose(&d);
+
+}
+
+
+/* ************************************************* */
+
+
+/* Handlers for menu items ************************* */
+
+
+/* WritePixelData saves the data in the PC sprite to a disk file,
+   with colour translation if necessary */
+
+static bool WritePixelData ( int handle )
+{
+  os_gbpbstr g;
+  sprite_header *pSH;
+  char *data;
+  int size;
+  int i,n;
+
+  pSH =  (sprite_header *) SYS_FEState.spriteid.s.addr;
+  data = (char *)pSH + pSH->image;
+  size = ((pSH->width+1) * 4 * (pSH->height+1));
+
+  g.action = 2;
+  g.file_handle = handle;
+
+  if ( SYS_FEState.PCbpp != 8 )
+  {
+    g.data_addr = data;
+    g.number    = size;
+    if ( wimpt_complain(os_gbpb(&g)) )
+      return false;
+  }
+  else /* 8bpp PC image, being saved as 8bpp sprite */
+  {
+    /* Generate table to translate PC palette to standard 8bpp palette */
+    sprite_pixtrans xlat[256];
+
+    for ( i=0; i<256; i+= 16 )
+    {
+      colourtran_select_table( 27,    /* Src mode = 27 => 16 RGB colours */
+        (wimp_paletteword*)(&SYS_FEState.ColourTable[i]), /* Src palette */
+             28,                      /* Dst mode = standard 8bpp one    */
+             NULL,                    /* Default palette */
+             &xlat[i]);                     /* Result */
+    }
+
+    while (size>0)
+    {
+      n = size > 4096 ? 4096 : size;
+      memcpy ( SYS_TempBuf, data, n );
+      for (i=0; i<n; i++)
+        SYS_TempBuf[i] = xlat[SYS_TempBuf[i]];
+      g.data_addr = SYS_TempBuf;
+      g.number    = n;
+      if ( wimpt_complain(os_gbpb(&g)) )
+        return false;
+      data += n;
+      size -= n;
+    }
+  }
+
+  return true;
+}
+
+/* ------------------------------------ */
+
+static int Mode28Palette[16] =
+{
+   0x00000000,  0x10101000,  0x20202000,  0x30303000,
+   0x00004000,  0x10105000,  0x20206000,  0x30307000,
+   0x40000000,  0x50101000,  0x60202000,  0x70303000,
+   0x40004000,  0x50105000,  0x60206000,  0x70307000
+};
+
+/* Translated from Nickoese 16/5/96 */
+static bool WriteSpriteHeader ( int handle )
+{
+  int temp[3], sprite_type;
+  int mypal[32];
+  sprite_header sh;
+
+  os_gbpbstr g;
+  int i, imagesize, sizeof_mypal = 0;
+
+  if (SYS_FEState.PCbpp <= 8)
+    sizeof_mypal = sizeof(mypal);
+
+  sprite_removewastage(SYS_FEState.s_area, &SYS_FEState.spriteid);
+
+  /* Copy sprite header from FEState */
+  sh = *((sprite_header *) SYS_FEState.spriteid.s.addr);
+  /* New-style header (90dpi horizontal / vertical) */
+  if (SYS_FEState.PCbpp > 8)
+  {
+    if (SYS_FEState.PCbpp == 16)
+      sh.mode = (1 + (90 << 14) + (90 << 1) + (5 << 27));
+    else
+      sh.mode = (1 + (90 << 14) + (90 << 1) + (6 << 27));
+  }
+
+  imagesize = ((sh.width+1) * 4 * (sh.height+1));
+
+  /* Write some sprite block header */
+  temp[0] = 1;    /* Number of sprites */
+  temp[1] = 0x10; /* Offset to first sprite, always 0x10, honest! */
+  temp[2] = temp[1] +
+              sizeof(sprite_header) +
+              sizeof_mypal +
+              imagesize;
+
+
+  g.action = 2;
+  g.file_handle = handle;
+  g.data_addr = temp;
+  g.number    = sizeof(temp);
+
+  if ( wimpt_complain(os_gbpb(&g)))
+    return false;
+
+  /* Write some sprite header */
+
+  sh.image = sizeof(sprite_header) + sizeof_mypal;
+  sh.mask  = sh.image;
+  sh.next  = temp[2] - temp[1];
+
+  g.data_addr = &sh;
+  g.number    = sizeof(sh);
+  if (wimpt_complain(os_gbpb(&g)))
+    return false;
+
+  /* Write a palette for old-format sprites */
+  if ( SYS_FEState.PCbpp <= 8 )
+  {
+    if ( SYS_FEState.PCbpp == 8 )
+      for(i=0; i<16; i++)
+      {
+        mypal[(i<<1)  ] = Mode28Palette[i];
+        mypal[(i<<1)+1] = Mode28Palette[i];
+      }
+    else
+      for(i=0; i<16; i++)
+      {
+        mypal[(i<<1)  ] = SYS_FEState.ColourTable[i];
+        mypal[(i<<1)+1] = SYS_FEState.ColourTable[i];
+      }
+    g.data_addr = mypal;
+    g.number    = sizeof_mypal;
+    if (wimpt_complain(os_gbpb(&g)))
+      return false;
+  }
+
+  return TRUE;
+}
+
+/* ------------------ */
+
+BOOL WFE_MainSaveSprite(char *fname, void *handle)
+{
+  os_filestr f;
+  os_regset  r;
+
+  NotUsed(handle);
+
+  /* Create file */
+  f.action = 11;
+  f.name = fname;
+  f.loadaddr = filetype_SPRITE;
+  f.execaddr = f.start = f.end = 0;
+
+  if (wimpt_complain(os_file(&f)))
+    return FALSE;
+
+  /* Open file */
+  r.r[0] = 0xc0;
+  r.r[1] = (int) fname;
+  if (wimpt_complain(os_find(&r)))
+    return FALSE;
+
+  if (r.r[0] == 0)
+  {
+    SYS_error( false, "fesavebox", fname);
+    return FALSE;
+  }
+
+  if ( WriteSpriteHeader ( r.r[0] ) )
+    WritePixelData( r.r[0] );
+
+  /* Close file */
+
+  r.r[1] = r.r[0];
+  r.r[0] = 0;
+  os_find(&r);
+
+  return TRUE;
+}
+
+/* ---------------------- */
+
+BOOL WFE_MainSaveText(char *fname, void *handle)
+{
+  int size;
+  os_filestr f;
+
+  NotUsed(handle);
+
+  if ( SYS_FEState.GetTextFn == NULL )
+    return TRUE;
+
+  size = SYS_FEState.GetTextFn( (char *)SYS_TempBuf, SYS_BufSize);
+
+  f.action = 10;
+  f.name = fname;
+  f.loadaddr = filetype_TEXT;
+  f.start = (int) SYS_TempBuf;
+  f.end = f.start + size;
+
+  if (wimpt_complain(os_file(&f)) != 0)
+    return FALSE;
+  else
+    return TRUE;
+}
+
+
+/* ----------------------*/
+
+/* display or close banner dialog at start-up */
+
+void WFE_Banner(int action)
+{
+  static dbox banner;
+  int   more;
+  wimp_redrawstr r;
+  int screenX,screenY,BannerWidth,BannerHeight;
+
+  if (action==Bannershow)
+  {
+
+    banner= dbox_new("InitBanner");
+      if (banner == NULL) return;
+
+
+    /* Centre banner in current mode */
+    screenX = bbc_vduvar(bbc_XWindLimit);
+    screenY = bbc_vduvar(bbc_YWindLimit);
+    BannerWidth = banner->window.box.x1 - banner->window.box.x0;
+    BannerHeight = banner->window.box.y1 - banner->window.box.y0;
+    banner->window.box.x0 = (screenX) - (BannerWidth/2);
+    banner->window.box.y0 = (screenY) - (BannerHeight/2);
+    banner->window.box.x1 = (screenX) + (BannerWidth/2);
+    banner->window.box.y1 = (screenY) + (BannerHeight/2);
+    dbox_showstatic(banner);
+
+
+    /* Start the redraw*/
+    r.w = banner->w;
+    wimpt_noerr(wimp_redraw_wind(&r, &more));
+
+    /* Do the redraw loop */
+    while (more)
+    {
+      wimp_get_rectangle(&r, &more);
+    }
+  }
+
+  else if (action==Bannerhide)
+  {
+   dbox_dispose(&banner);
+  }
+
+}

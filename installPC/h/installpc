@@ -1,0 +1,6 @@
+#include "kernel.h"
+
+extern int task_handle, child_task_handle, quit;
+
+void installer_progress(char *msg);
+void FERR(_kernel_oserror *e);

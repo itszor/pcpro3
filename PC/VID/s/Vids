@@ -1,0 +1,953 @@
+;************************************************
+;
+;    DivaPC ARM Assembler source
+;
+;    VID.S.VIDS  - Assembler for MDA and CGA text handlers
+;
+;
+;         07-01-92 INH  Original
+;         13-01-92      Read16 bug fix
+;         16-01-92      CGA graphics handlers
+;         16-02-92      HardScreenBase added
+;         19-02-92      50-line mode added
+;         05-03-92      VIDS_ModeOK added
+;         25-03-92      Changed to VIDS_DrawPointer/Soft font support
+;         19-04-92      512-character font support
+;         21-04-92      Rewritten
+;         02-11-94      1.63 Changed to VIDS_CheckModeValid
+;         29-03-95      Palette changes
+; 2.15  1997.10.20 RJW  Watch fns use R11 instead of R12
+; 2.21b 1998.04.02 MB   Screen memory now in a dynamic area
+; 2.31  1998.09.02 W    Fixed byte overflow prob when VIS_FreeMemory returned 256
+;************************************************
+
+; Video memory organisation:
+;
+; A standard VGA has 256K of VRAM organised as 4 byte-wide 'planes' of
+; 64K each. Various different ways are used to display this data.
+;
+; To optimise performance, we have two distinct ways of mapping video
+; data into ARM RAM, depending on how the data is to be displayed. In
+; both cases, each group of four plane bytes is stored in one 32-bit ARM
+; word.
+;
+; In Text, CGA, and 256-colour video modes, memory is organised as bytes:
+; plane 0 has its data in bits 0..7 of the word, plane 1 in 8..15, plane
+; 2 in 16..23 and plane 3 in 24..31.
+;
+; In CGA mode, we keep all the video data in plane 0 (this is strictly
+; incorrect for modes 4 & 5, but CGA mode is deeply sad anyway!). In
+; text mode, characters are kept in plane 0, attributes in plane 1, and
+; the font in plane 2.
+;
+;
+;
+; In VGA modes, the data is kept in the same way as it will be displayed
+; on the ARM screen. The plane data is interleaved thus:
+;
+; If plane 0 has bits a7 a6 a5 a4 a3 a2 a1 a0,
+;    plane 1 has bits b7 b6 b5 b4 b3 b2 b1 b0,
+;    plane 2 has bits c7 c6 c5 c4 c3 c2 c1 c0,
+;    plane 3 has bits d7 d6 d5 d4 d3 d2 d1 d0,
+;
+; Then the ARM word is d0c0b0a0d1c1b1a1....d7c7b7a7
+;
+; (The reversal of bit order is because the PC displays VGA pixels bit 7
+;  first, whereas the ARM does it bit 0 first.
+;
+
+
+     GET SYS.S.STDDEFS
+
+OS_ReadVduVariables    EQU  &31
+OS_WriteC              EQU  &0
+OS_WriteI              EQU  &100
+OS_Word                EQU  &07
+OS_RemoveCursors       EQU  &36
+XOS_CheckModeValid     EQU  (XOS_bit + &3F)
+XOS_ReadDynamicArea    EQU  (XOS_bit + &5C)
+XOS_ChangeDynamicArea  EQU  (XOS_bit + &2A)
+OS_ScreenMode          EQU  &65
+XColourTrans_WritePalette EQU (XOS_bit + &4075D)
+
+     AREA |C$$Code|, CODE, READONLY
+
+     ; Common variables
+
+     EXPORT  VIDS_HardScreenBase
+     EXPORT  VIDS_DrawPointer
+     EXPORT  VIDS_ArmScreenWidthBytes
+     EXPORT  VIDS_MemoryBlk
+     EXPORT  VIDS_DisplayStart
+     EXPORT  VIDS_DisplayLength
+     EXPORT  VIDS_AddrMask
+
+     ; Text mode plotting
+
+     EXPORT  VIDS_TextRowScreenPitch
+     EXPORT  VIDS_TextRowCharacters
+     EXPORT  VIDS_CharHeight
+     EXPORT  VIDS_FontPtr
+     EXPORT  VIDS_AltFontPtr
+     EXPORT  VIDS_8to32Table
+     EXPORT  VIDS_4to32Table
+     EXPORT  VIDS_CurrentCursorOffset
+     EXPORT  VIDS_CursorVisible
+     EXPORT  VIDS_AttribLookup
+     EXPORT  VIDS_UnderlinePos
+     EXPORT  VIDS_ByteModePlaneMask
+     EXPORT  VIDS_FontWritten
+
+     EXPORT  VIDS_PlotChar
+     EXPORT  VIDS_GetScreenOffset
+     EXPORT  VIDS_TextWrite8
+     EXPORT  VIDS_TextWrite16
+     EXPORT  VIDS_ByteModeWrite8
+
+     ; CGA mode plotting
+
+     EXPORT  VIDS_CGAExpandTable
+     EXPORT  VIDS_CGARead8
+     EXPORT  VIDS_CGARead16
+     EXPORT  VIDS_CGAWrite8
+     EXPORT  VIDS_CGAWrite16
+     EXPORT  VIDS_PlotCGA
+
+     ; 16 bit handlers & 'watch' handlers
+
+     EXPORT  VIDS_GenRead16
+     EXPORT  VIDS_GenWrite16
+     EXPORT  VIDS_Read8Ptr
+     EXPORT  VIDS_Write8Ptr
+     EXPORT  VIDS_Read16Ptr
+     EXPORT  VIDS_Write16Ptr
+
+     EXPORT  VIDS_WatchStart
+     EXPORT  VIDS_WatchLength
+     EXPORT  VIDS_WatchMin
+     EXPORT  VIDS_WatchMax
+     EXPORT  VIDS_WatchWrite8
+     EXPORT  VIDS_WatchWrite16
+
+     ; Mode setup routines
+
+     EXPORT  VIDS_InitARMmode
+     EXPORT  VIDS_LoadPalette
+     EXPORT  VIDS_CheckModeValid
+     EXPORT  VIDS_EnsureRAMsize
+     EXPORT  VIDS_ReadModeVar
+     EXPORT  VIDS_EnumerateModes
+
+     ; Dynamic area stuff
+
+     EXPORT  VIDS_InitDynamicArea
+     EXPORT  VIDS_ChangeAreaSize
+     EXPORT  VIDS_KillDynamicArea
+     EXPORT  VIDS_FreeMemory
+
+     IMPORT  VID_MemorySize
+
+; CGA Graphics read/write routines ************************************
+
+; In CGA modes, modes 4 and 5 keep their data in planes 0 & 1, using
+; odd/even mode. CGA mode 6 keeps all the data in plane 0. I can't be
+; arsed with this, so I'm putting all the data in plane 0.
+
+VIDS_CGARead8
+	LDR    R1, VIDS_AddrMask
+	LDR    R2, VIDS_MemoryBlk
+	AND    R0, R1, R0, LSL #2   ; Reduce to appropriate range
+        LDRB   R0, [R2, R0]	    ; Get byte from RAM plane 0
+        MOVS   PC, LR
+
+VIDS_CGARead16
+	LDR    R1, VIDS_AddrMask
+	LDR    R2, VIDS_MemoryBlk
+	AND    R0, R1, R0, LSL #2   ; Reduce to appropriate range
+        ADD    R2, R2, R0	    ; R2 = word address
+        LDRB   R0, [R2]	            ; Get first byte
+        LDRB   R1, [R2, #4]         ; Get next byte
+        ORR    R0, R0, R1, LSL #8   ; Combine into word
+        MOVS   PC, LR
+
+VIDS_CGAWrite16 ; R0 = aligned address, R1 = data
+     ; No real point in desperate optimisation here!
+
+     STMFD  SP!, {R0, R1, LR}	; Save address & data
+
+     AND    R1, R1, # &FF	; Keep to byte
+     BL     VIDS_CGAWrite8	; Write first byte
+
+     LDMFD  SP!, {R0, R1, LR}   ; Get back addr, data, ret address
+
+     ADD    R0, R0, #1		; Next PC address
+     MOV    R1, R1, LSR #8      ; Get MSB of data
+
+     ; And drop through into...
+     ; CGA Graphics Write Byte *************
+
+VIDS_CGAWrite8  ; R0 = byte address, R1 = data
+     LDR    R3, VIDS_AddrMask
+     LDR    R2, VIDS_MemoryBlk
+     AND    R0, R3, R0, LSL #2   ; Reduce to appropriate range
+     STRB   R1, [R2, R0]	    ; Store into plane 0
+
+     ; To make life easier, I assume that the screen is always
+     ; standard CGA size (8000 bytes for each 'alternate' line).
+
+     LDR    R2, VIDS_DisplayStart
+     SUB    R0, R0, R2           ; R0 = offset into display
+     MOV    R0, R0, LSR #2       ; Convert back to PC 'byte' address
+
+     ; Now plot the character on the screen:
+VIDS_PlotCGA
+     ; Enter with R0 = screen offset (0..16K), R1 = data
+
+     ; CGA addresses are mapped in a particularly spakky way...
+     ; lines 0, 2, 4, 6 start at offsets 0, 80, 160, 240, 320, etc.
+     ; lines 1, 3, 5, 7 start at offsets 2000h, 2000h+80, 2000h+160, ...
+     ; The numbers in this calculation are 'hard-wired' in below.
+
+     LDR    R2, VIDS_DrawPointer  ; R2 will be ARM address
+     LDR    R3, VIDS_ArmScreenWidthBytes ; R3 is line pitch
+
+     TST    R0, # &2000           ; Is bit 13 set?
+     SUBNE  R0, R0, # &2000    ; If so, adjust R0
+     ADDNE  R2, R2, R3         ; and add one line to R2
+
+     CMP    R0, # 8000         ; Is offset past page length (8000 decimal)?
+     MOVHSS PC, LR             ; If so, return
+
+     CMP    R0,     #(80*64)    ; Is line >= 128
+     SUBHS  R0, R0, #(80*64)
+     ADDHS  R2, R2, R3, LSL #7
+     CMP    R0,     #(80*32)    ; Is line >= 64
+     SUBHS  R0, R0, #(80*32)
+     ADDHS  R2, R2, R3, LSL #6
+     CMP    R0,     #(80*16)     ; Is line >= 32
+     SUBHS  R0, R0, #(80*16)
+     ADDHS  R2, R2, R3, LSL #5
+     CMP    R0,     #(80*8 )    ; Is line >= 16
+     SUBHS  R0, R0, #(80*8 )
+     ADDHS  R2, R2, R3, LSL #4
+     CMP    R0,     #(80*4 )    ; Is line >= 8
+     SUBHS  R0, R0, #(80*4 )
+     ADDHS  R2, R2, R3, LSL #3
+     CMP    R0,     #(80*2 )    ; Is line >= 4
+     SUBHS  R0, R0, #(80*2 )
+     ADDHS  R2, R2, R3, LSL #2
+     CMP    R0,     #(80*1 )    ; Is line >= 2
+     SUBHS  R0, R0, #(80*1 )
+     ADDHS  R2, R2, R3, LSL #1
+
+     ; Here, R0 = PC byte offset into line
+     ;       R2 = ARM address of start of screen line
+
+     ADD    R0, R2, R0, LSL #2
+
+     ; Now R0 = ARM screen address
+
+     ; To economise on the size of the 'PixelExpand' lookup table,
+     ; the PC data is processed in two 4-bit chunks. R3 has bits
+     ; 4..7 of the PC data, which will become bits 0..15 of the ARM
+     ; data. R1 has bits 0..3 of the PC data, which becomes bits 16..32
+     ; of the ARM data.
+
+     LDR    R2, VIDS_CGAExpandTable
+
+     MOV    R3, R1, LSR #4		; R3 = right-hand data
+     AND    R1, R1, # &F                ; R1 = left-hand data
+
+     LDR    R3, [R2, R3, LSL #2]        ; Expand as appropriate
+     LDR    R1, [R2, R1, LSL #2]
+     ORR    R3, R3, R1, LSL #16
+
+     STR    R3, [R0]                    ; Put on the screen
+     MOVS   PC, LR
+
+     ; VIDS variables *********************************
+
+     ALIGN 16
+
+VIDS_MemoryBlk              DCD 0  ; Do not move - used in LDM!!
+VIDS_AddrMask		    DCD 0
+VIDS_DisplayStart           DCD 0
+VIDS_DisplayLength          DCD 0
+
+VIDS_DrawPointer           DCD 0   ; Do not move these! used in LDM!!
+VIDS_TextRowScreenPitch    DCD 0   ;
+VIDS_TextRowCharacters     DCD 0   ;
+VIDS_CurrentCursorOffset   DCD 0   ;
+
+VIDS_AttribLookup          DCD 0   ; Do not move !
+VIDS_UnderlinePos          DCD 0   ;
+VIDS_FontPtr               DCD 0   ;
+VIDS_AltFontPtr            DCD 0   ;
+
+VIDS_4to32Table            DCD 0   ; Do not move !
+VIDS_CharHeight            DCD 0   ;
+VIDS_ArmScreenWidthBytes   DCD 0   ;
+VIDS_8to32Table            DCD 0   ;
+
+VIDS_CursorVisible         DCD 0
+VIDS_FontWritten           DCD 0
+VIDS_ByteModePlaneMask	   DCD 0
+VIDS_CGAExpandTable	   DCD 0
+
+
+; 'Byte mode' text write functions ****************************
+
+; Entered with R0 = address, R1 = data byte to write
+
+VIDS_ByteModeWrite8
+	LDR	R2, VIDS_MemoryBlk
+	LDR     R3, VIDS_AddrMask
+	AND     R0, R3, R0, LSL #2         ; R0 = byte offset
+        LDR     R3, VIDS_ByteModePlaneMask ; R3 = mask for writing
+        ORR     R1, R1, R1, LSL #8
+        ORR     R1, R1, R1, LSL #16        ; R1 = new CPU data
+        LDR     R12, [R2, R0]              ; Get old data
+	BIC     R12, R12, R3               ; Mask out old bits
+        AND     R1,  R1,  R3               ; Mask in new bits
+        ORR     R1,  R1,  R12              ; Combine them all
+        STR     R1,  [R2, R0]              ; Put it back
+
+        TST     R3, # &00FF0000            ; Have we just written plane 2?
+        STRNE   R3, VIDS_FontWritten       ; If so, whole screen will need
+        MOVNES  PC, LR                     ; redraw.
+
+        ; Otherwise, just replot this character if visible
+        MOV     R2, R1, LSR #8             ; R2 = attribute
+        AND     R2, R2, # &FF
+        AND     R1, R1, # &FF              ; R1 = character
+
+        LDR     R3, VIDS_DisplayStart
+        SUB     R0, R0, R3                 ; R0 = display offset
+        LDR     R3, VIDS_DisplayLength
+        CMP     R0, R3                     ; within range?
+        BLO     VIDS_PlotChar              ; If so, plot char
+        MOVS    PC, LR
+
+; Text write functions ****************************************
+
+; These are for use when in a standard text mode, when Odd/Even is
+; set and the plane mask is set normally. Text memory
+; is organised as one 32-bit word for each PC address; the 'character'
+; data is held in byte 0 of the word, and the 'attribute' data in
+; byte 1. Because of odd-even mode, only alternate words are used -
+; in other words a PC address abcdefgh (binary) translates to an
+; ARM address of abcdefg00h. Each character-attribute pair therefore
+; uses 8 bytes of the VGA memory.
+
+VIDS_TextWrite8  ; Enter with R0 = address, R1 = data
+     ; Optimised for the case where the character is on-screen
+     STMFD  SP!, {R4-R9, LR}
+
+     ADR    R9, VIDS_MemoryBlk  ; R9 points to our variables
+     LDMIA  R9!, {R3, R4, R5, R6}
+
+     ;LDR   R3, VIDS_MemoryBlk
+     ;LDR   R4, VIDS_AddrMask
+     ;LDR   R5, VIDS_DisplayStart
+     ;LDR   R6, VIDS_DisplayLength
+
+     AND    R0, R4, R0, LSL #2   ; R0 = frame buffer offset
+     TST    R0, #4		 ; If R0 ends xxx100
+     SUBNE  R0, R0, #3           ; Make R0 end xxx001
+     STRB   R1, [R3, R0]	 ; Store byte in RAM
+
+     BIC    R0, R0, #3           ; Get back R1 = character
+     LDRB   R1, [R3, R0]
+     ORR    R0, R0, #1
+     LDRB   R2, [R3, R0]         ; R2 = character data
+
+     ; Check if we're on screen
+
+     SUB    R0, R0, R5           ; Get offset from display start
+     CMP    R0, R6
+     BLO    VIDS_PlotChar2
+     LDMFD  SP!, {R4-R9, PC}^
+
+     ; **********************
+
+VIDS_TextWrite16 ; Enter with R0 = aligned address, R1 = data
+     ; Optimised for the case where the character is on-screen
+     STMFD  SP!, {R4-R9, LR}
+
+     MOV    R2, R1, LSR #8       ; R2 = attribute
+     AND    R1, R1, # &FF        ; R1 = character
+
+     ADR    R9, VIDS_MemoryBlk  ; R9 points to our variables
+     LDMIA  R9!, {R3, R4, R5, R6}
+
+     ;LDR   R3, VIDS_MemoryBlk
+     ;LDR   R4, VIDS_AddrMask
+     ;LDR   R5, VIDS_DisplayStart
+     ;LDR   R6, VIDS_DisplayLength
+
+     AND    R0, R4, R0, LSL #2   ; R0 = frame buffer offset
+     ADD    R3, R3, R0           ; R3 = word address
+     STRB   R1, [R3]	 	 ; Store char in plane 0
+     STRB   R2, [R3, #1]         ; Store attrib in plane 1
+
+     ; Check if we're on screen
+
+     SUB    R0, R0, R5           ; Get offset from display start
+     CMP    R0, R6
+     BLO    VIDS_PlotChar2
+     LDMFD  SP!, {R4-R9, PC}^
+
+     ; VIDS_PlotChar ***************************************
+
+     ; Enter with
+     ;  R0 = Frame buffer offset (character number*8)
+     ;  R1 = Character, R2 = Attribute
+
+VIDS_PlotChar
+     STMFD  SP!, { R4-R9, LR }
+
+VIDS_PlotChar2
+     ADR    R9, VIDS_DrawPointer
+     LDMIA  R9!, {R3, R4, R5, R6}
+
+     ;LDR    R3, VIDS_DrawPointer
+     ;LDR    R4, VIDS_TextRowScreenPitch
+     ;LDR    R5, VIDS_TextRowCharacters
+     ;LDR    R6, VIDS_CurrentCursorOffset
+
+     MOV    R0, R0, LSR #3       ; R0 = offset (in characters) into screen
+
+     ; If we are going to overwrite the location of the cursor
+     ; clear CursorVisible flag
+
+     CMP    R0, R6
+     MOVEQ  R6, #0
+     STREQ  R6, VIDS_CursorVisible
+
+     ; Convert R0 to ARM screen address in R3
+
+     CMP    R0, R5, LSL #5     ; Is Row >= 32 ( for 50-line modes )
+     SUBHS  R0, R0, R5, LSL #5
+     ADDHS  R3, R3, R4, LSL #5
+
+     CMP    R0, R5, LSL #4     ; Is Row >= 16
+     SUBHS  R0, R0, R5, LSL #4
+     ADDHS  R3, R3, R4, LSL #4
+
+     CMP    R0, R5, LSL #3     ; Is Row >= 8
+     SUBHS  R0, R0, R5, LSL #3
+     ADDHS  R3, R3, R4, LSL #3
+
+     CMP    R0, R5, LSL #2     ; Is Row >= 4
+     SUBHS  R0, R0, R5, LSL #2
+     ADDHS  R3, R3, R4, LSL #2
+
+     CMP    R0, R5, LSL #1     ; Is Row >= 2
+     SUBHS  R0, R0, R5, LSL #1
+     ADDHS  R3, R3, R4, LSL #1
+
+     CMP    R0, R5, LSL #0     ; Is Row >= 1
+     SUBHS  R0, R0, R5, LSL #0
+     ADDHS  R3, R3, R4, LSL #0
+                               ; R0 = column number (1..80 typically)
+     ADD    R3, R3, R0, LSL #2 ; Add in column to give final ARM address
+
+     ; At this point
+     ; R3 = ARM address of start of char
+     ; R1 = character (0..255), R2 = attribute (0..255)
+
+     LDMIA  R9!, { R0, R4, R5, R6 }
+
+     ;LDR    R0, VIDS_AttribLookup
+     ;LDR    R4, VIDS_UnderlinePos
+     ;LDR    R5, VIDS_FontPtr
+     ;LDR    R6, VIDS_AltFontPtr
+
+     ; Find entry in font table
+
+     TST    R2, # &8                   ; Attrib Bit 3 determines primary(=0)
+                                       ; or alternate(=1) font
+     ; Each character in the font is spread over 32 words in plane 2 -
+     ; i.e. 128 bytes (check: 256 chars * 128 bytes * 8 fonts =
+     ; 256K).
+
+     ADDEQ  R1, R5, R1, LSL #7         ; R1 = Address = (R1*16) + R5 or R6
+     ADDNE  R1, R6, R1, LSL #7
+
+     AND    R5, R2, # &77              ; Is Attrib & 0x77 = 0x01 ?
+     CMP    R5, # 1                    ; If not, we can't have underline
+     MOVNE  R4, # 0
+
+     CMP    R0, #0                     ; If mono mode, we need to transform
+     LDRNEB R2, [R0, R2]               ; attributes according to table
+
+     ; Set up attributes
+
+     AND    R5, R2, # &F               ; Get foreground attrib into R5
+     EOR    R6, R5, R2, LSR #4         ; background ^ foreground into R6
+
+     ; At this point
+     ; R1 = Address of char in font
+     ; R3 = ARM screen address of char cell
+     ; R4 = underline position (0 if no underline )
+     ; R5 = foreground
+     ; R6 = foreground ^ background
+
+ ;MOV R0,#255  ;TEST!
+ ;STRB R0,[R1]
+
+     LDMIA  R9!, {R0, R2, R7, R8}
+
+     ;LDR    R0, VIDS_4to32Table
+     ;LDR    R2, VIDS_CharHeight
+     ;LDR    R7, VIDS_ArmScreenWidthBytes
+     ;LDR    R8, VIDS_8to32Table
+
+     LDR    R5, [R0, R5, LSL #2]       ; R5 = foreground repeated 8 times
+     LDR    R6, [R0, R6, LSL #2]       ; R6 = bgnd ^ fgnd repeated 8 times
+
+     ; At this point
+     ; R1 = address of character in font table
+     ; R2 = no of lines in character
+     ; R3 = ARM screen address to start plot
+     ; R4 = Underline position
+     ; R5 = foreground
+     ; R6 = background ^ foreground
+     ; R7 = ARM bytes per line on screen
+     ; R8 = Pixel Expand Table
+
+
+PlotLoop
+     LDRB   R0, [R1], #4          ; Get line of pixels for character
+     LDR    R0, [R8, R0, LSL #2]  ; Expand to 32-bits
+     BIC    R0, R6, R0            ; Get background XOR bits
+     EOR    R0, R0, R5            ; Add foreground bits
+     STR    R0, [R3], R7          ; Put on screen & go to next line
+     SUBS   R2, R2, #1
+     BNE    PlotLoop
+     CMP    R4, #0                ; Doing an underline?
+     STRNE  R5, [R3, R4]          ; If so, add a line of foreground colour
+
+     LDMFD  SP!, { R4-R9, PC }^
+
+     ; *********************************************************
+
+     ; VIDS_GetScreenOffset
+
+     ; Enter with character offset on PC screen in R0,
+     ; exit with ARM offset from top of screen in R0
+
+VIDS_GetScreenOffset ;
+
+     MOV    R3, #0
+     LDR    R1, VIDS_TextRowScreenPitch
+     LDR    R2, VIDS_TextRowCharacters
+
+     CMP    R0, R2, LSL #5     ; Is Row >= 32 (50-line modes)
+     SUBHS  R0, R0, R2, LSL #5
+     ADDHS  R3, R3, R1, LSL #5
+
+     CMP    R0, R2, LSL #4     ; Is Row >= 16
+     SUBHS  R0, R0, R2, LSL #4
+     ADDHS  R3, R3, R1, LSL #4
+
+     CMP    R0, R2, LSL #3     ; Is Row >= 8
+     SUBHS  R0, R0, R2, LSL #3
+     ADDHS  R3, R3, R1, LSL #3
+
+     CMP    R0, R2, LSL #2     ; Is Row >= 4
+     SUBHS  R0, R0, R2, LSL #2
+     ADDHS  R3, R3, R1, LSL #2
+
+     CMP    R0, R2, LSL #1     ; Is Row >= 2
+     SUBHS  R0, R0, R2, LSL #1
+     ADDHS  R3, R3, R1, LSL #1
+
+     CMP    R0, R2, LSL #0     ; Is Row >= 1
+     SUBHS  R0, R0, R2, LSL #0
+     ADDHS  R3, R3, R1, LSL #0
+
+     ; R0 = column number
+
+     ADD    R0, R3, R0, LSL #2 ; Add in column to give final ARM address
+
+     MOVS   PC, LR
+
+
+; Generic Read16 and Write16 Handlers ----------------------------
+
+; These are used when there is no specific speed advantage to be
+; gained from doing 16-bit accesses whole. They are split down into
+; two eight-bit accesses.
+
+VIDS_GenRead16        ; ***********************
+
+     ; Enter R0 = address; return R0 = data
+
+     STMFD  SP!, {R4, R5, LR}      ; Preserve R4, R5 and LR
+
+     ADD    R4, R0, #1             ; R4 = next address
+     LDR    R5, VIDS_Read8Ptr
+     BL     Call_Via_R5
+
+     MOV    R1, R0                 ; Save data in R1
+     MOV    R0, R4                 ; R0 = next address
+     AND    R4, R1, # &FF          ; Save LSB of data in R4
+
+     BL     Call_Via_R5            ; Read MSB of data
+     ORR    R0, R4, R0, LSL #8     ; & combine the two
+
+     LDMFD  SP!, {R4, R5, PC}^     ; Restore R4, R5 and return
+
+Call_Via_R5
+     MOV    PC, R5		   ; Do not affect flags!
+
+
+VIDS_GenWrite16       ; ***********************
+
+     ; R0 = address, R1 = data
+
+     LDR    R2, VIDS_Write8Ptr
+
+     STMFD  SP!, {R0, R1, R2, LR}  ; Preserve R0-R2 and LR
+
+     AND    R1, R1, # &FF          ; R1 = LSB of data
+     BL     Call_Via_R2            ; Write LSB
+
+     LDMFD  SP!, {R0, R1, R2, LR}  ; Get back address/data
+
+     ADD    R0, R0, #1             ; Next address
+     MOV    R1, R1, LSR #8         ; Write MSB
+                                   ; by dropping through into..
+Call_Via_R2
+     MOV    PC, R2                 ; NB. Do not affect flags! We are in SVC
+                                   ; mode at this point.
+
+     ; ************************
+
+     ; The 'Watch' routines and variables are used in Windowed mode to
+     ; keep tabs on the max and min addresses written to by the 386.
+     ; In general, only accesses which result in screen changes will be
+     ; processed
+
+
+VIDS_Read8Ptr     DCD   0
+VIDS_Write8Ptr    DCD   0
+VIDS_Read16Ptr    DCD   0
+VIDS_Write16Ptr   DCD   0
+VIDS_WatchStart   DCD   0        ; goes in R2
+VIDS_WatchLength  DCD   0        ; goes in R3
+VIDS_WatchMin     DCD   0        ; goes in R4
+VIDS_WatchMax     DCD   0        ; goes in R5
+
+VIDS_WatchWrite8 ; R0 = address, R1 = data
+
+     LDR      R11, VIDS_Write8Ptr   ; R11 = write8 pointer
+     STMFD    SP!, {R4, R5, R11}    ; keep it on stack
+
+     ADR      R4,  VIDS_WatchStart
+     LDMIA    R4,  {R2, R3, R4, R5}
+     ; LDR R2, VIDS_WatchStart
+     ; LDR R3, VIDS_WatchLength
+     ; LDR R4, VIDS_WatchMin
+     ; LDR R5, VIDS_WatchMax
+
+     SUB      R2, R0, R2                   ; R2 = offset from base
+     CMP      R2, R3                       ; is it >= length of screen
+     LDMHSFD  SP!, {R4, R5, PC}            ; if so, link straight to routine
+     CMP      R2, R4                       ; is it < WatchMin?
+     STRLT    R2, VIDS_WatchMin            ; if so, update
+     CMP      R2, R5                       ; is it > WatchMax?
+     STRGT    R2, VIDS_WatchMax            ; if so, update
+     LDMFD    SP!, {R4, R5, PC}            ; chain on to routine
+
+     ; ************************
+
+VIDS_WatchWrite16 ; R0 = address, R1 = data
+
+     LDR      R11, VIDS_Write16Ptr	; R11 = address of write16 routine
+     STMFD    SP!, {R4, R5, R11}        ; keep it on stack
+
+     ADR      R4,  VIDS_WatchStart
+     LDMIA    R4,  {R2, R3, R4, R5}
+     ; LDR R2, VIDS_WatchStart
+     ; LDR R3, VIDS_WatchLength
+     ; LDR R4, VIDS_WatchMin
+     ; LDR R5, VIDS_WatchMax
+     SUB      R2, R0, R2                   ; R2 = offset from base
+     CMP      R2, R3                       ; is it >= length of screen
+     LDMHSFD  SP!, {R4, R5, PC}            ; if so, link straight to routine
+     CMP      R2, R4                       ; is it < WatchMin?
+     STRLT    R2, VIDS_WatchMin            ; if so, update
+     ADD      R2, R2, #1                   ; address
+     CMP      R2, R5                       ; is it > WatchMax?
+     STRGT    R2, VIDS_WatchMax            ; if so, update
+     LDMFD    SP!, {R4, R5, PC}            ; chain on to routine
+
+
+     ; Initialise / Control routines -------------------------
+
+
+     ; *******************************************************
+
+     ; VIDS_InitARMmode
+
+     ; This is used to change the screen mode to the value passed
+     ; in R0, and to initialise VIDS_HardScreenBase to the start of the
+     ; screen. This could be done in C but calling all the SWI's is
+     ; a pain in the neck.
+
+     ; 09/11/94 This is now passed a mode specifier in R0: this
+     ; is either a number in the range 0-255, or a pointer to a
+     ; mode-selector structure (see VID.H.MODETYPE). Mode-selectors
+     ; are only allowed in RISCOS3.5
+
+VIDS_InitARMmode
+     STMFD  SP!, {LR}
+
+     ; Set ARM mode ****************
+
+     MOV    R1, R0
+     CMP    R1, # &100       ; Mode selector?
+     BHS    IAM_ModeSel
+
+     SWI    OS_WriteI + 22    ;To change mode use VDU 22, mode
+     MOV    R0, R1
+     SWI    OS_WriteC
+     B      IAM_ReadBase
+
+IAM_ModeSel                 ; New-style mode
+     MOV    R0, #0          ; OS_ScreenMode 0 = select screen mode
+     SWI    OS_ScreenMode
+
+     ; Reset VIDS_HardScreenBase *********
+
+IAM_ReadBase
+     ADR    R0, ReadBaseBlk
+     ADR    R1, VIDS_HardScreenBase
+     SWI    OS_ReadVduVariables
+
+     ; Remove RISCOS cursor ***************
+
+     SWI    OS_RemoveCursors
+
+     ; Reset mouse limits to full-screen ***********
+
+     MOV    R0, #21
+     ADR    R1, SetLimitsBlk
+
+     SWI    OS_Word
+
+     ; Set mouse palette **********************
+
+     ; Mouse Colour 3=white, 1=black
+
+     MOV    R0, # 12
+     ADR    R1, MousePalBlk1
+     SWI    OS_Word
+
+     MOV    R0, # 12
+     ADR    R1, MousePalBlk2
+     SWI    OS_Word
+
+     LDMFD  SP!, {PC}^
+
+
+ReadBaseBlk  DCD 149, -1
+
+VIDS_HardScreenBase        DCD 0
+
+SetLimitsBlk   DCB   1           ; OSword 21,1 = Set mouse limits
+               DCB   0, &80      ; Left
+               DCB   0, &80      ; Bottom
+               DCB   &FF, &7F    ; Right
+               DCB   &FF, &7F    ; Top
+
+     ALIGN
+
+MousePalBlk1   DCB   1, 25, 0,   0,   0
+
+     ALIGN
+
+MousePalBlk2   DCB   3, 25, &FF, &FF, &FF
+
+     ALIGN
+
+     ;*************************************************************
+
+     ; VIDS_LoadPalette ( int ncolours, int *rgbtable )
+
+     ; R0 = no. of entries in palette (16 or 256)
+     ; R1->table of words of the form 0xBBGGRR00h
+
+     ; This is done is assembler purely for simplicity.
+
+
+VIDS_LoadPalette
+	STMFD	SP!, {R4, LR}
+	; In fact, R0 is ignored here
+	MOV	R2, R1		; R2->palette entries
+	MOV	R0, # -1
+	MOV	R1, # -1
+	MOV	R3, # 0
+	MOV	R4, # 0
+
+	SWI	XColourTrans_WritePalette ; Do it, if possible
+	BVC	VLP_Done     ; If no error, exit
+
+	; Else, must be RISCOS2 machine - set it longhand
+
+	MOV     R3, #0		; Colour number
+VLP_Loop
+	LDR	R1, [R2], #4	; Get entry 0xBBGGRR00
+
+	ORR	R0, R3, R1, LSL #8	; R0 = 0xGGRRxxcc
+	BIC	R0, R0, # &FF00
+        ORR     R0, R0, # &1000     ; 10h = 'set palette' opcode
+	STR	R0, PaletteBlk	; Set blk[0] = colour number
+				;     blk[1] = 16 = opcode
+	MOV     R1, R1, LSR #24	;     blk[2] = red
+	STRB	R1, PaletteBlk+4 ;    blk[3] = green
+				;     blk[4] = blue
+
+	MOV	R0, #12         ; Palette ops
+	ADR	R1, PaletteBlk
+     	SWI	OS_Word
+	ADD	R3, R3, #1
+	CMP	R3, #16
+	BNE	VLP_Loop
+VLP_Done
+	LDMFD  SP!, {R4, PC}^
+
+PaletteBlk   DCB 0, 16, 0, 0, 0
+
+
+     ; *************************************************************
+
+     ; int VIDS_CheckModeValid ( ModeSpec ARMmode )
+
+     ; Checks that this machine can support the given ARM mode.
+     ; returns R0=0 if OK
+     ;         R0=-1 if it's a bad mode
+     ;         R0=-2 if it's a lack of memory
+     ;
+     ; I am assuming RISCOS prior to v3.5 will reject mode selectors.
+	ALIGN
+VIDS_CheckModeValid
+     STMFD   SP!, {LR}              ; R0 = mode number
+     SWI     XOS_CheckModeValid     ; If carry clear, mode is OK
+     MOVCC   R0, #0                 ; return 0
+     MOVVS   R0, # -1		    ; If SWI error, call it bad mode
+     LDMFD   SP!, {PC}^             ; else -1 = bad mode, -2 = no memory
+
+     ;***************************************************************
+
+     ; void VIDS_EnsureRAMSize(int size)
+     ;
+     ; Ensures that the screen RAM is at least the given size.
+     ; Or, at least, tries to!
+
+VIDS_EnsureRAMsize
+     STMFD   SP!, {R4-R9, LR}
+     MOV     R3, R0                 ; R3 = screen size
+
+     MOV     R0, #2                 ; Read screen RAM size
+     SWI     XOS_ReadDynamicArea    ; Return R1 = size of area
+     BVS     ramsize_exit	    ; If error, give up
+
+     SUBS    R1, R3, R1             ; R1 = desired - actual size
+     LDMLSFD SP!, {R4-R9, PC}^       ; If <=0, we're OK
+
+     MOV     R0, #2                 ; Set screen RAM size
+     SWI     XOS_ChangeDynamicArea  ; That's our best try!
+ramsize_exit
+     LDMFD   SP!, {R4-R9, PC}^
+
+     ; Mode setup routines ===============================================
+
+XOS_ReadModeVariable EQU (XOS_bit + &35)
+
+VIDS_ReadModeVar ; (int mode, int val_no )
+     ; R0 = mode (in the range 0-255),  R1 = variable no.
+
+     STMFD   SP!, {LR}
+     SWI     XOS_ReadModeVariable
+     MOV     R0, R2               ; R2 = returned mode value
+     MOVVS   R0, #-1
+     MOVCS   R0, #-1              ; Put it in R0, or -1 if error
+     LDMFD   SP!, {PC}^
+
+VIDS_EnumerateModes ;  ( ModeEnumerated *mode, int skip );
+
+	STMFD	R13!,{R1-R7,R14}
+	MOV	R6,R0
+	MOV	R2,R1
+	MOV	R7,#44
+	MOV	R0,#2
+	SWI	&65 ; OS_ScreenMode
+	CMP	R2,#0
+	MOVEQ	R0,#0
+	MOVNE	R0,#1
+	LDMFD	R13!,{R1-R7,PC}
+
+     ; Dynamic area stuff ================================================
+
+DynAreaName
+	DCB	"PC Card display",0
+	ALIGN
+
+DynAreaNum
+	DCD	0
+
+VIDS_InitDynamicArea
+	STMFD	R13!,{R4-R8,R14}
+	MOV	R0,#0	; reason code 0 = create
+	MVN	R1,#0	; for Acorn use
+	MOV	R2,#0	; initial size
+	MVN	R3,#0	; for Acorn use
+	MOV	R4,#128 ; not draggable
+	MVN	R5,#0	; no limit to size
+	MOV	R6,#0	; handler routine (none)
+	MOV	R7,#0	; ditto for workspace
+	ADR	R8,DynAreaName
+	SWI	&66 ; OS_DynamicArea
+	STR	R1,DynAreaNum
+	MOV	R0,R3
+	LDMFD	R13!,{R4-R8,PC}^
+
+VIDS_ChangeAreaSize
+	STMFD	R13!,{R4-R8,R14}
+	STMFD	R13!,{R0}
+	MOV	R0,#2
+	LDR	R1,DynAreaNum
+	SWI	&66 ; OS_DynamicArea
+	MOV	R0,R1
+	LDMFD	R13!,{R1}
+	SUB	R1,R1,R2
+	SWI	&2A | 1<<17 ; XOS_ChangeDynamicArea
+	MOVVS	R0,#0
+	MOVVC	R0,R3	; return base
+	LDMFD	R13!,{R4-R8,PC}^
+
+VIDS_KillDynamicArea
+	STMFD	R13!,{R14}
+	MOV	R0,#1
+	LDR	R1,DynAreaNum
+	SWI	&66 | 1<<17 ; OS_DynamicArea
+	MOVVC	R0,#0
+	MOVVS	R0,#1
+	LDMFD	R13!,{PC}^
+
+VIDS_FreeMemory
+; Doesn't really belong here, but there's some overlap with CPU anyway
+	STMFD	R13!,{R4,R14}
+	MOV	R3,R0
+	MVN	R0,#0
+	MVN	R1,#0
+	SWI	&400EC ; Wimp_SlotSize
+	ADD	R0,R2,R3
+	CMP	R0,#15<<20
+	MOVGT	R0,#15<<20	; Set a 15Mb limit to emulated VRAM
+	LDMFD	R13!,{R4,PC}^   ; (16Mb overflows the VID_CRTC byte register)
+
+  END

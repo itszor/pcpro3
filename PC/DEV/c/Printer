@@ -1,0 +1,144 @@
+ /*
+ *   DIVA PC ARM C source
+ *   
+ *   DEV.C.PRINTER - RISCOS printer port
+ *  
+ *  Versions
+ *  07-07-92  INH  Original 
+ *  05-03-93       Doesn't look at DirectParallel
+ */
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "dev.h.printer"
+       
+/* ************************************* */                   
+
+/* Input status bits ********** */
+
+#define READY_BIT   0x80
+#define NACK_BIT    0x40
+#define SELIN_BIT   0x10       /* 'Selected' input from printer */
+#define NERROR_BIT  0x08       /* Not Error bit */
+                                  
+/* Output control bits ******** */
+
+#define STROBE_BIT  0x01
+#define NRESET_BIT  0x04
+#define SELCT_BIT   0x08
+
+/* Globals ******************** */
+
+static int PRN_data;
+static int PRN_ctrl;
+static _kernel_swi_regs R;
+
+
+/* RISCOS interface ************************************* */ 
+                  
+static int PRN_ReadyBit()
+{
+  R.r[0] = 128;   /* OSByte 128, 252 = Get free space in printer buffer */
+  R.r[1] = 252;   /* on return, R1 + (R2<<8) holds result */
+                                                       
+  _kernel_swi ( XOS_Bit | OS_Byte, &R, &R );
+
+  if ( (R.r[2] == 0) && (R.r[1] < 4) )  /* Play safe: <=3 spaces is BUSY */
+    return 0;
+  else
+    return READY_BIT;
+
+}                    
+
+/* ********************* */                   
+           
+static void PRN_PrintChar ( int ch )
+{            
+  if ( PRN_ReadyBit() )
+  {
+    R.r[0] = ch;
+    _kernel_swi ( XOS_Bit | OS_PrintChar, &R, &R );
+  }
+
+  /* If printer is busy, ignore data; the 386 should be polling the READY
+     bit before it sends data anyway! */
+}
+
+
+/* Callback handlers ************************************* */
+
+static int PRN_Rd8( int addr )
+{
+  switch ( addr )
+  {
+    case 0x3BC:
+       return PRN_data;
+
+    case 0x3BD:
+       return PRN_ReadyBit() | SELIN_BIT | NERROR_BIT |
+              ( PRN_ctrl & STROBE_BIT ? 0 : NACK_BIT );
+
+    case 0x3BE:
+       return PRN_ctrl;
+
+    default:
+          break;
+  }
+  return 0xFF;
+}
+
+/* ********************** */      
+
+static void PRN_Wr8( int addr, int data )
+{
+  switch ( addr )
+  {
+    case 0x3BC:
+       PRN_data = data;
+       return;
+
+    case 0x3BD:
+       return;
+
+    case 0x3BE:
+       if ( (data & STROBE_BIT) && !(PRN_ctrl & STROBE_BIT) )
+         PRN_PrintChar ( PRN_data );
+       PRN_ctrl = data;
+       return;
+
+    default:
+       break;
+  }
+
+}
+
+
+/* Initialisation routines ************************************* */
+
+static bool PRN_SetConfig()
+{
+  if ( CFG.RISCOSprinter > 0 )   
+  {
+    SYS_registerIO( 0x3BC, 0x3BF,
+       PRN_Rd8, PRN_Rd8, PRN_Wr8, PRN_Wr8, 0 );                     
+    PRN_data = 0;
+    PRN_ctrl = 0;
+  }
+  return false;
+} 
+
+/* ***************************************************************** */
+
+bool PRN_Init()
+{                                       
+  SYS_registerEvent ( SYS_SetConfig, PRN_SetConfig, 0 );
+
+  return true;
+} 
+
+/* ************************************* */
+                                                               

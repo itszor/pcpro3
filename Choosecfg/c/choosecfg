@@ -1,0 +1,239 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "iconbar.h"
+#include "menu.h"
+#include "wimplib.h"
+#include "window.h"
+
+#include "misc.h"
+
+MessagesFD   msg_block;
+IdBlock      id_block;
+ObjectId     choose_window, banner_window;
+int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
+char         directory[32] = "<ChooseCfg$Dir>";
+char         config_dir[32] = "<Choices$Dir>.PC.v";
+void         *sprite_area;
+void         *er;
+
+int          num_configs=0;
+
+struct {
+  char fname[11];
+  char long_name[64];
+} config_list[32];
+
+#define ER(x) if (x != NULL) wimp_report_error((void*) x, 0, "ChooseCfg")
+
+void show_window_centred(ObjectId window)
+{
+  WimpGetWindowOutlineBlock outline;
+  int                       screen_x, screen_y, top_left[2];
+
+  window_get_wimp_handle(0, window, &outline.window_handle);
+  wimp_get_window_outline(&outline);
+  get_screen_size(&screen_x, &screen_y);
+
+  top_left[0] = (screen_x >> 1) - ( (outline.outline.xmax - outline.outline.xmin) >> 1 );
+  top_left[1] = (screen_y >> 1) + ( (outline.outline.ymax - outline.outline.ymin) >> 1 );
+
+  ER(toolbox_show_object(0, window, 2, top_left, NULL, NULL));
+}
+
+void whinge(char *msg)
+{
+  _kernel_oserror    err;
+
+  err.errnum = 0;
+  strcpy(err.errmess, msg);
+  wimp_report_error(&err, 0, "ChooseCfg");
+}
+
+int quit_handler(WimpMessage *message, void *handle)
+{
+  quit = 1;
+  return(1);
+}
+
+              /* A bloody mess, but does the job */
+void broadcast_pc_message(int msg_num, int reason, char *file)
+{
+  int pc_msg[64];
+
+  pc_msg[0] = 256;
+  pc_msg[3] = 0;
+  pc_msg[4] = msg_num;
+  pc_msg[5] = reason;
+
+  strcpy( ((char*) pc_msg)+24, file);
+  wimp_send_message(17, pc_msg, 0, 0, 0);
+}
+
+void read_version(void)
+{
+  FILE   *fh;
+  char   line[256], ver[8], *vdir, *l;
+
+  fh = fopen("<ChooseCfg$Dir>.^.!Run", "rb");
+  if (fh == NULL)
+  {
+    whinge("Can't find <ChooseCfg$Dir>.^.!Run");
+    quit = TRUE;
+    return;
+  }
+
+  fgets(line, 256, fh);
+  l = line;
+  while (*l>31 && strncmp(l, "!PC v", 2)!=0 ) l++;
+  sscanf(l+5, "%s", ver);
+  if (*l<32)
+  {
+    whinge("Can't find version no. in <ChooseCfg$Dir>.^.!Run");
+    quit = TRUE;
+    return;
+  }
+  ver[1] = ver[0]; vdir = ver+1;
+  strcat(config_dir, vdir);
+  fclose(fh);
+}
+
+extern void read_list(void)
+{
+  FILE *fh;
+  int  count=0, x;
+  char line[256], temp_fname[128], stringset[2048]="\0";
+
+  while (count > -1 && num_configs != 31)
+  {
+    count = read_entry(config_dir, line, count, NULL); num_configs++;
+    if (count == -1 && num_configs == 1)
+      whinge("No configurations found!  Please run !PCConfig to set up a suitable default"), exit(1);
+
+    strcpy(config_list[num_configs-1].fname, line);
+    sprintf(temp_fname, "%s.%s", config_dir, line);
+    fh = fopen(temp_fname, "rb");
+    line[0] = 0;
+    while (strncmp(line, "ConfigName", 10) != 0 && !feof(fh))
+      fgets(line, 256, fh);
+    line[strlen(line)-1] = 0;
+    if (!feof(fh))
+      strcpy(config_list[num_configs-1].long_name, line+11);
+    else
+      strcpy(config_list[num_configs-1].long_name, config_list[num_configs-1].fname);
+    fclose(fh);
+    //sprintf(line, "%d: \"%s\" -> \"%s\"", count, config_list[num_configs-1].fname, config_list[num_configs-1].long_name);
+    //whinge(line);
+    x = read_entry(config_dir, line, count, NULL);
+    if (x == -1) count = -1;
+  }
+  for (x=0; x<num_configs; x++)
+  {
+    strcat(stringset, config_list[x].long_name);
+    strcat(stringset, ",");
+  }
+
+  fh = fopen("<ChooseCfg$Dir>.Last", "rb");
+  x = 0;
+  if (fh != NULL)
+  {
+    fread(&x, 4, 1, fh);
+    fclose(fh);
+  }
+  if (x >= num_configs) x = 0;
+
+  stringset[strlen(stringset)] = 0;
+  //whinge(stringset);
+  ER(stringset_set_available(0, choose_window, 0, stringset));
+  ER(stringset_set_selected(1, choose_window, 0, (char*) x));
+}
+
+int run_handler(int chosen)
+{
+  FILE *fh;
+  char cmd[256], config_fullpath[256];
+  int  startup_msg[64];
+
+  if (chosen != 0)
+    ER(stringset_get_selected(1, choose_window, 0, &chosen));
+
+  fh = fopen("<ChooseCfg$Dir>.Last", "wb");
+  fwrite(&chosen, 4, 1, fh);
+  fclose(fh);
+
+  sprintf(config_fullpath, "%s.%s",  config_dir, config_list[chosen].fname);
+  sprintf(cmd, "Set Diva$ConfigFile %s", config_fullpath);
+  system(cmd);
+
+  broadcast_pc_message(0x44680, 0, config_fullpath);
+
+  quit = TRUE;
+  return(1);
+}
+
+int edit_handler(void)
+{
+  int  chosen, child;
+  char sysvar[256];
+
+  ER(stringset_get_selected(1, choose_window, 0, &chosen));
+  sprintf(sysvar, "Set PC_Config$StartConfig %d", chosen);
+  system(sysvar);
+  if (file_exists("<ChooseCfg$Dir>.^.^.!PCConfig.!Run"))
+  {
+    ER(wimp_start_task("Run <ChooseCfg$Dir>.^.^.!PCConfig", &child));
+  }
+  else
+  {
+    whinge("Couldn't find the !PCConfig associated with this version of !PC; please ensure it's in the same folder.");
+    return(1);
+  }
+
+  quit = TRUE;
+  return(1);
+}
+
+int main(void)
+{
+  int              event_code;
+  WimpPollBlock    poll_block;
+  char             conf_default[256];
+
+  event_initialise(&id_block);
+  ER(toolbox_initialise(0, 310, &interested, &interested, directory, &msg_block,
+                     &id_block, &current_wimp, &task_handle, &sprite_area));
+
+  ER(event_register_message_handler(0, quit_handler, NULL));
+  ER(event_register_toolbox_handler(-1, 0x100, (ToolboxEventHandler*) quit_handler, NULL));
+  ER(event_register_toolbox_handler(-1, 0x150, (ToolboxEventHandler*) run_handler, NULL));
+  ER(event_register_toolbox_handler(-1, 0x151, (ToolboxEventHandler*) edit_handler, NULL));
+
+  ER(toolbox_create_object(0, "Banner", &banner_window));
+  ER(toolbox_create_object(0, "Choose", &choose_window));
+  show_window_centred(choose_window);
+
+  read_version();
+  if (quit) return(1);
+  if (!file_exists(config_dir))
+  {
+    whinge("Can't find your configuration folder; if this is the first time you have run a new version of !PC, you need to run !PCConfig to set things up.");
+    exit(0);
+  }
+  read_list();
+
+  if (num_configs == 1)
+    run_handler(0);
+
+  while (!quit)
+    event_poll(&event_code, &poll_block, NULL);
+
+  /* One last poll so external apps can react to message */
+  event_set_mask(!Wimp_Poll_NullMask);
+  event_poll(&event_code, &poll_block, NULL);
+
+  return(0);
+}

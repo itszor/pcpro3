@@ -1,0 +1,740 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.C.HDDBIOS - BIOS-level functions for hard drives
+*
+*   23-12-91  INH Original
+*                 Alters #heads for disc size as per PCEM 1.80
+*                 Added direct-SCSI disks
+*                 Increased support up to 4 drives
+*                 Function 15h added
+*   30-03-94      (1.50) Configuration for IDEs
+*   03-11-95	  (2.00) Now uses HPC
+* 1997.09.03 W    Bit of tracing added to check heads/sectors for big drives
+* 1998.02.08 MB   Externalised reading / writing for IDEEm
+*/
+#define DEBUG 0
+
+
+#include <stdio.h>
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+
+/* HPC definitions */
+
+#include "dev.h.hpc_hd"
+
+#if DEBUG
+#define debug(a) SYS_trace a
+#else
+#define debug(a)
+#endif
+
+typedef enum
+{
+  DS_NOTPRESENT = 0,
+  DS_ACTIVE,
+  DS_CLOSED,
+  DS_FAILED
+}
+  DriveState_t;
+
+typedef enum
+{
+  DT_SCSI,
+  DT_FILE,
+  DT_LOCAL_IDE
+}
+  DriveType_t;
+
+
+struct DriveInfo
+{
+  DriveState_t  state;
+  DriveType_t   type;
+
+  uint   nsects;       /* Drive size in sectors */
+  uint   heads;        /* Heads per track */
+  uint   sects;        /* Sectors per track */
+  uint   tracks;       /* No. of tracks/cylinders */
+
+  /* Data for disk-file-type drives */
+  char  *filename;
+  FILE  *fp;
+
+  /* Data for SCSI-direct drives */
+  int    scsi_id;
+
+};
+
+typedef struct DriveInfo DRIVE;
+
+
+/* SCSI section ***************************************************** */
+
+#include "kernel.h"
+
+#define SCSI_Reserve_Key  0x4856294E  /* Random number! */
+#define SCSI_Reserve 0x403C7
+
+#define SCSI_Initialise 0x403C1
+#define SCSI_Op         0x403C3
+#define SCSIOp_RD 0x1000000
+#define SCSIOp_WR 0x2000000
+
+#define SCSISTART      0x1B
+#define SCSIREAD       0x28
+#define SCSIWRITE      0x2A
+#define SCSIINQUIRY    0x12
+#define SCSIREADSIZE   0x25
+
+static _kernel_swi_regs R;
+static BYTE cmdblk [0x20];
+
+/* SCSI Read/Write routines ************************************* */
+
+static bool SCSI_read ( DRIVE *pDrv, uint lsect, BYTE *ptr, int nblocks )
+{
+  _kernel_oserror *res;
+
+  cmdblk[0] = SCSIREAD;
+  cmdblk[1] = 0;
+  cmdblk[2] = lsect >> 24;
+  cmdblk[3] = lsect >> 16;
+  cmdblk[4] = lsect >> 8;
+  cmdblk[5] = lsect;
+  cmdblk[6] = 0;
+  cmdblk[7] = nblocks >> 8;
+  cmdblk[8] = nblocks;
+  cmdblk[9] = 0;
+
+  R.r[0] = pDrv->scsi_id | SCSIOp_RD;
+  R.r[1] = 10;
+  R.r[2] = (int) cmdblk;
+  R.r[3] = (int) ptr;
+  R.r[4] = nblocks << SectShift;
+  R.r[5] = 0;
+  R.r[8] = SCSI_Reserve_Key;
+
+  if ( res = _kernel_swi ( SCSI_Op, &R, &R ), res != NULL )
+  {
+    SYS_trace("SCSI_Op (Read) failed, device %d: %s",
+                        pDrv->scsi_id, res->errmess);
+    return false;
+  }
+
+  return true;
+}
+
+/* ************************************* */
+
+static bool SCSI_write ( DRIVE *pDrv, uint lsect, BYTE *ptr, int nblocks )
+{
+  _kernel_oserror *res;
+
+  cmdblk[0] = SCSIWRITE;
+  cmdblk[1] = 0;
+  cmdblk[2] = lsect >> 24;
+  cmdblk[3] = lsect >> 16;
+  cmdblk[4] = lsect >> 8;
+  cmdblk[5] = lsect;
+  cmdblk[6] = 0;
+  cmdblk[7] = nblocks >> 8;
+  cmdblk[8] = nblocks;
+  cmdblk[9] = 0;
+
+  R.r[0] = pDrv->scsi_id | SCSIOp_WR;
+  R.r[1] = 10;
+  R.r[2] = (int) cmdblk;
+  R.r[3] = (int) ptr;
+  R.r[4] = nblocks << SectShift;
+  R.r[5] = 0;
+  R.r[8] = SCSI_Reserve_Key;
+
+  if ( res = _kernel_swi ( SCSI_Op, &R, &R ), res != NULL )
+  {
+    SYS_trace("SCSI_Op (Write) failed, device %d: %s",
+                  pDrv->scsi_id, res->errmess);
+    return false;
+  }
+
+  return true;
+}
+
+/* ------------------------------ */
+
+static bool SCSI_lock ( DRIVE *pDrv, bool ClaimNotRelease )
+{
+  R.r[0] = ClaimNotRelease ? 0 : 2;
+  R.r[1] = pDrv->scsi_id;
+  R.r[2] = 0;  /* Address of 'release' function - hope NULL is OK' */
+  R.r[8] = SCSI_Reserve_Key;
+
+  if ( _kernel_swi ( SCSI_Reserve, &R, &R) != NULL )
+  {
+    SYS_trace("SCSI_Reserve failed, device %d", pDrv->scsi_id);
+    pDrv->state = DS_FAILED;
+    return false;
+  }
+
+  pDrv->state = ClaimNotRelease ? DS_ACTIVE : DS_CLOSED;
+
+  return true;
+}
+
+/* Initialisation/Shutdown routines ************************* */
+
+static bool GetSCSIsize ( int dev_id, uint *nsects )
+{
+  uint tmp;
+
+  R.r[0] = 2;
+  R.r[1] = dev_id;
+  R.r[2] = (int) SYS_TempBuf;
+
+  *nsects = 0;
+
+  /* issue start command? --> SCSI_Op 1b 1 0 0 1 0 */
+
+  if ( _kernel_swi ( SCSI_Initialise, &R, &R ) != NULL )
+  {
+    SYS_trace("SCSI_Initialise 2 failed on device %d", dev_id);
+    return false;
+  }
+
+  if ( SYS_TempBuf[0] != 0x00 /* Direct-access */ )
+  {
+    SYS_trace("Warning: SCSI device %d is type %d (not direct-access)",
+        dev_id, SYS_TempBuf[0]);
+  }
+
+  tmp = (SYS_TempBuf[13] << 8) + SYS_TempBuf[12];
+
+  if ( tmp != 512 )
+  {
+    SYS_trace("SCSI device %d has bad sector size %d ", dev_id, tmp );
+    return false;
+  }
+
+  tmp =  (SYS_TempBuf[11] << 24) +
+         (SYS_TempBuf[10] << 16) +
+         (SYS_TempBuf[ 9] << 8)  +
+          SYS_TempBuf[ 8] + 1;
+
+  *nsects = tmp;
+
+  debug (("SCSI_Initialise 2 returned size of %d sectors",tmp));
+
+  return true;
+}
+
+/* ------------------------------------ */
+
+static bool AutoDetectSCSI ( DRIVE *pDrv )
+{
+  /* This attempts to find out the no. of heads/sects on a SCSI
+     drive by searching for a DOS partition and looking at its
+     boot sector.
+  */
+
+  uint i, tmp, pstart;
+
+  /* Read partition table at start of disk */
+  if ( !SCSI_read( pDrv, 0, SYS_TempBuf, 1 ) )
+    return false;
+
+  /* Four partition table entries at 1BE, 1CE, 1DE, 1EEh */
+
+  pstart = 0;
+  for ( i = 0x1BE; i < 0x1FE; i+= 0x10 )
+  {
+    tmp = SYS_TempBuf[i+4]; /* Get Partition type; is it DOS? */
+    if ( tmp == 1 || tmp == 4 || tmp == 6 ) /* do we need another for fat32? */
+    {
+      pstart = SYS_TempBuf[i+8] +
+              (SYS_TempBuf[i+9] << 8 ) +
+              (SYS_TempBuf[i+10] << 16 ) +
+              (SYS_TempBuf[i+11] << 24 );
+
+      break;
+    }
+  }
+
+  if ( pstart == 0 ) /* No DOS partitions */
+    return false;
+
+  /* Read boot sector of DOS partition */
+
+  if ( !SCSI_read( pDrv, pstart, SYS_TempBuf, 1 ) )
+    return false;
+
+  /* Check 'sector size' field: if not 512, we've goofed! */
+
+  if ( SYS_TempBuf[0xB] != 0 || SYS_TempBuf[0xC] != 2 )
+    return false;
+
+  /* Get parameters */
+
+  pDrv->sects = SYS_TempBuf[0x18];
+  pDrv->heads = SYS_TempBuf[0x1A] + (SYS_TempBuf[0x1B] << 8) ;
+
+  debug(("DOS boot sector gives %d heads, %d sectors",
+                             pDrv->heads, pDrv->sects));
+
+  return true;
+}
+
+/* SCSI_setconfig() -------------------------------------------- */
+
+static bool SCSI_setconfig ( int driveno, DRIVE *pDrv )
+{
+  pDrv->scsi_id = CFG.HD_SCSI_id [driveno];
+  pDrv->heads   = CFG.HD_SCSI_hd [driveno];
+  pDrv->sects   = CFG.HD_SCSI_sct[driveno];
+  pDrv->type    = DT_SCSI;
+
+
+  /* Check SCSI device */
+
+  if ( !GetSCSIsize  ( pDrv->scsi_id, &pDrv->nsects ) )
+  {
+    pDrv->state = DS_FAILED;
+    return false;
+  }
+
+  /* Lock it */
+
+  if ( !SCSI_lock ( pDrv, true ) )
+    return false;
+
+  /* If heads/sects are unset, try to auto-configure */
+
+  if ( pDrv->sects == 0 || pDrv->heads == 0 )
+  {
+    if ( !AutoDetectSCSI ( pDrv ) )
+    {
+      SYS_trace("No SCSI Auto-detect possible");
+
+       /* otherwise allocate heads/sects according to drive size */
+      if ( pDrv->nsects <= 34 * 6 * 1020 /* 100 Meg, approx */ )
+      {
+        pDrv->heads = 6;
+        pDrv->sects = 34;
+      }
+      else if ( pDrv->nsects <= 32*64*1020 ) /* A gig */
+      {
+        pDrv->heads = 64;
+        pDrv->sects = 32;
+      }
+      else /* Limit is 8 gig or so. New 26-04-96 */
+      {
+        pDrv->heads = 254;
+        pDrv->sects = 62;
+      }
+    }
+  }
+
+  /* Compute # of tracks */
+  pDrv->tracks = pDrv->nsects / (pDrv->sects*pDrv->heads);
+  SYS_trace("Direct-SCSI, ID %d: %d sects, %d heads, %d tracks\n",
+    pDrv->scsi_id, pDrv->sects, pDrv->heads, pDrv->tracks );
+
+  /* Unlock drive */
+
+  SCSI_lock ( pDrv, false );
+
+  return true;
+}
+
+
+/* RISCOS file drives ************************************************* */
+
+static bool File_read ( DRIVE *pDrv, uint lsect, BYTE *ptr, int nblocks )
+{
+  if ( fseek ( pDrv->fp, (long)lsect << SectShift, SEEK_SET) !=0  ||
+       fread( ptr, SectSize, nblocks, pDrv->fp ) != nblocks
+     )
+  {
+     rewind ( pDrv->fp );
+     return false;
+  }
+//#ifdef DEBUG
+//  SYS_trace("HD read from %X, len %d", lsect << SectShift, nblocks * SectSize);
+//  SYS_tracedata( (BYTE*) ptr, (int) nblocks * SectSize);
+//#endif
+  return true;
+}
+
+/* ----------------------- */
+
+static bool File_write ( DRIVE *pDrv, uint lsect, BYTE *ptr, int nblocks )
+{
+  if ( fseek ( pDrv->fp, (long)lsect << SectShift, SEEK_SET) !=0  ||
+       fwrite( ptr, SectSize, nblocks, pDrv->fp ) != nblocks
+     )
+  {
+     rewind ( pDrv->fp );
+     return false;
+  }
+  return true;
+}
+
+/* ----------------------- */
+
+static bool File_lock ( DRIVE *pDrv, bool ClaimNotRelease )
+{
+  /* Opens & closes drive container files
+   also makes sure RISCOS 'unlock' bit is set when not in use and unset when in use */
+  if ( ClaimNotRelease )
+  {
+    pDrv->fp = fopen (pDrv->filename, "r+b");
+
+    if ( pDrv->fp==NULL )
+    {
+      SYS_trace("File '%s' wouldn't open", pDrv->filename );
+      pDrv->state = DS_FAILED;
+      return false;
+    }
+
+    pDrv->state = DS_ACTIVE;
+    return true;
+  }
+  else
+  {
+    if ( pDrv->fp != NULL )
+    {
+      fclose ( pDrv->fp );
+      pDrv->fp = NULL;
+    }
+    pDrv->state = DS_CLOSED;
+    return true;
+  }
+}
+
+/* ----------------------- */
+
+static bool File_setconfig ( int driveno, DRIVE *pDrv )
+{
+  FILE *fptr;
+  uint i;
+
+  pDrv->filename = CFG.HDfilename[driveno];
+  pDrv->type     = DT_FILE;
+
+  /* Attempt to open file */
+
+  if ( !File_lock ( pDrv, true ) )
+    return false;
+
+  /* Work out # of tracks ********************************** */
+  /* Copy of Acorn's algorithm from PCEM 1.80 */
+
+  fptr = pDrv->fp;
+
+  fseek ( fptr, 0, SEEK_END );
+  pDrv->nsects = (uint) (ftell(fptr) >> SectShift);
+
+  for ( i=4; i < 0xFE; i += 2 )
+  {
+    if ( (pDrv->nsects / (17*i)) <= 1024 )
+      break;
+  }
+
+  pDrv->sects = 17;
+  pDrv->heads = i;
+  pDrv->tracks = pDrv->nsects / (pDrv->sects*pDrv->heads);
+
+  File_lock ( pDrv, false );
+  return true;
+}
+
+/* Main routines ******************************************* */
+
+static DRIVE HD_Drives[MaxDrives];
+static int   HD_NDrives=0;
+
+/* ----------------- */
+
+static DRIVE * ActiveDrive ( WORD drivenum )
+{
+  if ( drivenum < MaxDrives &&
+       HD_Drives[drivenum].state == DS_ACTIVE )
+    return &HD_Drives[drivenum];
+
+  //SYS_trace("ActiveDrive(%d) = %d", drivenum, HD_Drives[drivenum].state);
+  return NULL;
+}
+
+/* HD HPC Commands ------------------------------------ */
+
+extern void HD_GetInfo ( struct HD_INFO_PARAMS *pIn,
+                         struct HD_INFO_RESULT *pOut )
+{
+  DRIVE *pDrv;
+
+  pOut->status  = HDERR_OK;
+  pOut->ndrives = HD_NDrives;
+
+  pDrv = ActiveDrive ( pIn->drvnum );
+
+  if ( pDrv != NULL )
+  {
+    pOut->drvsize = pDrv->nsects;
+    pOut->flags   = 0;
+    pOut->ncyls   = pDrv->tracks;
+    pOut->nheads  = pDrv->heads;
+    pOut->nsects  = pDrv->sects;
+    SYS_trace("HD%d: C%d H%d S%d", pIn->drvnum, pDrv->tracks, pDrv->heads, pDrv->sects);
+  }
+  else
+  {
+    pOut->drvsize = 0;
+    pOut->flags   = 0;
+    pOut->ncyls   = 0;
+    pOut->nheads  = 0;
+    pOut->nsects  = 0;
+  }
+}
+
+/* ------------------------------- */
+
+extern void HD_Read ( struct HD_READWRITE_PARAMS *pIn,
+                      struct HD_READWRITE_RESULT *pOut )
+{
+  bool res=false;
+  DRIVE *pDrv = ActiveDrive ( pIn->drvnum );
+
+  if ( pDrv == NULL )
+  {
+    pOut->status = HDERR_BADPARAM;
+    return;
+  }
+
+  debug(("Read at sect %d, len %d, total %d",
+             pIn->sect_start, pIn->sect_count, pIn->readahead ));
+
+  if ( pIn->sect_start >= pDrv->nsects                  ||
+       pIn->sect_count > (HD_MAX_RDWR_LEN >> SectShift) ||
+       (pDrv->nsects - pIn->sect_start) < pIn->sect_count
+     )
+  {
+    pOut->status = HDERR_BADADDR;
+    return;
+  }
+
+  switch ( pDrv->type )
+  {
+    case DT_FILE:
+      res = File_read ( pDrv,
+      	    		pIn->sect_start,
+      	    		pOut->read_data,
+      	    		pIn->sect_count );
+      break;
+
+    case DT_SCSI:
+      res = SCSI_read ( pDrv,
+      	    		pIn->sect_start,
+      	    		pOut->read_data,
+      	    		pIn->sect_count );
+      break;
+  }
+
+  pOut->status = res ? HDERR_OK : HDERR_DATAERR;
+}
+/* ------------------------------- */
+
+extern void HD_Write ( struct HD_READWRITE_PARAMS *pIn,
+                       struct HD_READWRITE_RESULT *pOut )
+{
+  bool res=false;
+  DRIVE *pDrv = ActiveDrive ( pIn->drvnum );
+
+  if ( pDrv == NULL )
+  {
+    pOut->status = HDERR_BADPARAM;
+    return;
+  }
+
+  debug(("Write at sect %d, len %d, total %d",
+             pIn->sect_start, pIn->sect_count, pIn->readahead ));
+
+  if ( pIn->sect_start >= pDrv->nsects                  ||
+       pIn->sect_count > (HD_MAX_RDWR_LEN >> SectShift) ||
+       (pDrv->nsects - pIn->sect_start) < pIn->sect_count
+     )
+  {
+    pOut->status = HDERR_BADADDR;
+    return;
+  }
+
+  switch ( pDrv->type )
+  {
+    case DT_FILE:
+      res = File_write ( pDrv,
+      	    	       	pIn->sect_start,
+      	    		pIn->write_data,
+      	    		pIn->sect_count );
+      break;
+
+    case DT_SCSI:
+      res = SCSI_write ( pDrv,
+      	    		pIn->sect_start,
+      	    		pIn->write_data,
+      	    		pIn->sect_count );
+      break;
+  }
+
+  pOut->status = res ? HDERR_OK : HDERR_DATAERR;
+}
+
+/* Top-level routines ****************************************** */
+
+static void HDD_HPCdispatch ( BYTE *buf )
+{
+  HD_HPC_IN_OUT *pB = (HD_HPC_IN_OUT *) buf;
+
+  if ( pB->in.common.hpc_id != HPC_HD_ID )
+  {
+    SYS_trace("HD HPC gone amok!!");
+    pB->out.common.retcode = HPCERR_NOTPRESENT;
+    return;
+  }
+
+  debug(("HD cmd %04Xh, drive %d",
+                 pB->in.common.reason, pB->in.common.drvnum));
+
+  switch ( pB->in.common.reason )
+  {
+    case HPC_HD_INFO:
+      HD_GetInfo ( &(pB->in.Info), &(pB->out.Info) );
+      break;
+
+    case HPC_HD_READ:
+      HD_Read ( &(pB->in.Read), &(pB->out.Read) );
+      break;
+
+    case HPC_HD_WRITE:
+      HD_Write ( &(pB->in.Write), &(pB->out.Write) );
+      break;
+
+    default:
+      pB->out.common.retcode = HDERR_UNKNOWN;
+      break;
+  }
+
+}
+
+/* ********************** */
+
+static bool HDD_SetConfig( void )
+{
+  int i;
+
+  HD_NDrives = 0;
+
+  for ( i=0; i<MaxDrives; i++ )
+  {
+    if ( CFG.HD_IDE_cyl[i] > 0 ) /* Local IDE drive - ignore */
+    {
+      HD_NDrives = i+1;
+      continue;
+    }
+
+    if ( CFG.HD_SCSI_id[i] >= 0 )
+    {
+      if ( !SCSI_setconfig ( i, &HD_Drives[i] ) )
+        SYS_error ( true, "fehdfile", i, "Direct SCSI" );
+
+      HD_NDrives = i+1;
+      continue;
+    }
+
+    if ( CFG.HDfilename[i] != NULL && CFG.HDfilename[i][0] != 0 )
+    {
+      if ( !File_setconfig ( i, &HD_Drives[i] ) )
+        SYS_error ( true, "fehdfile", i, CFG.HDfilename[i] );
+
+      HD_NDrives = i+1;
+      continue;
+    }
+  }
+
+  return false;
+}
+
+/* ********************************** */
+
+static bool HDD_Startup( void )
+{
+  int i;
+  bool res;
+
+  for (i=0; i<MaxDrives; i++)
+  {
+    /* Open all 'closed' drives, fail those that don't work */
+    if ( HD_Drives[i].state == DS_CLOSED )
+    {
+      switch ( HD_Drives[i].type )
+      {
+        case DT_FILE:
+          res = File_lock ( &HD_Drives[i], true );
+          break;
+
+        case DT_SCSI:
+          res = SCSI_lock ( &HD_Drives[i], true );
+          break;
+      }
+    }
+  }
+
+  SYS_callEvent( SYS_HDDStarted );
+
+  return false;
+}
+
+/* ********************************** */
+
+static bool HDD_Shutdown( void )
+{
+  int i;
+
+  for (i=0; i<MaxDrives; i++)
+  {
+    /* Close all active drives, fail those that don't work */
+    if ( HD_Drives[i].state == DS_ACTIVE )
+    {
+      switch ( HD_Drives[i].type )
+      {
+        case DT_FILE:
+          File_lock ( &HD_Drives[i], false );
+          break;
+
+        case DT_SCSI:
+          SCSI_lock ( &HD_Drives[i], false );
+          break;
+      }
+    }
+  }
+
+  return false;
+}
+
+/* ********************** */
+
+bool HDD_Init()
+{
+  SYS_registerEvent ( SYS_Shutdown,  HDD_Shutdown,  0 );
+  SYS_registerEvent ( SYS_StopWinFE, HDD_Shutdown,  0 );
+  SYS_registerEvent ( SYS_StopFE,    HDD_Shutdown,  0 );
+
+  SYS_registerEvent ( SYS_SetConfig,  HDD_SetConfig, 0 );
+  SYS_registerEvent ( SYS_StartFE,    HDD_Startup,  0 );
+  SYS_registerEvent ( SYS_StartWinFE, HDD_Startup,  0 );
+
+
+  SYS_registerHPC ( HPC_HD_ID, HDD_HPCdispatch, HPC_NORMAL, 0 );
+  return true;
+}
+

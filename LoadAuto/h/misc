@@ -1,0 +1,5 @@
+int file_exists(char *fname);
+int read_entry(char *dir, char *buffer, int count, char *match);
+void start_wimp(void);
+void start_task(char *task);
+int ctrl_down(void);

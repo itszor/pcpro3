@@ -1,0 +1,9 @@
+int read_entry(char *dir, char *buffer, int count, char *match);
+void hourglass_on(void);
+void hourglass_off(void);
+int file_exists(char *path);
+int var_exists(char *var_name);
+void var_read(char *var_name, char *buffer);
+int scsi_initialise(int device, char *buf, int len); /* 1 for fail */
+int scsi_status(int device);
+int vram_size(void);

@@ -1,0 +1,80 @@
+ AREA   misc, CODE, READONLY
+
+ EXPORT read_entry, hourglass_on, hourglass_off, file_exists
+ EXPORT var_exists, var_read, scsi_initialise, scsi_status
+ EXPORT vram_size
+
+read_entry
+; R0 = dir
+; R1 > buffer
+; R2 = count (0 for start)
+; R3 > name to match
+	STMFD	R13!,{R1-R6,R14}
+	MOV	R6,R3
+	MOV	R5,#32
+	MOV	R4,R2
+	MOV	R3,#1
+	MOV	R2,R1
+	MOV	R1,R0
+	MOV	R0,#9
+	SWI	&C ; OS_GBPB
+	MOV	R0,R4
+	LDMFD	R13!,{R1-R6,PC}^
+
+hourglass_on
+	SWI	&406C0
+	MOV	PC,R14
+hourglass_off
+	SWI	&406C1
+	MOV	PC,R14
+
+file_exists	STMFD	R13!,{R1-R6,R14}
+		MOV	R1,R0
+		MOV	R0,#23
+		SWI	&8 + 1<<17 ; XOS_File
+		MOVVS	R0,#0
+		MOVVC	R1,#1
+		LDMFD	R13!,{R1-R6,PC}
+
+var_exists	STMFD	R13!,{R1-R4,R14}
+		MVN	R2,#0
+		SWI	&23 + 1<<17 ; XOS_ReadVarVal
+		CMP	R2,#0
+		MOVLT	R0,#1
+		MOVGE	R0,#0
+		LDMFD	R13!,{R1-R4,PC}
+
+var_read	STMFD	R13!,{R1-R4,R14}
+		MOV	R2,#256
+		MOV	R3,#0
+		MOV	R4,#0
+		SWI	&23 + 1<<17 ; XOS_ReadVarVal
+		MOV	R3,#0
+		STRB	R3,[R1,R2] ; Terminate string with 0
+		MOVVC	R0,#0
+		LDMFD	R13!,{R1-R4,PC}
+
+scsi_initialise	STMFD	R13!,{R14}
+		MOV	R3, R2
+		MOV	R2, R1
+		MOV	R1, R0
+		MOV	R0, #3
+		SWI	&403C1 + 1<<17 ; XSCSI_Initialise
+		MOVVS	R0, #1
+		MOVVC	R0, #0
+		LDMFD	R13!,{PC}
+
+scsi_status	MOV	R1, R0
+		MOV	R0, #0
+		SWI	&403C4 + 1<<17 ; XSCSI_Status
+		MOVVS	R0, #0
+		MOVS	PC, R14
+
+vram_size	STMFD	R13!, {R4-R8,R14}
+		MOV	R0, #2
+		MOV	R1, #2
+		SWI	&66 ; OS_DynamicArea
+		MOV	R0, R5
+		LDMFD	R13!, {R4-R8,PC}
+
+ END

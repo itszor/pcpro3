@@ -1,0 +1,245 @@
+/*   20th September, 1998 (MB)
+**
+** I'm not convinced of the virtues of having an installer which will
+** upgrade a copy of !PC with just NetLinks, since if people have bought
+** PCPro 3 /with/ NetLinks it makes sense to install both together.  But
+** if people buy NetLinks at a later date, it's only a case of merging
+** a new !PC.PCBits.NetLinks folder which hardly requires an installer.
+** Yes, I know there are the hardware drivers too, but this is more
+** the responsibility of the !Internet software.  We can supply a !Boot for
+** users to merge stuff manually, *if* they don't already have their Network
+** Card driver loaded during bootup.  Also the installer is geared more
+** for upgrading the whole suite, rather than just merging one archive with
+** it (i.e. installing NetLinks by itself seems to crash the installer ;) ).
+**    Hence this switch:
+*/
+#define ALLOW_NETLINKS_TO_BE_INSTALLED_BY_ITSELF 0
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "wimplib.h"
+
+#include "installer.h"
+#include "InstallPC.h"
+#include "misc.h"
+#include "messages.h"
+
+char possible_pc_paths[5][24] = {
+  "<Diva$Dir>.^.\0",
+  "<Boot$Dir>.^.\0",
+  "<Boot$Dir>.^.PC.\0",
+  "<Boot$Dir>.^.PCx86.\0",
+  "<Boot$Dir>.^.PC486.\0"
+};
+
+char possible_pc_names[3][8] = {
+  "!PC\0",
+  "!PCx86\0",
+  "!PC486\0"
+};
+
+char zero_string[4] = {0,0,0,0};
+
+char installer_identity[64];
+
+int   netlinks_driver_num=0;
+char *netlinks_driver_path[256];
+char  netlinks_driver_namelist[4096]="(none; just preserve my old settings)";
+
+void check_path_for_pc(char *path)
+{
+  if (file_exists(path))
+    expand_path(path, pc_location, 128);
+}
+
+int extract_version_number(char *filename, char *version_buffer)
+{
+  char line[256], *l;
+  FILE *fh;
+
+/*  fprintf(stderr, "%s:\n", filename);*/
+  fh = fopen(filename, "rb");
+  if (fh == NULL)
+    { pc_location[0] = 0; return(1); }
+
+  fgets(line, 256, fh);
+  fclose(fh);
+  l = line;
+  while (*l>31 && strncmp(l, "!PC v", 5)
+               && strncmp(l, "!PCx86 v", 8)
+               && strncmp(l, "!PC486 v", 8) ) l++;
+  if (l[4]=='8')
+    sscanf(l+8, "%s", version_buffer);
+  else
+    sscanf(l+5, "%s", version_buffer);
+
+  /* Catch 1.xxA and convert to 1.xxB */
+  if (version_buffer[4]>=65 && version_buffer[4]<=90)
+    version_buffer[4]+=32;
+  /* Catch non-alphanumeric extensions to version numbers */
+  if ( (version_buffer[4]>=48 && version_buffer[4]<=57)  ||
+       (version_buffer[4]>=97 && version_buffer[4]<=122) )
+    ; /* do nothing */
+  else
+    version_buffer[4]=0;
+}
+
+int compare_versions(char *hic, char *illic)
+/* 'this' is a reserved keyword, so we've gone Latin ;-)
+** returns 0 if same, -1 if 'hic' is older, 1 if 'hic' is newer
+*/
+{
+  int hic_major, hic_minor, illic_major, illic_minor;
+  char hic_letter, illic_letter;
+
+  if (strcmp(hic, illic) == 0)
+    return(0);
+
+  hic_letter = hic[strlen(hic)-1];
+  illic_letter = illic[strlen(illic)-1];
+  if (hic_letter >= '0' && hic_letter <= '9')     hic_letter = '-';
+  if (illic_letter >= '0' && illic_letter <= '9') illic_letter = '-';
+  if (hic_letter >= 'a')   hic_letter-=32;
+  if (illic_letter >= 'a') illic_letter-=32;
+
+  hic_major = hic[0]-48; illic_major = illic[0]-48;
+  if (strchr(hic, '.') != NULL)
+    sscanf(hic+2, "%d", &hic_minor);
+  else
+    sscanf(hic+1, "%d", &hic_minor);
+
+  if (strchr(illic, '.') != NULL)
+    sscanf(illic+2, "%d", &illic_minor);
+  else
+    sscanf(illic+1, "%d", &illic_minor);
+
+  if (illic_major > hic_major) return(-1);
+  if (illic_major < hic_major) return(1);
+  if (illic_minor > hic_minor) return(-1);
+  if (illic_minor < hic_minor) return(1);
+  if (illic_letter > hic_letter) return(-1);
+  return(1);
+}
+
+extern void size_archives(void)
+{
+  FILE *fh;
+  char cmd[256], *x;
+
+  sprintf(cmd, "CDir %s", new_install_location); x_os_cli(cmd);
+  x_os_cli("Delete <Wimp$Scrap>");
+
+  if (file_exists("InstallPCRes:Software"))
+    FERR(wimp_start_task("InstallPCApp:_uz -Z -1 InstallPCRes:Software > <Wimp$Scrap>", &child_task_handle));
+  else
+    no_fresh_install = 1;
+
+  if (file_exists("InstallPCRes:Boot"))
+    FERR(wimp_start_task("InstallPCApp:_uz -Z -1 InstallPCRes:Boot >> <Wimp$Scrap>", &child_task_handle));
+
+  if (file_exists("InstallPCRes:NetDocs"))
+    FERR(wimp_start_task("InstallPCApp:_uz -Z -1 InstallPCRes:NetDocs >> <Wimp$Scrap>", &child_task_handle));
+
+  if (file_exists("InstallPCRes:NetBoot"))
+    FERR(wimp_start_task("InstallPCApp:_uz -Z -1 InstallPCRes:NetBoot >> <Wimp$Scrap>", &child_task_handle));
+
+  if (file_exists("InstallPCRes:Software"))
+  {
+    sprintf(cmd, "InstallPCApp:_uz -d <Wimp$ScrapDir> -o -j InstallPCRes:Software !PC/!Run > null:$.arse");
+    FERR(wimp_start_task(cmd, &child_task_handle));
+    extract_version_number("<Wimp$ScrapDir>.!Run", this_pc_version);
+    FERR(wimp_start_task("Delete <Wimp$ScrapDir>.!Run", &child_task_handle));
+  }
+
+  fh = fopen("<Wimp$Scrap>", "rb");
+  if (fh == NULL)
+    return;
+
+  files_to_copy = 3; /* Account for first line of each Unzip output, and
+                        add a deliberate inaccuracy for end of install */
+  while (!feof(fh))
+  {
+    fgets(cmd, 256, fh);
+    files_to_copy++;
+    if (strstr(cmd, "!Upd") != NULL)
+    {
+      no_fresh_install = 1;
+      sscanf(cmd+4, "%s", update_pc_version);
+      x = update_pc_version; while(*(x++) != '-'); *(x-1) = '.';
+    }
+    no_registration_code = 0;
+  }
+  fclose(fh);
+
+  if (file_exists("InstallPCRes:NetLinks"))
+    files_to_copy += 6;
+}
+
+extern void do_scan_system(void)
+{
+  FILE   *fh;
+  char   run_boot[256], line[256]="", expanded_path[256], *l;
+  int    x_name, x_path;
+
+  if (var_read("Boot$Dir", boot_disc_location) != 0)
+    return;
+
+  if (pc_location[0] == 0)
+    for (x_name = 0; x_name != 3 && pc_location[0] == 0; x_name++)
+      for (x_path = 0; x_path != 5 && pc_location[0] == 0; x_path++)
+      {
+        strcpy(line, possible_pc_paths[x_path]);
+        strcat(line, possible_pc_names[x_name]);
+        if (file_exists(line))
+          strcpy(pc_location, line);
+      }
+
+  if (pc_location[0] != 0)
+  {
+    sprintf(run_boot, "Obey %s.!Boot", pc_location);
+    FERR(wimp_start_task(run_boot, &x_name));
+    expand_path("<Diva$Dir>", pc_location, 128);
+    extract_version_number("<Diva$Dir>.!Run", installed_pc_version);
+  }
+
+  return;
+}
+
+char *what_am_i(void)
+{
+  if (file_exists("InstallPCRes:Software"))
+  {
+    if (no_fresh_install)
+      strcpy(installer_identity, "Upgrade to !PC v");
+    else
+      strcpy(installer_identity, "Installer for !PC v");
+  }
+  else
+  {
+#if ALLOW_NETLINKS_TO_BE_INSTALLED_BY_ITSELF
+    if (file_exists("InstallPCRes:NetLinks"))
+    {
+      return(strcpy(installer_identity, "Installer for NetLinks"));
+    } else {
+      quit = 1;
+      whinge(msg_lookup("no_archives"));
+    }
+#else
+    quit = 1;
+    whinge(msg_lookup("no_archives"));
+#endif
+  }
+
+  strcat(installer_identity, this_pc_version);
+  if (installed_pc_version[0] != '?')
+  {
+    strcat(installer_identity, " (yours is v");
+    strcat(installer_identity, installed_pc_version);
+    strcat(installer_identity, ")");
+  }
+  if (file_exists("InstallPCRes:NetLinks"))
+    strcat(installer_identity, " with NetLinks");
+  return(installer_identity);
+}

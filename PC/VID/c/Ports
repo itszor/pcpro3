@@ -1,0 +1,1458 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.PORTS  - Video Port-related things
+*
+*
+*         09-01-92 INH  Original
+*         24-01-92      VGA ports added
+*                       VGA Mode 0 Fast2
+* 1.19    27-05-92      Address watch speedups
+*                       <Major Rewrite for v1.19>
+*         24-11-93      Port 03xA options
+*         19-01-96      Another rewrite. Much stuff moved over from modes.
+* 2.15  1997.10.14 RW   VESA speedups
+*       1998.03.24 MB   VESA 2.0 implemented, fixed (finally?)
+*       1998.05.13      VESA / VGA256 page-at-a-time copying implemented
+*       1998.09.03      Added a CPU_StopRun when LFB modes are selected
+*/
+
+#include <string.h>
+#include "kernel.h"
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.FEstate"
+#include "sys.h.config"
+#include "vid.h.modes"
+#include "vid.h.vids"
+
+#include "vid.h.ports"
+#include "vid.h.cursor"
+#include "vid.h.vgas"
+#include "vid.h.scroll"
+#include "vid.h.windrv"
+#include "vid.h.tables"
+#include "vid.h.palette"
+#include "vid.h.mouse"
+
+#include "cpu.h.cpu"
+#include "cpu.h.cpus_g"
+
+#include "module.h.PCSupport"
+
+#define DEBUG 0
+
+#if DEBUG
+#define debug(a) SYS_trace a
+#else
+#define debug(a)
+#endif
+
+/* Globals ************************************************ */
+
+#define UNDEFINED 0xFF
+
+
+BYTE VID_CRTCregs  [CRTC_max];
+BYTE VGA_SeqRegs   [Seq_max];
+BYTE VGA_GraphRegs [Graph_max];
+BYTE VGA_AttrRegs  [Attr_max];
+
+int  VGA_CRTC_index =0;
+int  VGA_Seq_index  =0;
+int  VGA_Graph_index=0;
+int  VGA_Attr_index =0;
+int  VGA_DAC_index  =0;
+
+
+int  VGA_MiscOut;
+bool VID_PaletteChanged    = false;
+int  VID_CGAPalReg;       /* Copy of CGA palette register at 3D9 hex */
+int  VID_VideoEnabled;    /* Attribute address reg bit 5 */
+int  VID_ScanLineLen;
+int  VID_DispStart32;
+bool *VID_VSyncUpdated = &VID_PaletteChanged;
+
+static int  VID_ModeReg;
+static int  VGA_FeatCtrl;
+static int  VGA_FeatRead;
+static int  VGA_PixMask;
+static int  VGA_Port3C3;
+static bool Attr_3C0IsAddress = true;
+static bool DAC_IsReadMode    = false;
+static int  VID_HandlerFirst;
+static int  VID_HandlerLast;
+
+static int ScanLineWriteHi = 0, DispStart32WriteByte = 0;
+static int SavePageVGA = 0, SavePageVESA = 0, SavedPage = -1;
+
+/* UpdateFontSelect() *************************************** */
+
+/* This is called when the Sequencer Character Map select register
+   (which selects primary and alternate fonts in text mode) is
+   changed. This must be called to set up the text font pointers
+   in text mode.
+*/
+
+static void UpdateFontSelect (void)
+{
+  int font_reg, pri, alt;
+
+  font_reg = VGA_SeqRegs [ SEQ_CharMap ];
+
+  pri = ( (font_reg& 1) ? 2 : 0 ) +
+        ( (font_reg& 2) ? 4 : 0 ) +
+        ( (font_reg&16) ? 1 : 0 );
+
+  alt = ( (font_reg& 4) ? 2 : 0 ) +
+        ( (font_reg& 8) ? 4 : 0 ) +
+        ( (font_reg&32) ? 1 : 0 );
+
+  /* Fonts are 256 chars * 32 lines * 4 bytes/line each = 32K.
+     Add 2 for plane 2 */
+  VIDS_FontPtr    = VIDS_MemoryBlk + (pri<<15) + 2;
+  VIDS_AltFontPtr = VIDS_MemoryBlk + (alt<<15) + 2;
+}
+
+/* UpdateMonoParams() ********************************* */
+
+static void UpdateMonoParams(void)
+{
+  if ( VGA_AttrRegs[Attr_ModeCtrl] & 2 ) /* Mono mode */
+  {
+    int ul_pos;
+    VIDS_AttribLookup = TBL_MonoAttribTbl;
+
+    ul_pos = VID_CRTCregs[CRTC_UnderlinePos] & 0x1F;
+
+    if ( ul_pos >= VIDS_CharHeight )
+      VIDS_UnderlinePos = 0;
+    else
+      VIDS_UnderlinePos = (ul_pos - VIDS_CharHeight) *
+                                   VIDS_ArmScreenWidthBytes;
+  }
+  else
+  {
+    VIDS_AttribLookup = NULL;
+    VIDS_UnderlinePos = 0;
+  }
+}
+
+/* UpdateReadModeVars ----------------------------- */
+
+static void UpdateReadModeVars(void)
+{
+  if ( VGA_GraphRegs[GR_RWMode] & 0x8 )   /* Read Mode 1 */
+  {
+    /* In Mode 1, data is compared against the Colour Compare register,
+       GraphRegs[2]. Any bits that are '0' in the Colour Don't Care
+       register, GraphRegs[7], will be ignored in the comparison.
+    */
+    VGAS_ReadEOR = ~TBL_4to32 [ VGA_GraphRegs[GR_ColourCompare] & 0xF ];
+    VGAS_ReadORR = ~TBL_4to32 [ VGA_GraphRegs[GR_ColourDontCare] & 0xF ];
+    VGAS_ByteReadEOR =
+         ~TBL_ByteExpand [VGA_GraphRegs[GR_ColourCompare] & 0xF];
+    VGAS_ByteReadORR =
+         ~TBL_ByteExpand [VGA_GraphRegs[GR_ColourDontCare] & 0xF];
+  }
+  else
+  {
+    /* In Read Mode 0, the data is read from the plane selected by
+          GraphRegs[4], the Read Map Select register */
+    VGAS_ReadEOR = 0;
+    VGAS_ReadORR = ~TBL_PlaneMask [ VGA_GraphRegs[GR_ReadMapSel] & 0x3 ];
+    VGAS_ByteReadEOR = 0;
+    VGAS_ByteReadORR =
+         ~TBL_BytePlaneMask [ VGA_GraphRegs[GR_ReadMapSel] & 0x3 ];
+  }
+}
+
+/* SetGraphOp ------------------------------------------------- */
+
+static int  ARM_ROR_count[] = { 0, 28, 24, 20, 16, 12, 8, 4 };
+
+static void SetGraphOp ( int op )
+{
+  /* Bits 0..2 of 'op' contain a rotate count for write modes 0 and 3.
+     It is the number of bits to rotate right the 386 CPU data. However,
+     our VGA routines do the rotate on the ARM data, which has been
+     bit-reversed and expanded to 4 bits-per-pixel */
+
+  VGAS_RotateVal =  ARM_ROR_count [op & 7];
+
+  /* Bits 3..4 of 'op' contain a graphics operation;
+     values are as follows:
+       00 = MOV
+       01 = AND
+       10 = OR
+       11 = XOR
+
+     This neatly maps bit 4 onto the So parameter and bit 3 onto the
+       Sa parameter for the 'GrOp' drawing routines (see vid.s.vgas
+       for an explanation).
+   */
+
+   VGAS_GrOp_Sa = (op & 8) ? 0xFFFFFFFF : 0;
+   VGAS_GrOp_So = (op & 16) ? 0xFFFFFFFF : 0;
+}
+
+extern void VID_FreezePageCopying(bool freeze)
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = R.r[1] = R.r[2] = R.r[3] = -1;
+  _kernel_swi(PCSupport_VSyncCopy, &R, &R);
+  if (R.r[0] == 0)
+    return;
+
+  if (freeze)
+    R.r[3] = 256;
+  else
+    R.r[3] = CFG.FastVESASkip;
+  R.r[0] = R.r[1] = R.r[2] = -1;
+  _kernel_swi(PCSupport_VSyncCopy, &R, &R);
+}
+
+// Tells us what type of page copying is appropriate for the current mode
+//
+extern enum page_copying_states VID_PageCopyingStatus(void)
+{
+  enum page_copying_states r=off;
+
+  if ((VID_ModeType == MODE_VESA || (VID_ModeType == MODE_256CLR && VGA_SeqRegs [ SEQ_MemMode ] & 8 ) ) && !SYS_FEState_Ptr->DirectScreenAccess)
+    r = copy_on_swap;
+  if (r == copy_on_swap && ((VID_HandlerLast - VID_HandlerFirst) > VID_ImageSize))
+    r = copy_on_vsync;
+  return(r);
+}
+
+/* Can be called from anywhere (front-end / UpdateHandlers currently) to
+** reflect whether we want page copying, based on the user's setting and
+** the current mode type.
+*/
+extern void VID_SwitchPageCopying(void)
+{
+  _kernel_swi_regs R;
+
+  // Use memcpy to avoid black screens / missing pixels
+  if ( VID_PageCopyingStatus() != off && CFG.FastVESA )
+    CPU_FrameVideoAccess ( true );
+  else
+    CPU_FrameVideoAccess ( false );
+
+  R.r[0] = ((int) CPU_MemoryBase + VID_HandlerFirst);
+  R.r[1] = (int) VIDS_DrawPointer;
+  R.r[2] = VID_ImageSize;
+  R.r[3] = CFG.FastVESASkip;
+  if ( VID_PageCopyingStatus() != copy_on_vsync || !CFG.FastVESA )
+    { R.r[3] = 256; R.r[0] = 0; } /* are we anticipating any bank swaps? */
+
+  _kernel_swi(PCSupport_VSyncCopy, &R, &R);
+}
+
+/* Called when a VGA / VESA page swap happens and we need to update
+** a strip of the speed; this is optional (CFG.FastVESA) due to the
+** potential for display corruption.
+*/
+static void UpdateVideoPage(void)
+{
+  _kernel_swi_regs R;
+  int pagelen, sl=16, SavePage;
+
+  pagelen = VID_HandlerLast - VID_HandlerFirst + 1;
+
+  if (VID_ModeType == MODE_VESA)
+    { SavePage = SavePageVESA; }
+  else
+    { SavePage = SavePageVGA; sl = 2; }
+
+  if (SavePage == SavedPage)
+    return; /* So we don't waste time by updating the same page twice */
+
+  /* Check we're not on the last page boundary */
+  if ( ((SavePage<<sl) + pagelen) > VID_ImageSize )
+    pagelen = VID_ImageSize - (SavePage<<sl);
+
+  /* Copy previously paged-in memory */
+  /*memcpy(VIDS_DrawPointer + (SavePage<<sl), ((char*)CPU_MemoryBase + VID_HandlerFirst), pagelen);*/
+  R.r[0] = ((int) CPU_MemoryBase + VID_HandlerFirst);
+  R.r[1] = (int)  VIDS_DrawPointer + (SavePage<<sl);
+  R.r[2] = pagelen;
+  _kernel_swi(PCSupport_FastCopy, &R, &R);
+  VID_DoChangedRegion( (SavePage<<sl), (SavePage<<sl)+pagelen );
+  SavedPage = SavePage;
+}
+
+/* UpdateVESAVariables() ------------------------------------------- */
+
+static int VID_VESADispStart;
+
+/* This should only be called in VESA mode, as it affects VIDS_WatchStart */
+
+static void UpdateVESAVariables ( void )
+{
+  register int pageaddr = VID_CRTCregs[CRTC_VESAMemPageA] << 16;
+
+  /* Check for legal page address */
+
+  if ( VID_HandlerLast-VID_HandlerFirst+1 + pageaddr >
+         VIDS_FreeMemory(VID_MemorySize) )
+  {
+    SYS_trace("VESA: page %X out of range", pageaddr );
+    pageaddr = 0;
+  }
+  /*SYS_trace("VESA: pageaddr %X", pageaddr);*/
+
+  if (CFG.FastVESA && VID_PageCopyingStatus() == copy_on_swap )
+    UpdateVideoPage();
+
+  VIDS_WatchStart = VGAS_VESAScreenFirst =
+    VID_HandlerFirst + VID_VESADispStart - pageaddr;
+  VGAS_VESAMemOffset = VIDS_MemoryBlk + pageaddr - VID_HandlerFirst;
+}
+
+/* UpdateHandlers() ------------------------------------------------ */
+
+static WrFnPtr VGAWriteModeFunctions[4] =
+{
+  VGAS_Wm0Write8, VGAS_Wm1Write8, VGAS_Wm2Write8, VGAS_Wm3Write8
+};
+
+static WrFnPtr VGAGrOpWriteModeFunctions[4] =
+{
+  VGAS_GrOp_Wm0Write8, VGAS_Wm1Write8,
+       VGAS_GrOp_Wm2Write8, VGAS_GrOp_Wm3Write8
+};
+
+/* ------------- */
+
+static void UpdateHandlers ( void )
+{
+  RdFnPtr Rd8, Rd16;
+  WrFnPtr Wr8, Wr16;
+  int R12 = 0;
+
+  /* Start with generic functions, overwrite if we have a better idea */
+
+  Rd16 = VIDS_GenRead16;
+  Wr16 = VIDS_GenWrite16;
+
+  /* Do VGA first for speed */
+
+  if ( VID_ModeType == MODE_VGA )
+  {
+    Rd8 = VGAS_Read8;
+
+    if ( VGA_GraphRegs[GR_DataRotate] & 0x18 ) /* GrOp bits set */
+      Wr8 = VGAGrOpWriteModeFunctions[VGA_GraphRegs[GR_RWMode] & 0x3];
+    else
+      Wr8 = VGAWriteModeFunctions[VGA_GraphRegs[GR_RWMode] & 0x3];
+
+    if ( (VGA_SeqRegs[SEQ_MemMode] & 0x4) == 0 ) /* eek! odd-even mode */
+    {
+      debug(("VGA odd / even mode selected"));
+      Rd8 = VGAS_VGAOddEvenRead8;
+      Wr8 = VGAS_VGAOddEvenWrite8;
+    }
+  }
+  else if ( VID_ModeType & MODE_TEXT  )
+  {
+    /* Is odd/even mode turned off? */
+    if ( VGA_SeqRegs [SEQ_MemMode] & 0x4 )
+    {
+      Rd8 = VGAS_ByteModeRead8;
+      Wr8 = VIDS_ByteModeWrite8;
+    }
+    else /* Normal text mode */
+    {
+      Rd8 = VGAS_OddEvenRead8;
+      Rd16= VGAS_OddEvenRead16;
+      Wr8 = VIDS_TextWrite8;
+      Wr16= VIDS_TextWrite16;
+    }
+  }
+  else if ( VID_ModeType & MODE_256CLR )
+  {
+    VIDS_WatchLength = VID_ImageSize >> 2;
+    VID_WatchBytesPerLine = VIDS_ArmScreenWidthBytes >> 2;
+
+    /* We can address memory in Chain4 or odd/even modes */
+    if ( VGA_SeqRegs [ SEQ_MemMode ] & 8 ) /* Chain4 */
+    {
+      R12 = (int) &VGAS_AddrMask2;
+      Rd8  = VGAS_Chain4Read8;
+      Rd16 = VGAS_Chain4Read16;
+      debug(("VGA chain4 mode selected"));
+      if ( VID_256ClrNeedsTranslate )
+      {
+        Wr8  = VGAS_256ClrChain4Write8;
+        Wr16 = VGAS_256ClrChain4Write16;
+      }
+      else
+      {
+        Wr8  = VGAS_256ClrNXChain4Write8;
+        Wr16 = VGAS_256ClrNXChain4Write16;
+      }
+      VIDS_WatchLength = VID_ImageSize;
+      VID_WatchBytesPerLine = VIDS_ArmScreenWidthBytes;
+    }
+    else if ( VGA_SeqRegs [ SEQ_MemMode ] & 4 ) /* Normal */
+    {
+      R12 = (int) &VGAS_AddrMask2;
+      Rd8 = VGAS_ByteModeRead8;
+      if ( VGA_GraphRegs[GR_RWMode] & 1 ) /* Write mode 1? */
+      {
+        debug(("VGA write mode 1 selected"));
+        if ( VID_256ClrNeedsTranslate )
+          Wr8 = VGAS_256ClrWm1Write8;
+        else
+          Wr8 = VGAS_256ClrNXWm1Write8;
+      }
+      else
+      {
+        debug(("VGA write mode 0 selected"));
+        if ( VID_256ClrNeedsTranslate )
+          Wr8 = VGAS_256ClrWm0Write8;
+        else
+          Wr8 = VGAS_256ClrNXWm0Write8;
+      }
+    }
+    else /* Odd/even mode */
+    {
+      debug(("VGA odd / even mode selected"));
+      R12 = (int) &VGAS_AddrMask2;
+      Rd8 = VGAS_OddEvenRead8;
+      Rd16= VGAS_OddEvenRead16;
+      Wr8 = VGAS_256ClrOddEvenWrite8;
+    }
+  }
+  else if ( VID_ModeType & MODE_VESA )
+  {
+    /*if (AccelerateVESA) VESA has own screen memory
+    {*/
+      R12  = (int) &VGAS_VESAMemOffset;
+      Rd8  = VGAS_VESARead8;
+      Rd16 = VGAS_VESARead16;
+      if ( VID_256ClrNeedsTranslate )
+      {
+        Wr8  = VGAS_VESAXlatWrite8Direct;
+        Wr16  = VGAS_VESAXlatWrite16Direct;
+      }
+      else
+      {
+        Wr8  = VGAS_VESAWrite8Direct;
+        Wr16  = VGAS_VESAWrite16Direct;
+      }
+/*    }
+    else
+    {
+      R12  = (int) &VGAS_VESAMemOffset;
+      Rd8  = VGAS_VESARead8;
+      Rd16 = VGAS_VESARead16;
+      if ( VID_256ClrNeedsTranslate )
+      {
+        Wr8  = VGAS_VESAXlatWrite8;
+        Wr16  = VGAS_VESAXlatWrite16;
+      }
+      else
+      {
+        Wr8  = VGAS_VESAWrite8;
+        Wr16  = VGAS_VESAWrite16;
+      }
+    }*/
+  }
+  else if ( VID_ModeType & (MODE_CGA45|MODE_CGA6) )
+  {
+    /* Don't bother with anything fancy here */
+    Rd8  = VIDS_CGARead8;
+    Rd16 = VIDS_CGARead16;
+    Wr8  = VIDS_CGAWrite8;
+    Wr16 = VIDS_CGAWrite16;
+  }
+  else     /* Some other mode. Don't use any handlers */
+    return;
+
+  VIDS_Write8Ptr  = Wr8;
+  VIDS_Write16Ptr = Wr16;
+  VIDS_Read8Ptr   = Rd8;
+  VIDS_Read16Ptr  = Rd16;
+
+  if ( VID_FullScreenActive )
+    SYS_registerMem(VID_HandlerFirst,VID_HandlerLast,Rd8,Rd16,Wr8,Wr16,R12);
+  else
+    SYS_registerMem( VID_HandlerFirst, VID_HandlerLast, Rd8, Rd16,
+         VIDS_WatchWrite8, VIDS_WatchWrite16, R12 );
+
+  VID_SwitchPageCopying();
+}
+
+/* UpdateDisplayStart() ********************************* */
+
+/* This is called whenever the CRTC offset registers have been changed.
+   It sets all the variables associated with the display start address
+   in video memory.
+
+   VIDS_DrawPointer and VGAS_DrawPointer are set here: they point to the
+   start of the screen sprite (in VID_MemoryBlk) in windowed mode, and
+   point to the physical screen in full-screen mode.
+
+*/
+
+static void UpdateDisplayStart (void)
+{
+  int offset, img_offset;
+
+  /* Start with initial value */
+
+  offset = (VID_CRTCregs[CRTC_OffsetMSB] << 8) +
+                VID_CRTCregs[CRTC_OffsetLSB];
+
+  /* Set position of sprite in video memory */
+
+  if ( VID_ModeType & (MODE_TEXT|MODE_CGA45|MODE_CGA6) )
+  {
+    /* In text mode & CGA modes 4/5, assume 'count by 2' is set */
+
+    if ( VID_ModeType & (MODE_TEXT|MODE_CGA45) )
+      offset = (offset << 1) & 0xFFFF;
+
+    VIDS_DisplayStart = VGAS_DisplayStart = offset << 2;
+    VIDS_WatchStart = VID_HandlerFirst + offset;
+
+    /* In text/CGA modes, position the screen sprite to be at
+       the end of video memory. If video memory is not big enough to
+       stop this clashing with video data, it's too bad. */
+    img_offset = VID_MemorySize-VID_ImageSize;
+  }
+  else if ( VID_ModeType & (MODE_VGA|MODE_256CLR) )
+  {
+    if (CFG.FastVESA && VID_PageCopyingStatus() == copy_on_swap )
+      UpdateVideoPage();
+    SavePageVGA = offset;
+
+    /* In VGA modes, sprite data is straight video RAM contents */
+    VIDS_DisplayStart = VGAS_DisplayStart = img_offset = offset << 2;
+
+    if ( VGA_SeqRegs [ SEQ_MemMode ] & 8 ) /* Chain 4 mode */
+      VIDS_WatchStart = VID_HandlerFirst + (offset << 2);
+    else
+      VIDS_WatchStart = VID_HandlerFirst + offset;
+  }
+  else if ( VID_ModeType & MODE_VESA )
+  {
+    /* In VESA modes, an extra reg. is used to expand the display start
+       field, which is obliged to lie on a word boundary */
+
+    offset = (offset+(VID_CRTCregs[CRTC_VESADispStart] << 16)) & ~3;
+
+    if ( offset+VID_ImageSize > VID_MemorySize )
+    {
+      /* BIOS should refuse to set illegal values */
+      SYS_trace("VESA: offset %Xh out of range", offset);
+      offset = 0;
+    }
+
+    VID_VESADispStart = img_offset = offset;
+    /*SYS_trace("VID_VESADispStart = %X", VID_VESADispStart);*/
+
+    UpdateVESAVariables();
+  }
+  else /* Windows mode, etc, sprite lives at start & others are don't-care */
+  {
+    img_offset = 0;
+  }
+
+  /* Set sprite details & drawing pointer ---------- */
+
+  VID_SetSpriteBase ( img_offset );
+
+  VIDS_DrawPointer = VGAS_DrawPointer = VGAS_VESADrawPointer =
+   (VID_FullScreenActive ? VID_RealScreenBase : VIDS_MemoryBlk+img_offset );
+
+  /* Make sure the page copying routines are up to speed */
+
+  VID_SwitchPageCopying();
+
+}
+
+/* UpdateMemAddresses ******************************** */
+
+/* This is called when the memory address range for the video handlers
+   has changed (or on a mode change, to update a variety of things).
+
+   It is expected to set VIDS_AddrMask, VGAS_AddrMask, VID_HandlerFirst
+   VID_HandlerLast.
+
+   It calls UpdateHandlers to set the correct handlers, and
+     UpdateDisplayStart (which will set VIDS_WatchStart as necessary).
+
+*/
+
+static void UpdateMemAddresses( void )
+{
+  switch ( VGA_GraphRegs[GR_MiscCtrl] & 0x0C )
+  {
+    case 0x0: VID_HandlerFirst = 0xA0000;
+              VID_HandlerLast  = 0xBFFFF;
+              VIDS_AddrMask = 0xFFFF << 2;
+              break;
+    case 0x4: VID_HandlerFirst = 0xA0000;
+              VID_HandlerLast  = 0xAFFFF;
+              VIDS_AddrMask = 0xFFFF << 2;
+              break;
+    case 0x8: VID_HandlerFirst = 0xB0000;
+              VID_HandlerLast  = 0xB7FFF;
+              VIDS_AddrMask = 0x7FFF << 2;
+              break;
+    case 0xC: VID_HandlerFirst = 0xB8000;
+              VID_HandlerLast  = 0xBFFFF;
+              VIDS_AddrMask = 0x7FFF << 2;
+              break;
+  }
+
+  VGAS_AddrMask2 = VGAS_AddrMask = VIDS_AddrMask;
+
+  SYS_removeMem ( 0xA0000, 0xBFFFF );
+  UpdateHandlers();
+  UpdateDisplayStart();
+}
+
+/* Main mode change routine ***************************************** */
+
+/* When the mode has changed, we update absolutely all our variables,
+   to be on the safe side.
+*/
+
+void VID_PortsModeChange(void)
+{
+   VGAS_SetResValue = TBL_4to32 [ VGA_GraphRegs[GR_SetReset] & 0xF ];
+   VGAS_SetResMask  = TBL_4to32 [ VGA_GraphRegs[GR_SetResEnable] & 0xF ];
+   SetGraphOp( VGA_GraphRegs[GR_DataRotate] );
+   VGAS_BitMask = TBL_8to32 [ VGA_GraphRegs[GR_BitMask] ];
+   VGAS_PlaneMask = TBL_4to32 [ VGA_SeqRegs[SEQ_PlaneMask] & 0xF ];
+   SavePageVGA = SavePageVESA = 0;
+
+   UpdateReadModeVars();
+
+   VGAS_BytePlaneMask = VIDS_ByteModePlaneMask =
+           TBL_ByteExpand[VGA_SeqRegs[SEQ_PlaneMask] &0xF];
+
+   UpdateMemAddresses();  /* Reset handlers & display start */
+   UpdateFontSelect();
+   UpdateMonoParams();
+}
+
+/* VID_SaveVESA() -----------------------------------------
+
+   Called on changing from full screen to Windowed. If we are
+   using VESA acceleration (or VESA 2), then we need to save the
+   current screen memory in the copy space.
+*/
+
+void VID_SaveVESA(void)
+{
+
+  register BYTE *dst = VIDS_MemoryBlk;
+  register BYTE *src = VGAS_VESADrawPointer;
+  _kernel_swi_regs r;
+  int len = VID_ImageSize;
+  char test[10];
+
+  if (VID_ModeType == MODE_VESA) {
+    r.r[0] = 2; r.r[1] = 2;
+    _kernel_swi(0x66 /*OS_DynamicArea*/, &r, &r);
+    src = (BYTE*) r.r[3] + VID_DispStart32;
+    debug(("VID_SaveVESA: HardScreenBase %x", VIDS_HardScreenBase));
+    debug(("VID_SaveVESA: RealScreenBase %x", VID_RealScreenBase));
+    debug(("VID_SaveVESA: MemoryBlk %x", VIDS_MemoryBlk));
+    /*debug(("VID_SaveVESA: AcceleratedVESAModeSize %x",AcceleratedVESAModeSize));*/
+    debug(("VID_SaveVESA: Src %x", src));
+    debug(("VID_SaveVESA: VID_HandlerFirst %x", VID_HandlerFirst));
+    debug(("VID_SaveVESA: VID_HandlerLast %x", VID_HandlerLast));
+    debug(("VID_SaveVESA: VID_VESADispStart %x", VID_VESADispStart));
+    debug(("VID_SaveVESA: pageaddr %x", (VID_CRTCregs[CRTC_VESAMemPageA]<<16)));
+    debug(("VID_SaveVESA: VGAS_VESAMemOffset %x", VGAS_VESAMemOffset));
+    debug(("VID_SaveVESA: VGAS_VESADrawPointer %x", VGAS_VESADrawPointer));
+    debug(("VID_SaveVESA: VGAS_VESAScreenFirst %x", VGAS_VESAScreenFirst));
+
+    debug(("StartDest\n"));
+    memcpy(dst, test, 8);
+    debug(("StartSrc\n"));
+    memcpy(test, src, 8);
+    debug(("EndDest\n"));
+    memcpy(dst+len-8, test, 8);
+    debug(("StartSrc\n"));
+    memcpy(test, src+len-8, 8);
+    if ( VID_256ClrNeedsTranslate ) {
+      while(len-- > 0)
+        *dst++ = VID_256colourXlate[*src++];
+    } else {
+      memcpy( dst, src, len );
+    }
+  }
+}
+/* Port monitoring routines ****************************************** */
+
+/* CRTC register changes routine ********************* */
+
+static void CRTC_RegisterChange ( int regno, int data )
+{
+  if ( data == VID_CRTCregs[regno] ) return;
+
+  VID_CRTCregs[regno] = data;
+
+  switch ( regno )
+  {
+
+    case CRTC_CurStartLine:
+    case CRTC_CurStopLine:
+         CUR_UpdateCurShape ();
+         return;
+
+    case CRTC_OffsetMSB:
+    case CRTC_OffsetLSB:
+         UpdateDisplayStart();
+         CUR_UpdateCurPos();
+         VID_RedrawRequest(3);
+         return;
+
+    case CRTC_CursorMSB:
+    case CRTC_CursorLSB:
+         CUR_UpdateCurPos();
+         return;
+
+    case CRTC_CharHeight:
+    case CRTC_ScanLines:
+    case CRTC_BytesPerRow:
+    case CRTC_ModeCtrl:
+    case CRTC_Overflow:
+         VID_UpdateModeVars();
+         return;
+
+    case CRTC_UnderlinePos:
+         UpdateMonoParams();
+         if ( VGA_AttrRegs[Attr_ModeCtrl] & 2 ) /* Mono mode */
+            VID_RedrawRequest(2);
+
+    default:
+         break;
+  }
+
+
+}
+
+/* CRTC Extended register change routine *********************** */
+
+/* Certain actions (clearing video memory, scrolling, filling
+   rectangles) done by the BIOS get ARM assistance for speed.
+   This is done by writing various parameters to some extended
+   CRTC registers which we have invented. It is done this way
+   because Windows doesn't pass these I/O accesses on when
+   running DOS boxes. The BIOS checks these registers to see
+   if they exists. If they do, we're running full-screen mode &
+   the ARM can do the work. If not, we're in a DOS box and the
+   BIOS has to do it manually.
+
+   25-04-94:
+*/
+
+#define EXTS(x) (((x)^128) -128)
+
+static void CRTC_XtdRegisterChange ( int regno, int data )
+{
+  if ( regno != CRTC_CommandReg )
+    VID_CRTCregs[regno] = data;
+  else
+    switch ( data )
+    {
+      case 0x3E:  VID_ClearBuffer();
+                  return;
+
+      case 0x41:  VID_Scroll ( VID_CRTCregs[CRTC_ScrollTop],
+                               VID_CRTCregs[CRTC_ScrollLeft],
+                               VID_CRTCregs[CRTC_ScrollBottom],
+                               VID_CRTCregs[CRTC_ScrollRight],
+                               VID_CRTCregs[CRTC_ScrollAttrib],
+                               VID_CRTCregs[CRTC_ScrollHeight],
+                               EXTS(VID_CRTCregs[CRTC_ScrollDist]),
+                               VID_CRTCregs[CRTC_ScrollBaseL] +
+                                (VID_CRTCregs[CRTC_ScrollBaseH]<<8) );
+                  return;
+
+      case 0x42:  WIN_WinModeActive = false;
+                  return;
+
+      case 0x43:  /* More sophisticated test to fool Windows 95 VxD */
+                  VID_CRTCregs[CRTC_CommandReg] ^= 0xA5;
+                  return;
+
+      default:
+                  return;
+    }
+}
+
+/* VESA Register Change routine ******************************** */
+
+static void CRTC_VESARegisterChange ( int regno, int data )
+{
+  _kernel_swi_regs  R;
+  char              dispstart[5];
+
+  //SYS_trace("CRTC_VESARegisterChange( %x, %x )", regno, data);
+
+  switch ( regno )
+  {
+    case CRTC_VESAModeReq:
+      VID_CRTCregs[CRTC_VESADACWidth] = 6;
+      VID_CRTCregs[regno] = data;
+      VID_UpdateModeVars();
+      break;
+
+    case CRTC_VESAMemSize:
+    case CRTC_VESAModeCaps:
+      /* Read only - don't alter */
+      return;
+
+    case CRTC_VESADispStart:
+      VID_CRTCregs[regno] = data;
+      UpdateDisplayStart();
+      /*VID_RedrawRequest(3);*/
+      break;
+
+    case CRTC_VESAMemPageA:
+      /*SYS_trace("CRTC_VESAMemPageA = %d", data);*/
+      SavePageVESA = VID_CRTCregs[regno];
+      VID_CRTCregs[regno] = data;
+      UpdateVESAVariables();
+      break;
+
+    case CRTC_VESADirect:
+      SYS_FEState_Ptr->DirectScreenAccess = VID_CRTCregs[regno] = data;
+      /*SYS_trace("Direct screen access = %d", data);*/
+      if (data == 1 && !SYS_FEState.FullFErunning)
+      {
+        CPU_StopRun();
+        memset(VIDS_MemoryBlk, 0, VID_ImageSize);
+      }
+      break;
+
+    case CRTC_VESADACWidth:
+      SYS_trace("DAC width set to %d", data);
+      VID_CRTCregs[regno] = data;
+      break;
+
+    case CRTC_VESAScanLine:
+      if (ScanLineWriteHi)
+        VID_ScanLineLen = VID_ScanLineLen | (data << 8);
+      else
+        VID_ScanLineLen = data;
+
+      ScanLineWriteHi = !ScanLineWriteHi;
+      if (!ScanLineWriteHi)
+      {
+        /*SYS_trace("Scan line length set to %d", VID_ScanLineLen);*/
+        /*VID_PCXtotal = ScanLineVal;*/
+        /*VID_UpdateX(ScanLineVal);*/
+        VID_UpdateModeVars();
+      }
+      break;
+
+    case CRTC_VESADispStart32:
+      if (DispStart32WriteByte == 0)
+        VID_DispStart32 = data;
+      else
+        VID_DispStart32 = VID_DispStart32|(data<<(DispStart32WriteByte<<3));
+      DispStart32WriteByte = (DispStart32WriteByte + 1) % 4;
+      if ( DispStart32WriteByte == 0 && SYS_FEState.FullFErunning )
+      {
+        /*SYS_trace("Display start set to %X", VID_DispStart32);*/
+        R.r[0] = 19;
+        _kernel_swi(6 /* OS_Byte */, &R, &R);
+        VID_DispStart32 = VID_DispStart32 << 2; /* why? */
+        R.r[0] = 22; R.r[1] = (int) dispstart;
+        dispstart[0] = 2;
+        dispstart[1] =  VID_DispStart32      & 0xFF;
+        dispstart[2] = (VID_DispStart32>>8)  & 0xFF;
+        dispstart[3] = (VID_DispStart32>>16) & 0xFF;
+        dispstart[4] = (VID_DispStart32>>24) & 0xFF;
+        _kernel_swi(7 /* OS_Word*/ , &R, &R);
+      }
+      break;
+
+    default:
+      VID_CRTCregs[regno] = data;
+      break;
+  }
+}
+
+/* Graph_RegisterChange **************************** */
+
+static void Graph_RegisterChange ( int regno, int data )
+{
+  int change = data ^ VGA_GraphRegs[regno];
+
+  if ( change == 0 ) return;
+  VGA_GraphRegs[regno] = data;
+
+  switch ( regno )
+  {
+    case GR_SetReset:
+      VGAS_SetResValue = TBL_4to32 [ data & 0xF ];
+      return;
+
+    case GR_SetResEnable:
+      VGAS_SetResMask  = TBL_4to32 [ data & 0xF ];
+      return;
+
+    case GR_ColourCompare:
+      if ( VGA_GraphRegs[GR_RWMode] & 0x8 )   /* Read Mode 1 only */
+      {
+        VGAS_ReadEOR     = ~TBL_4to32[data & 0xF];
+        VGAS_ByteReadEOR = ~TBL_ByteExpand[data & 0xF];
+      }
+      return;
+
+    case GR_ColourDontCare:
+      if ( VGA_GraphRegs[GR_RWMode] & 0x8 )   /* Read Mode 1 only */
+      {
+        VGAS_ReadORR     = ~TBL_4to32[data & 0xF];
+        VGAS_ByteReadORR = ~TBL_ByteExpand[data & 0xF];
+      }
+      return;
+
+    case GR_ReadMapSel:
+      if ( (VGA_GraphRegs[GR_RWMode] & 0x8) == 0 ) /* Read mode 0 only */
+      {
+        VGAS_ReadORR = ~TBL_PlaneMask [ data & 0x3 ];
+        VGAS_ByteReadORR = ~TBL_BytePlaneMask [ data & 0x3 ];
+      }
+      return;
+
+    case GR_DataRotate:
+      SetGraphOp(data);
+      if ( change & 0x18 ) /* May be using GrOp modes */
+        UpdateHandlers();
+      return;
+
+    case GR_RWMode :
+      if ( change & 0x60 )   /* Changed 256 colour mode bit or CGA type? */
+        VID_UpdateModeVars();
+      else
+      {
+        if ( change & 3 ) /* Write mode changed? */
+          UpdateHandlers();
+        if ( change & 8 )  /* Read mode changed */
+          UpdateReadModeVars();
+      }
+      return;
+
+    case GR_MiscCtrl :  /* Memory base addresses, etc */
+      if ( change & 0xF )
+        UpdateMemAddresses();
+      return;
+
+    case GR_BitMask :
+      VGAS_BitMask = TBL_8to32 [ data ];
+      return;
+
+    default  : break;
+  }
+
+}
+
+
+/* Sequencer register change routine ********************* */
+
+static void Seq_RegisterChange ( int regno, int data )
+{
+  int change = data ^ VGA_SeqRegs [regno];
+
+  if (change == 0 ) return;
+  VGA_SeqRegs[regno] = data;
+
+  switch ( regno )
+  {
+    case SEQ_PlaneMask:    /* Plane Mask Register */
+      VGAS_PlaneMask = TBL_4to32 [ data & 0xF ];
+      VGAS_BytePlaneMask = VIDS_ByteModePlaneMask =
+                          TBL_ByteExpand [ data & 0xF ];
+      return;
+
+    case SEQ_CharMap:
+      UpdateFontSelect();
+      VID_RedrawRequest(3);
+      return;
+
+    case SEQ_MemMode:
+      if ( change & 0xC )       /* Odd even mode, or chain4 mode */
+        UpdateHandlers();
+      return;
+
+    case SEQ_Reset:
+      if ( (data & 3) == 3 )
+        VID_UpdateModeVars();
+      return;
+
+    default:
+      break;
+  }
+
+}
+
+
+/* Attribute register change routine ********************* */
+
+static void Attr_RegisterChange ( int regno, int data )
+{
+  int change = data ^ VGA_AttrRegs[regno];
+  VGA_AttrRegs[regno] = data;
+  VID_PaletteChanged = true;
+  if ( regno == Attr_ModeCtrl )
+  {
+    if ( change & 1 )        /* Graphics mode selector bit */
+      VID_UpdateModeVars();
+    else if ( change & 2 )   /* Mono attrib selector bit */
+      UpdateMonoParams();
+  }
+}
+
+
+
+/* Other ports simulation ********************************* */
+
+/* This is a bodge for programs which check the display hardware
+   to avoid screen writing during non-retrace. Norton SI insists that
+   the vertical and horizontal retrace bits wiggle up and down; I don't
+   know why.
+
+   04-11-92: Norton Editor NE.COM insists that the bit is high for 10
+   cycles; again - dunno why!
+
+   A count is incremented each time the register is read. Horizontal
+   retrace is active 11 times out of 12 reads. Vertical retrace is active for 50%
+   of the time, at a 50Hz rate. (CIV uses this to generate random numbers, & fails
+   if they always come out the same!).
+
+   24-11-93 (v1.23) - still can't decide: let the user select! We have
+     3 options to choose from (V0, V1 and V2). V0 is the default and
+     aims to be the most compatible. V1 and V2 try to be faster. The
+     function pointer pfnReadPort3xA points to the currently selected
+     option.
+*/
+
+static int HorizCount =0;
+
+static int StatusPort03xA_V0(void)
+{
+
+  if ( (SYS_GetTime() * 39 & 32 ) != 0 )
+  {
+    HorizCount = 1;
+    return 0x39;
+  }
+
+  if ( ++HorizCount > 12 )
+    HorizCount = 0;           /* HorizCounter goes from 0 to 12 */
+
+  return (HorizCount > 10 ) ? 0x30 : 0x31;
+}
+
+/* ----------------- */
+
+/* V.Simple: Horiz & vertical counters are high for 10 out of every 12 */
+
+static int StatusPort03xA_V1(void)
+{
+  if ( ++HorizCount >= 12 ) HorizCount = 0;
+
+  return (HorizCount < 10) ? 0x39 : 0x30;
+}
+
+/* ----------------- */
+
+/* Horiz. wiggles at max rate. Vert is active 20 out of 30 */
+
+static int StatusPort03xA_V2(void)
+{
+  if (++HorizCount >= 30) HorizCount = 0;
+
+  return 0x30 | (HorizCount & 1) | ((HorizCount < 20) ? 8 : 0 );
+}
+
+/* Callback handlers ************************************** */
+
+static int PortRd8 ( int addr )
+{
+  switch (addr - ( (VGA_MiscOut & 1) ? 0x3D0 : 0x3B0 ) )
+  {
+    case 0x4: return VGA_CRTC_index;
+
+    case 0x5: if ( VGA_CRTC_index < CRTC_max )
+                return VID_CRTCregs[VGA_CRTC_index];
+              else
+                return UNDEFINED;
+
+    case 0x8: return VID_ModeReg;
+
+    case 0x9: return VID_CGAPalReg;
+
+    case 0xA: Attr_3C0IsAddress = true;
+              if ( CFG.RetraceEmulation == 0 )
+                return StatusPort03xA_V0();
+              else if ( CFG.RetraceEmulation == 1 )
+                return StatusPort03xA_V1();
+              else
+                return StatusPort03xA_V2();
+
+    default:
+      break;
+  }
+
+  return UNDEFINED;
+}
+
+/* ******************** */
+
+
+static void PortWr8 ( int addr, int data )
+{
+
+  switch (addr - ( (VGA_MiscOut & 1) ? 0x3D0 : 0x3B0 ) )
+  {
+    case 0x4: VGA_CRTC_index = data;
+              if (VGA_CRTC_index == CRTC_VESAMemSize)
+                 VID_CRTCregs[CRTC_VESAMemSize] = (VIDS_FreeMemory(VID_MemorySize) >> 16);
+              return;
+
+    case 0x5: if ( VGA_CRTC_index <= CRTC_last )
+                CRTC_RegisterChange( VGA_CRTC_index, data );
+              else if ( VGA_CRTC_index >= CRTC_ExtensionFirst &&
+                        VGA_CRTC_index <= CRTC_ExtensionLast )
+                CRTC_XtdRegisterChange ( VGA_CRTC_index, data );
+              else if ( VGA_CRTC_index >= CRTC_VESAFirst &&
+                        VGA_CRTC_index <= CRTC_VESALast )
+                CRTC_VESARegisterChange ( VGA_CRTC_index, data );
+
+              return;
+
+    case 0x8: /* Mode regs: don't do much */
+              VID_ModeReg = data;
+              return;
+
+    case 0x9: VID_CGAPalReg = data;
+              return;
+
+    case 0xA: VGA_FeatCtrl = data;
+              return;
+
+    default:
+              break;
+  }
+
+  return;
+}
+
+
+/* VGA ports 3C0 - 3CF ******************************************** */
+
+static int VGA_PortRd8 ( int addr )
+{
+  register int tmp;
+
+  switch (addr)
+  {
+    case 0x3C0: return VGA_Attr_index;
+
+    case 0x3C1: if ( (VGA_Attr_index & 0x1F) < Attr_max )
+                  return VGA_AttrRegs[VGA_Attr_index & 0x1F];
+                else
+                  return UNDEFINED;
+
+    case 0x3C2: return VGA_FeatRead;
+
+    case 0x3C3: return VGA_Port3C3;
+
+    case 0x3C4: return VGA_Seq_index;
+
+    case 0x3C5: if ( VGA_Seq_index < Seq_max )
+                  return VGA_SeqRegs[VGA_Seq_index];
+                else
+                  return UNDEFINED;
+
+    case 0x3C6: return VGA_PixMask;
+
+    case 0x3C7: if ( DAC_IsReadMode )
+                  return 3;
+                else
+                  return 0;
+
+    case 0x3C8: return (VGA_DAC_index / 3);
+
+    case 0x3C9: tmp = VID_DACValues [VGA_DAC_index];
+                if ( ++VGA_DAC_index >= 0x300 )
+                  VGA_DAC_index = 0;
+                return tmp;
+
+    case 0x3CA: return VGA_FeatCtrl;
+
+    case 0x3CC: return VGA_MiscOut;
+
+    case 0x3CE: return VGA_Graph_index;
+
+    case 0x3CF: if ( VGA_Graph_index < Graph_max )
+                  return VGA_GraphRegs[VGA_Graph_index];
+                else
+                  return UNDEFINED;
+
+    default:
+                break;
+  }
+
+  return UNDEFINED;
+}
+
+/* ******************** */
+
+static void VGA_PortWr8 ( int addr, int data )
+{
+  /*SYS_trace("VGA_PortWr8(%X, %X)", addr, data);*/
+  if ( addr == 0x3CF && VGA_Graph_index == GR_BitMask )
+  {
+    VGA_GraphRegs[GR_BitMask] = data;
+    VGAS_BitMask = TBL_8to32 [ data ];
+    return;
+  }
+
+  switch (addr)
+  {
+    case 0x3C0:
+    case 0x3C1:
+                if ( Attr_3C0IsAddress )
+                {
+                  VGA_Attr_index = data;
+                  Attr_3C0IsAddress = false;
+                  if ( VID_VideoEnabled != (data & 0x20) )
+                  {
+                    VID_VideoEnabled = data & 0x20;
+                    VID_PaletteChanged = true;
+                  }
+                }
+                else
+                {
+                  if ( (VGA_Attr_index & 0x1F) < Attr_max )
+                    Attr_RegisterChange( VGA_Attr_index & 0x1F, data);
+
+                  Attr_3C0IsAddress = true;
+                }
+                return;
+
+    case 0x3C2:
+                VGA_MiscOut = data;
+                return;
+
+    case 0x3C3:
+                VGA_Port3C3 = (data & 1);
+                return;
+
+    case 0x3C4: VGA_Seq_index = data;
+                return;
+
+    case 0x3C5: if ( VGA_Seq_index < Seq_max )
+                  Seq_RegisterChange( VGA_Seq_index, data);
+                return;
+
+
+    case 0x3C6:
+                VGA_PixMask = data;
+                return;
+
+    case 0x3C7: VGA_DAC_index = data * 3;
+                DAC_IsReadMode = true;
+                return;
+
+    case 0x3C8: VGA_DAC_index = data * 3;
+                DAC_IsReadMode = false;
+                return;
+
+    case 0x3C9: VID_DACValues [ VGA_DAC_index ] = data /*& 0x3f*/;
+                /*temp_blk[0] = (VGA_DAC_index) / 3;
+                temp_blk[1] = 16;
+                temp_blk[2] = VID_DACValues[(VGA_DAC_index / 3)*3];
+                temp_blk[3] = VID_DACValues[(VGA_DAC_index / 3)*3+1];
+                temp_blk[4] = VID_DACValues[(VGA_DAC_index / 3)*3+2];
+                R.r[0] = 12; R.r[1] = (int) temp_blk;
+                _kernel_swi(0x7, &R, &R);
+                SYS_trace("index %d = %d", VGA_DAC_index, data);*/
+                if ( ++VGA_DAC_index >= 0x300 )
+                  VGA_DAC_index = 0;
+                VID_PaletteChanged = true;
+                return;
+
+    case 0x3CE: VGA_Graph_index = data;
+                return;
+
+    case 0x3CF: if ( VGA_Graph_index < Graph_max )
+                    Graph_RegisterChange ( VGA_Graph_index, data);
+                return;
+
+    default:
+          break;
+  }
+
+  SYS_trace("VGA Video Out[%X]=%X", addr, data);
+}
+
+/* ******************** */
+
+static int PortRd16( int addr )
+{
+  return  PortRd8 ( addr ) +
+         (PortRd8 ( addr+1) << 8 );
+
+}
+
+/* ******************** */
+
+static int VGA_PortRd16( int addr )
+{
+  return  VGA_PortRd8 ( addr ) +
+         (VGA_PortRd8 ( addr+1) << 8 );
+
+}
+
+/* ******************** */
+
+static void PortWr16( int addr, int data )
+{
+  PortWr8 ( addr,   data & 0xFF );
+  PortWr8 ( addr+1, data >> 8   );
+}
+
+
+/* ******************** */
+
+static void VGA_PortWr16( int addr, int data )
+{
+  /* This is purely a speedup for routines which change the bit mask
+     reg a lot (e.g. Flight Sim, BIOS text plotting)
+  */
+
+  if ( addr == 0x3CE && (data & 0xFF) == GR_BitMask )
+  {
+    VGA_Graph_index = GR_BitMask;
+    data >>= 8;
+    VGA_GraphRegs[GR_BitMask] = data;
+    VGAS_BitMask = TBL_8to32 [data];
+    return;
+  }
+
+  /* Speedup for plane mask register (for 'mode X') */
+  if ( addr == 0x3C4 && (data & 0xFF) == SEQ_PlaneMask )
+  {
+    VGA_Seq_index = SEQ_PlaneMask;
+    data >>= 8;
+    VGA_SeqRegs[SEQ_PlaneMask] = data;
+    data &= 0xF;
+    VGAS_PlaneMask = TBL_4to32 [data];
+    VGAS_BytePlaneMask = VIDS_ByteModePlaneMask =
+                          TBL_ByteExpand [data];
+    return;
+  }
+
+  VGA_PortWr8 ( addr,   data & 0xFF );
+  VGA_PortWr8 ( addr+1, data >> 8   );
+}
+
+
+/* VID_PortsHardReset ********************************************* */
+
+/* VID_PortsHardReset is called to initialise the video mode to a
+   suitable state after power-on. This will simply set all the
+   registers for mode 3. The mode gets set properly by the BIOS
+   fairly soon after reset anyway.
+*/
+
+static BYTE Seq_Init[Seq_max] =
+{
+  0x03, 0x01, 0x03, 0x00, 0x02
+};
+
+static BYTE CRTC_Init[CRTC_max] =
+{
+  0x5F, 0x4F, 0x50, 0x82, 0x55, 0x81, 0xBF, 0x1F,
+  0x00, 0x4F, 0x0D, 0x0E, 0x00, 0x00, 0x00, 0x00,
+  0x9C, 0xAE, 0x8F, 0x28, 0x1F, 0x96, 0xB9, 0xA3,
+  0xFF, 0,    0,    0,    0,    0,    0,    0,
+  0,    0,    0,    0,    0,    0,    0,    0,
+  0x2B, 0,    0,    0,    0,    0,    0,    0,
+  0,    0,    0,    0,    0,    0,    0,    0
+};
+
+static BYTE Attr_Init[Attr_max] =
+{
+  0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x14, 0x07,
+  0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+  0x08, 0x00, 0x0F, 0x00, 0x00
+};
+
+static BYTE Graph_Init[Graph_max] =
+{
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x0E, 0x00,
+  0xFF
+};
+
+
+void VID_PortsHardReset ( void )
+{
+  _kernel_swi_regs R;
+
+  VGA_CRTC_index =0x18;
+  VGA_Seq_index  =0x04;
+  VGA_Graph_index=0x08;
+  VGA_Attr_index =0x34;
+  VGA_DAC_index  =0x00;
+
+  VID_ModeReg    =0x2D;
+  VGA_FeatCtrl   =0x00;
+  VGA_MiscOut    =0x63;
+  VGA_FeatRead   =0x00;
+  VGA_PixMask    =0xFF;
+  VGA_Port3C3    =0x01;
+  VID_CGAPalReg  =0x30;
+
+  Attr_3C0IsAddress = true;
+  DAC_IsReadMode    = false;
+
+  memcpy ( VGA_SeqRegs,   Seq_Init,   Seq_max  );
+  memcpy ( VGA_AttrRegs,  Attr_Init,  Attr_max );
+  memcpy ( VID_CRTCregs,  CRTC_Init,  CRTC_max );
+  memcpy ( VGA_GraphRegs, Graph_Init, Graph_max);
+
+  SYS_registerIO (0x3B0, 0x3BB, PortRd8, PortRd16, PortWr8, PortWr16, 0 );
+  SYS_registerIO (0x3D0, 0x3DB, PortRd8, PortRd16, PortWr8, PortWr16, 0 );
+
+  SYS_registerIO (0x3C0, 0x3CF, VGA_PortRd8, VGA_PortRd16,
+                 VGA_PortWr8, VGA_PortWr16, 0 );
+
+  /* VESA register initialisation */
+
+  if ( (VIDS_FreeMemory(VID_MemorySize) >> 16) <= 255 )
+    VID_CRTCregs[CRTC_VESAMemSize] = (VIDS_FreeMemory(VID_MemorySize) >> 16);
+  else
+    VID_CRTCregs[CRTC_VESAMemSize] = 255;
+
+
+  VID_CRTCregs[CRTC_VESAModeCaps] = VID_GetVESAModeCaps();
+  VID_CRTCregs[CRTC_VESADACWidth] = 6;
+
+  R.r[0] = R.r[1] = R.r[2] = R.r[3] = -1;
+  _kernel_swi(PCSupport_VSyncCopy, &R, &R);
+  VID_VSyncUpdated = (bool*) R.r[4];
+}
+
+
+
+
+
+

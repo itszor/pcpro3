@@ -1,0 +1,37 @@
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "utils.h"
+#include "vars.h"
+#include "network.h"
+
+void do_network_initialise(void)
+{
+  raise_error(event_register_toolbox_handler(network_window,ActionButton_Selected,network_window_click_handler,0));
+}
+
+void setup_network_window(void)
+{
+  update_network_window();
+  raise_error(toolbox_show_object(0,network_window,0,0,0,0));
+}
+
+void update_network_window(void)
+{
+   raise_error(optionbutton_set_state(0,network_window,NETWORK_ISO,config.network.iso));
+   raise_error(optionbutton_set_state(0,network_window,NETWORK_IPX,config.network.ipx));
+   raise_error(optionbutton_set_state(0,network_window,NETWORK_TCPIP,config.network.tcpip));
+}
+
+int network_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  if(id_block->self_component == NETWORK_OK)
+  {
+    optionbutton_get_state(0,network_window,NETWORK_ISO,&tmp_config.network.iso);
+    optionbutton_get_state(0,network_window,NETWORK_IPX,&tmp_config.network.ipx);
+    optionbutton_get_state(0,network_window,NETWORK_TCPIP,&tmp_config.network.tcpip);
+    check_for_modified_data((int)&config.network, (int)&tmp_config.network, sizeof(config.network));
+    config.network = tmp_config.network;
+  }
+  return(1);
+}

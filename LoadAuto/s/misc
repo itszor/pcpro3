@@ -1,0 +1,53 @@
+ AREA misc, CODE
+
+ EXPORT file_exists, read_entry, start_wimp, start_task, ctrl_down
+
+file_exists	STMFD	R13!,{R1-R6,R14}
+		MOV	R1,R0
+		MOV	R0,#23
+		SWI	&8 + 1<<17 ; XOS_File
+		MOVVS	R0,#0
+		MOVVC	R1,#1
+		LDMFD	R13!,{R1-R6,PC}
+
+read_entry
+; R0 = dir
+; R1 > buffer
+; R2 = count (0 for start)
+; R3 > name to match
+		STMFD	R13!,{R1-R6,R14}
+		MOV	R6,R3
+		MOV	R5,#32
+		MOV	R4,R2
+		MOV	R3,#1
+		MOV	R2,R1
+		MOV	R1,R0
+		MOV	R0,#9
+		SWI	&C ; OS_GBPB
+		MOV	R0,R4
+		LDMFD	R13!,{R1-R6,PC}^
+
+task_wimpver	DCD	350
+task_word	DCD	&4B534154
+task_desc	DCB	"!!!",0
+start_wimp	STMFD	R13!,{R14}
+		LDR	R0, task_wimpver
+		LDR	R1, task_word
+		ADR	R2, task_desc
+		MOV	R3, #0
+		SWI	&400C0	; Wimp_Initialise
+		LDMFD	R13!,{PC}
+
+start_task
+		STMFD	R13!,{R14}
+		SWI	&400DE ; Wimp_StartTask
+		LDMFD	R13!,{PC}^
+
+ctrl_down	STMFD	R13!,{R14}
+		MOV	R0,#121	; Key scan
+		MOV	R1,#129	; 1 EOR &80
+		SWI	&6 ; OS_Byte
+		MOV	R0, R1
+		LDMFD	R13!,{PC}
+
+ END

@@ -1,0 +1,52 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.WinDrv  - Externals for Windows driver routines
+*
+*    14-04-94  INH  Original
+*/
+
+
+/* Types & structures ********************************************** */
+
+typedef struct
+{
+  int X0;      /* My rectangles have X0 & X1 as the min and max */
+  int X1;      /* (inclusive) X values and Y0 & Y1 as the min and */
+  int Y0;      /* max (inclusive) Y values */
+  int Y1;
+}
+  RECT;
+
+#define MERGE(dest,mask,src) ((dest)&~(mask)) | ((src)&(mask))
+#define ALL_ONES 0xFFFFFFFF
+
+/* General sizes & constants *************************** */
+
+#define CUR_SHAPE_LIMIT 1100
+#define MAX_CUR_HEIGHT  32
+/* Enough for 34*32 words of cursor shape data */
+
+
+/* Global variables *********************************************** */
+
+extern bool WIN_WinModeActive;
+extern int  WIN_Xtotal;
+extern int  WIN_Ytotal;
+extern int  WIN_bpp;
+extern int  WIN_flags;
+extern int  WIN_BytesPerLine;
+extern int  WIN_LastAllocated;
+
+ /* Values for said flags */
+#define MF_PAL_16  1
+ /* True if mode is 16-colour palette-aware mode (not used at pres.) */
+#define MF_PAL_256 2
+ /* True if mode is 256-colour palette mode */
+
+extern void WIN_FirstTimeInit(void);
+extern void WIN_Init(int x, int y, int bpp, int flags, int memsize);
+
+extern void WIN_CheckCursorState (void);
+
+

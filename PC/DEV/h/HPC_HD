@@ -1,0 +1,161 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.HPC_HD - HPC definitions for hard disk functions
+*
+*   09-11-95	  (2.00) Original
+* 1998-02-09  MB  Externalised reading / writing functions for IDEEm
+*/
+
+/* Our drive definitions ===================================== */
+
+#define MaxDrives      4
+#define SectSize     512
+#define SectShift      9
+
+#define HPC_HD_ID 0x0001
+
+#define HPC_HD_INFO   0x0000
+#define HPC_HD_READ   0x0001
+#define HPC_HD_WRITE  0x0002
+#define HPC_HD_MEDIA  0x0003
+
+/* -------------------- */
+
+struct HD_COMMON_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct HD_COMMON_RESULT
+{
+  LONG retcode;
+};
+
+/* ------------ */
+
+struct HD_INFO_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct HD_INFO_RESULT
+{
+  WORD status;
+  WORD ndrives;
+  LONG drvsize;
+  LONG flags;
+  WORD ncyls;
+  WORD nheads;
+  WORD nsects;
+};
+
+#define DF_READ_ONLY   1
+#define DF_REMOVEABLE  2
+#define DF_LOCKABLE    4
+#define DF_VOLATILE    8
+
+/* ------------ */
+
+# define HD_MAX_RDWR_LEN (16384-16)
+
+struct HD_READWRITE_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD sect_count;
+  LONG sect_start;
+  WORD readahead;
+  WORD pad2;
+  BYTE write_data[1];
+};
+
+/* ------------ */
+
+struct HD_READWRITE_RESULT
+{
+  WORD status;
+  WORD pad2;
+  BYTE read_data[1];
+};
+
+/* ------------ */
+
+struct HD_MEDIA_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD fncode;
+};
+
+/* ------------ */
+
+struct HD_MEDIA_RESULT
+{
+  WORD status;
+};
+
+/* ------------ */
+
+union HD_HPC_PARAMS
+{
+  struct HD_COMMON_PARAMS     common;
+  struct HD_INFO_PARAMS       Info;
+  struct HD_READWRITE_PARAMS  Read;
+  struct HD_READWRITE_PARAMS  Write;
+  struct HD_MEDIA_PARAMS      Media;
+};
+
+/* ------------ */
+
+union HD_HPC_RESULT
+{
+  struct HD_COMMON_RESULT    common;
+  struct HD_INFO_RESULT      Info;
+  struct HD_READWRITE_RESULT Read;
+  struct HD_READWRITE_RESULT Write;
+  struct HD_MEDIA_RESULT     Media;
+};
+
+/* ------------ */
+
+typedef union
+{
+  union HD_HPC_PARAMS in;
+  union HD_HPC_RESULT out;
+}
+  HD_HPC_IN_OUT;
+
+
+/* Error codes ---------------- */
+
+#define HPCERR_NOTPRESENT 0xFFFFFFFF
+
+#define HDERR_OK	0
+#define HDERR_UNKNOWN	1
+#define HDERR_BADPARAM  2
+#define HDERR_BADADDR   3
+#define HDERR_DATAERR   4
+#define HDERR_WRPROTECT	5
+#define HDERR_CHANGED   6
+
+/* EXPORTED ROUTINES */
+extern bool HDD_Init ( void );
+
+/* Externals needed by IDE emulation */
+extern void HD_Write ( struct HD_READWRITE_PARAMS *pIn,
+                       struct HD_READWRITE_RESULT *pOut );
+extern void HD_Read ( struct HD_READWRITE_PARAMS *pIn,
+                      struct HD_READWRITE_RESULT *pOut );
+extern void HD_GetInfo ( struct HD_INFO_PARAMS *pIn,
+                         struct HD_INFO_RESULT *pOut );

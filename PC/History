@@ -1,0 +1,436 @@
+
+Versions
+
+31-Jul-92 0.95b    First proper version
+                   Windows driver added
+                   Lotus 123 bug (VGA Read Modes)
+                   Vidspeed/HTBASIC bug (Video Parm Tables)
+                   SVC mechanism uses DMAReq Bit
+                   Mouse colour change
+                   SCSI direct
+03-Nov-92 0.97     Pre-release with windows driver
+                   Fast window update added
+                   'Greek' bug fix
+16-Nov-92 1.00     SaveDesk/Iconise RISCOS messages
+20-Nov-92 1.00     SaveDesk bug fix
+01-Dec-92 1.01     New Win Driver; Mouse bug fixed
+15-Dec-92          Network support
+18-Dec-92 1.01N    Sent to Alex
+22-Dec-92 1.02     Sent to Alex
+06-Jan-93 1.02     Restored after general twiddling
+06-Jan-93 1.03     Interrupts restored to SVC mechanism
+09-Jan-93          (BIOS-fixed pixel colour bug). Mouse jumping bug (2)
+                   1.44/720K floppy check order reversed
+11-Jan-93          QuadFS code added & floppy init improved. Sys.c.config improved
+13-Jan-93 1.04     486 selection different; more floppy wibbling; QuadFS works
+19-Jan-93 1.05     Hardware-independent CPU.C.CPU; Video clear block & font fixes
+25-Jan-93          CPU.C.CPU optimised; DEV.C.HDDBIOS closes files after init
+05-Feb-93          MSD Printer BIOS fix;  DEV.C.HDDBIOS less fussy about
+                    SCSI type; Multi IRQ 6 fix; CPU.S.CPUS aligment wibbling
+07-Feb-93 1.06     NE2000 emulation (in addition to) standard NET emulation
+13-Feb-93 1.07     Alignment bodges
+16-Feb-93 1.08     Auto 486 detection; CPUS_IntsAvailable
+01-Mar-93 1.09     Mouse data moved (Boardmaker?); VDU mode tables added
+15-Mar-93 1.09b    Mouse init fix (MOUSE.COM/Norton Commander)
+          1.09c    Displays hardware config in Prog info box
+26-Mar-93 1.10     MultiIO debugging removed.
+01-Apr-93 1.11     MultiIO nearly working; Int15h dummy calls in ROM; intelligent
+                     port counting in ROM; Int 13h function 15h; windows mouse
+                     driver.
+02-Apr-93 1.11b    MultiIO LPT interrupt edge change; works with pocket adaptor
+17-Apr-93 1.12     Config changed to suit !PCConfig
+20-Apr-93 1.12a    DisableQuadFS removed;
+21-Apr-93          SPEED_TESTING conditional in HDDBIOS
+26-Apr-93 1.12b    Video mode setting change (Locoscript)
+27-Apr-93 1.12c    ROM font move (EMM386 fix)/ mouse init fix
+28-Apr-93 1.13     As above, renamed
+12-Mar-93 1.14     CIV fix; shift-tab fix; power saving
+15-Mar-93 1.14b    'Ports' tweaks; Net default int is 5
+24-Mar-93 1.15     Modes/Ports tweaks; RISCOS-2 Floppy fix
+31-Mar-93 1.16     New VGA BIOS! NE2000 word addr bug. LLPRO fix
+02-Jul-93 1.17     BusMouse on/off option. WFE update rate increased.
+                   Font Access modified. Cursor translation modded.
+                   VGA registers preserved by BIOS. VID_RedrawRequest logic.
+08-Jul-93 1.18     Major vid. rewrite; new scroll logic, new mouse logic,
+                     all VidBIOS except mode set & scroll done by PC.
+12-Jul-93 1.18a    Pointer reset on Single->Multi task switch. CPUS_fast
+                     played with (no actual change).
+03-Aug-93 1.19     Runs DOS boxes in Windows (mode change/scroll done by BIOS),
+                     improved text handlers; 'fast' VGA handlers not used
+13-Aug-93 1.20     PCNET support removed; first official network release.
+26-Aug-93 1.21     Int 10h/1C02h restore BIOS bug fix; 386MAX (Int 15h/89)
+                    & QEMM 6.02 ( FF859h ROM entry point ) fixes
+19-Aug-93 1.22     SVGA added; mouse bugs fixed
+01-Dec-93 1.23     SWI numbers corrected; Multicast added; Lotus 123r24
+                    blinking bug fixed; configurable 'retrace'; SCSI auto-
+                    configure. Turbo Pascal mouse bug fix. Medusa key fix.
+                    WFW nearly works. Elvis support.
+25-Feb-94 1.24     Configurable IDE drives for Elvis. Interim release.
+11-Mar-94 1.25     Version with configurable slots number (Medusas)
+
+25-Mar-94 1.50     First proper release for Elvises; CDROM fix
+28-Mar-94          NE2000 interlock bug fixed
+
+13-Apr-94 1.51     Not on general release: Windows Startup Screen done
+21-Apr-94 1.52     Workaround for RISCOS 2 Slot number bug
+27-Apr-94 1.53     2nd serial port detection
+25-May-94 1.54     TI CPU detection, ASCII debug port, All Elvis ints added
+14-Jun-94 1.55     Insert-key call fixed. Copro int fixed. Source reorg.
+21-Jun-94 1.56     Comms Int=15. Flashing fixed (+sundry BIOS changes).
+05-Jul-94 1.57     Risc PC/Win31 multitask fix. 35Mhz ARM fix. Keyboard \ key.
+                     Ctrl-Alt-Del/KeybUk fix.
+21-Jul-94 1.58     Interim, 16M fix
+03-Aug-94 1.59     Elvis DMA-related fixes (HD, comms & net probs). 48K ROM.
+                     Beta floppy BIOS.
+14-Aug-94 1.60     First floppy release; BIOS tweaks
+22-Aug-94 1.61     256colour windows first release
+25-Oct-94 1.62     Acorn World show, wide-pixel fix, Wolfenstein debugging
+02-Nov-94 1.63     Keyboard lights fixed, mode select fixed
+14-Nov-94 1.64     New printer test; new windrv colour translation; allows
+                     mode-sel strings
+29-Nov-94 1.65     Another new printer test; mode save/restore bug fixed;
+                     Gemini testing; cache-control options.
+30-Nov-94 1.66     WFWG Keyboard fix; Multitask crash fix; Windows
+                     reboot fix
+07-Dec-94 1.67     Emm386/Xtd data area fixes; A20Gate changes;
+                     PCMem /RISCOS screen area fix; improved PCNE2
+                     stats; NE2000 'twice' fix; error/tracing mods.
+14-Dec-94 1.68     S/W A20 emulation; works with i486dx's
+06-Jan-95 1.69     GenerateIRQ SWI added; save sprite bug fix
+03-Feb-95 1.70     i486cpu option
+10-Feb-95 1.71     "As is" initial release for Gemini. WinDrv 2.07.
+15-Feb-95 1.72     DirectSerial & DirectParallel fixed. Acorn beta release.
+10-Mar-95 1.73     Partial 16 & 32bpp support
+20-Mar-95 1.75     Major DMA-related changes
+16-May-95 1.77     DMA, NE2000, DirectSerial/Parallel support re-integrated
+                        Non-Gemini versions brought up to date. Slight
+                        Windows driver changes. CTS bug fix.
+19-May-95 1.78     DAF: Fixed bugs in DMA accidentally introduced through
+                   the merge process for 1.77
+22-May-95 1.79     INH  Recompiled Borris' stuff, changed BusRequest timeout.
+02-Jun-95 1.80     First palette-enabled release. NE2 '42' bug fixed, fixed
+                     extra-length problem with EtherB.
+08-Jun-95 1.81     XDF format support. Mouse/DOSbox bug fixed. 24bpp
+                     text bug fixed.
+          1.82     Borris' DMA fixing
+16-Jun-95 1.83     DCI4 PCNE2. Sound latency fixed.
+23-Jun-95 1.84     Sundry ARMDRV GPF's fixed. Recompiled with correct date.
+07-Jul-95 1.85     102-key kbd autodetect fixed; ARMDRV line-draw GPFs fixed
+                        PCRAM in Mb; coprocessor detection
+14-Jul-95 1.86     Gemini-2 ASIC/new CPU additions/New config bits.
+20-Jul-95 1.87     Sol+redraw+multitask bug fixed, "PC card not found" test
+                     for Gemini, "PC Card in use" stiff fixed.
+16-Aug-95 1.88     Gemini power-down on exit; CDROM audio/timing bugs fixed;
+                     Win Driver shortcut bugs fixed (black blobs in
+                     MM Beethoven). Some config defaults changed.
+24-Aug-95 1.89     Power save on exit fixed again. PhotoCD bits fixed.
+                     Cache autoconfig.
+14-Sep-95 1.90     Serial port save/restore. CD_DriveStatus bug workaround.
+                     A20gate control fixed. UseWindowFE decoupled from
+		     video memory alloc. EnsureRAMsize bug fixed.
+21-Sep-95 1.91     Main app unchanged. ROM adds support for extra CPUs.
+
+25-Oct-95 1.92     ARMDRV has Win95 DIB colour table fixed, ScanLR bug fix,
+                     ExtTextOut (HP print driver GPF) bug fix. VGA 'video
+		     enable' bit altered, plus video BIOS changes. M1sc
+		     changed to 5x86 in BIOS.
+29-Nov-95 1.99     Beta release for HPC.
+07-Dec-95 1.991    AMOUSE, floppy boot fixed.
+14-Dec-95 1.992    HPC buffer B bug fixed
+02-Feb-96 1.993    Video rewrite, fixes Windows 95 spangly screen et al.
+                   DivaRM name changed to PCSupport. Redraw timer changed.
+28-Feb-96 1.994    HPC interrupt funnies cured. Shared memory on Gemini
+                    beta. Some system structures moved to module.
+06-Mar-96 1.995    Shared memory config options. PCDevHelp now usable.
+		    PCNE2 overflow / tx error changes.
+01-May-96 1.996	   Shared memory Windows driver started
+09-May-96 2.00     Released shared-memory Windows driver, some module
+		     versions reissued (PCNE2), "PC Card in use" error
+		     messages have been fixed.
+03-Jul-96 2.01     SharedMemFlags 4 for shared memory driver, save sprite
+	 	     gives proper errors. EESOX CDROM drive fix. VESA drivers
+		     added. 256clr no-translate modes optimisation added.
+                     Port speedup bug fixed.
+01-Aug-96 2.02	   VertScroll & Activity fields in FEState swapped.
+                     DMA cacheing workround implemented.
+08-Oct-96 2.03     VGA code modded for StrongARM, Write-FIFO lock added to
+                     ARMDRV
+03-Mar-97 2.03b    2.03b Add Disablefloppies option to config file
+                 'Disablefloppies on' means that no floppy drives are set up.
+                 
+04-Apr-97 2.03c    Millenium updated from RISCOS
+11-Apr-97 2.04     ROM 2.04: Extended Keyboard key scan codes (eg ctrl-up) 
+                   improved & Cx5x86 CCR4 address fixed. 
+                   
+                   !Run: MEMfix only run for RISCOS 3.5 - not needed for 3.6/3.7
+                   PCsupport (& correspondingrunimage version change): 
+                added SWi to get Irqrequest & DMArequest addresses
+                PCSupport_GetInternalAddr. Can be called in all modes that
+                will allow interrupts to be turned off. Returns address of
+                code called by PCSupport_IrqRequest SWI in R0, and address of
+                code called by PCSupport_DmaRequest SWI in R1.
+                
+15-May-97 2.05     Runimage: DMA emulation. Changed control logic so notifies
+                only happen once per transfer, and transfer function is only
+                called, after a BUSReq from the Device or when software
+                starts the transfer.
+                
+13-Jun-97 2.06     ROM: Joystick support added to BIOS (int 15, fn84). code from
+                   Stuart tyrell.
+1997.06.17 (v1.2) PCsleep updated to be compatible with AMD 5x86.
+1997.06.24 (v1.4) PCsleep updated to be compatible with WSS's FPEPC
+
+1997.07.01 (v2.08) PCsupport: GetinternalAddr SWI now returns R12 (actual
+                address, not pointer) in r3, so that users can set it 
+                up properly.
+                
+1997.07.17         PCMEM: added BODGEarea to see if we can nobble the 32Mb
+                   prob - (now superceded by v2.11 fix)
+                   Cured 64K memory leak when PCMEM killed.
+                
+1997.08.05 (v2.09) Runimage: Add win95 keys support (needs winKbdpat)
+
+1997.09.03 (v2.10) Runimage: test release with Direct SCSI fettled (for
+                   checking castle formats) and put back how it was.
+                   
+1997.09.20 (v2.11) Runimage: Add start-up banner & SA data cache disable when
+                   allocating memory to fix >=28Mb problems
+                   
+1997.09.24 (v2.12)  Runimage: Added robin watts CPUs_g optimisations    
+
+1997.10.02 (v2.13)  Runimage, config, PCconfig.confdata: 
+                     Added speed config options ForegroundSlice, 
+                     backgroundslice, BackgroundHoldoff
+                    Boot, Run, runimage:
+                     reads config file from <Diva$configfile>
+                    Runimage:messages:
+                     Freeze, fullscreen, & quit on main window menu
+  The speed config settings are for when !PC is multitasking in a window.
+'Foreground' is when !PC has the keyboard focus, 'background' is when it
+doesn't. The 'Slice' value determines how long !PC spend running before
+letting other applications have a go. The Holdoff value is how long (in
+wimp-polls) !PC waits after running before running again). Setting this to 0
+(and the fore & background slice values the same) makes the with-focus
+behaviour the same as the without-focus behaviour. Defaults (or no entry in
+the file) give the same behaviour as currently. Typical values are givin in
+the comments in the config file. This facility will be made dynamically
+adjustable as some point.
+   
+09-Oct-1997 2.14   back to DMA 2.03+  
+                   Runimage: Added trace to printer port. (useful for
+                    logging parallel port devices - compile time option)
+                    PCIO: Added RMAtracing stuff to PCIO module (not yet used).
+                    
+1997.10.14  v2.15   
+          Merged in RJW's improvements (thanx to him for much work on this):
+        Runimage, PCsupport: 
+         ARMcoded callbacks, Callbacks direct-called instead of via SWIs.
+         VIDs/CPUs optimisations: direct-calling from graphics routines where
+         possible (where 16-bit functions are not two 8bit ones). 
+        Runimage, config, pcconfig.confdata  
+         VESAram mode so only one copy of screen updated when single-tasking.
+         To use the accelerated VESA mode add an option to your config file
+         specifying Mb of RAM required for VESA modes.
+         eg VESARAM 2
+         This will normally correspond to the ammount of videoRAM in your
+         system. Then when single tasking in a VESA mode the real screen
+         memory will be expanded to at least this size and that screen memory
+         used without a sprite copy being kept. If using SA then the
+         AutoVcache module is recommended to be used.
+         net result of this lot and previous optimisations (v2.12) is for
+          video speed (v2.15 % faster than 2.03)                              
+                             VESAmode101  VGAmode13 
+          ARM710    8bit        25%         19%
+                16/32bit        21%         16%
+          SA        8bit        21%         21%
+                16/32bit         2%          2%
+                                
+                
+        PCMEM:
+         Tries harder to get requested memory in fewer blocks and if one
+         left allocates real VRAM as last block for !PC to use directly.
+
+        Runimage, config: 
+         Does not give fatal error if config file has unknown option
+         - Trace error instead. This means that Trace should be first option
+         in config file, otherwise error message gets lost completely. Also
+         config can now read options with spaces in them (for new PCSetup app)
+         
+1997.11.05 v2.16
+          !Runimage: Fixes bugs
+          1) introduced in 2.15 where graphics ops fatal !PC.
+          2) introduced in 2.13 where SA data cache left turned off if !PC
+             exits with 'unable to allocate memory'
+          3) introduced in 2.15 where sound has problems
+          
+          ARMDRV.DRV: (v2.16) RLE clipping re-instated (it was found mysteriously
+          removed April '96 - begs the question why?). Fixes multiple icons
+          and blanked-out screen in 'Perfect Plants' (macmillan)
+          
+1997.11.26 v2.17
+	  !Runimage: system now ensures keyboard and mouse restored on exit, 
+	  so QUIT.COM (and anything else that uses the HPC 'QUIT' request 
+	  exits neatly). Fixes bug where mouse disappears if 'connected' when 
+	  quit, and CTRL-BREAK and ALT-BREAK now work afterwards.
+	  
+	  !runimage: Fixed bug where !PC stopped responding to keyboard and
+          mouse if left Mtasking for a long time. It was caused by the
+          'suspend' fn turning off all the interrupts except INT15. This is
+          not necessary for Gemini.
+          
+1998.01.21 v2.18
+           Fixed 'PC hangs around after you quit (till next wimp-message)'
+           bug (introduced in v2.13 I suspect). Due to spurious
+           event_process() after quit.
+           
+1998.01.21 v2.19 
+           Added front-end window for speed config options (including
+           freeze).
+           
+1998.06.   v2.19b 
+           Last wook-source version before Matthew's source-tree
+           merged back in. CDROM updates.
+           
+
+Matthew takes up the story for a while...
+
+
+1998.03.12 (MB) v2.20
+	  Urged by Wookey to write in this file ;-)  At present, the only NT
+	  support there is the PC's timer chip, which responds if accessed
+	  directly, but not through the BIOS yet.  This gets NT to show its
+	  blue startup screen, but goes no further.  PCSupport does the Timer1
+	  stuff Experimental fddem / ideem just spews debug output at the moment
+	  so ignore.
+	  
+	  VESA 2.0 stuff is much more extensive: 
+	  
+	  Robin's new PCMem needed a little fiddling so that it would only
+	  allocate VRAM when asked: the problem with the Gemini is that it only
+	  allows a fixed set of preset memory sizes, and the VRAM has to be
+	  inside this allocation.  So PCMem will optionally (pass R1=1 to
+	  the allocation SWI if we want it to do this) bundle whatever VRAM
+	  the user has on the end of the RAM allocation (i.e. ask for 32 and
+	  you get 30Mb of RAM allocated and the last 2Mb points to VRAM).  PCMem
+	  also returns in R1 the amount of VRAM tagged on the end.
+	  
+	  cpu.c.cpu_g then got altered to call this in the appropriate manner,
+	  and the SCAMP emulation which reports the total RAM size to the BIOS
+	  now subtracts the VRAM.  A new register 0x41 was added to this so
+	  that the BIOS (in biosram.asi) can report the VRAM on startup with
+	  the rest of the memory.  While I was in there, I also added a little
+	  suggestion: if the ROM checksum fails, the user is urged to check
+	  their Cache settings, as this is about the most common reason this
+	  will happen.  Also, cpu_g no longer zeroes the memory, since this
+	  scribbles over VRAM and looks a mess.
+	  
+	  BIOSSVGA.ASI has had the biggest overhaul: new modes added, INs and
+	  OUTs to tell !PC when the 486 wants a linear framebuffer etc.  Great
+	  fun was had trying to work out how to mix a little USE32 code in with
+	  the rest of the USE16 BIOS: in the end, I compiled and linked a new
+	  file, BIOS32.ASM, which is then made into a .BIN and changed into a
+	  load of DBs to be INCLUDEd in a raw form.  Bonkers.
+	  
+	  This affected vid.c.ports which needs to cope with a few more VESA
+	  registers.  We can now shift the screen around with VID_DispStart32
+	  (i.e. sets the screen base address, a protected-mode VESA function)
+	  and the 'set scan-line length' function which wasn't supported in
+	  VESA 1.2 now works...ish.  What happens is that when a VESA program
+	  changes the scan line length, a new mode is selected with the new
+	  scan line length as the X size, and the other values as before.  The
+	  idea is that the PC can scribble over parts of a scan line which
+	  aren't visible and then scroll left and right, but I'm buggered if
+	  I'm doing this under VESA 2.0 because that'll need emulation, which
+	  will spoil the point of everything.  It *does*, however, fix a bug
+	  with the VESA 1.2 emulation which occurred when an app set a scanline
+	  length bigger than the screen, and the excess from each scanline just
+	  overflowed onto the next.  Only seems to have affected Mario, mind ;-)
+	  
+	  vid.c.modes had a few changes: mostly it was me taking out Robin's
+	  VESARAM option and various extraneous VID_ variables to simplify
+	  things.  The ModeSet function now does various things depending on
+	  whether the ScanLineLen has been set (it resets to the mode's default
+	  width on a non-VESA mode change... is this correct behaviour?).  The
+	  palette functions also now support 8-bit DACs which MDK seemed to
+	  want, and I've added support for some different VESA resolutions
+	  for certain games (Ian's left us space for only 16 resolutions--
+	  should be enough, but I might have to rewire this if it becomes
+	  a problem).
+	  
+	  The rest is all front-end changes and other niceties: toolbar added
+	  to main window, experimental dynamic claiming of serial and parallel
+	  ports.  Had to add a DirectScreenAccess option to the front-end state
+	  structure so that the WIMP bits knew to freeze the 486 at all costs
+	  if it wanted a linear framebuffer (to avoid scribbling over desktop).
+	  Fixed sprite saving once and for all (16/32 bits sprites saved now,
+	  8 bit sprites have a 256 entry palette).  RISC_OSLib persuaded to
+	  give a stack backtrace instead of the oh-so-helpful type=5 errors.
+
+1998.03.19 (MB) v2.21
+	  Turbodriver bodge added and generally tried to tidy VESA 2.0 bits
+	  from front-end / configuration point of view.  Miraculously seems
+	  to be more stable of late, but let's throw it to the testers and
+	  see what they think of it.  Fixed buggy serial port quit problem
+	  (where it was left at 2400baud).
+
+1998.04.02 (MB) v2.21a/b
+	  Fixed a bunch of things the testers were moaning about: rampant window
+	  centering, VESA call zero results were not quite right, and added
+	  the UseWindowFE option back in.  Screen memory is now in a dynamic
+	  area, though it's not particularly dynamic just yet.  Some cosmetic
+	  surgery and a restart option added.
+
+1998.04.19 (MB) v2.22
+	  Dynamic resolution switching from Win95 implemented, and the screen
+	  memory shrinks and resizes subject to a 256K lower limit.  Two
+	  versions of this appeared; the first had a horrid bug in and was
+	  released because I wanted to get it out before the weekend etc. etc.
+	  then fixed it all up on Tuesday.
+
+1998.05.13 (MB) v2.23
+	  Panic!  DirectDraw wasn't finished for Wakefield, so I found a neat
+	  way of speeding the VGA / VESA routines up a little; we allow the 486
+	  to write to the video window (usually at A0000h) like normal memory
+	  then either copy the memory on a bank swap (where the screen size is
+	  bigger than the 64/128K window size) or start a routine in PCSupport
+	  which copies on every vsync (optionally skipping a frame every so
+	  often).
+
+1998.06.08 (MB) v2.23a
+	  Fixed a load of shite the testers were complaining about: the text
+	  bug whereby some text modes didn't display anything except the letter
+	  'y', toolbar twiddled again.  Mostly changes to peripheral stuff for
+	  this release.
+
+1998.07.23 (MB) 2.30
+	  Got rid of RISC_OSLib and rewrote the front-end with the Toolbox and
+	  various homebrew SWI veneers (mercifully only a few needed).  Fixed
+	  bug with 'Fast video' interrupting the screen saving functions and
+	  causing an abort.
+	  
+1998.07.26 (MB) 2.30a + subsequent patch
+	  Whoops; forgot to initialise device modules.
+
+1998.08.21 (MB) 2.31
+	  Fixed VRAM memory reporting bug (I hope).
+
+1998.09.02 (W) 2.32 
+	  !Runimage: (vid.s.vids: VIDS_FreeMemory() (tweaks in c.ports,
+                      h.ports)
+	  Fixed free video ram being reported as 0 if 16Mb or greater, and thus
+	  stopping VESA mode changes happening.
+
+1998.09.3 (MB) 2.33
+	  Added SwitchLFB option, and stopped mouse getting trapped when
+	  using LFB modes.  Also new window-in-the-corner when LFB modes
+	  are entered.
+          
+1998.09.15 (W) 2.34 ROM, !Runimage: (BIOSSYS, BIOSDEFS), (CPU.c.HPC,
+	  SYS.h.FE_State, SYS.c.Main) Added debugT port and
+	  HPC_SiingleTask_Request (int 15, AX=BA03)
+	  Removed trace from BIOSSVGA and VID.c.modes.
+	  Fixed compiler warnings in VID.C.Windrv.
+
+1998.09.20 (MB) 2.34a
+	  Issued patch to nobble IDEEm bits (whoops)
+

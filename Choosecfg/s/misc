@@ -1,0 +1,48 @@
+ AREA misc, CODE, READONLY
+
+ EXPORT read_entry, get_screen_size, file_exists
+
+read_entry
+; R0 = dir
+; R1 > buffer
+; R2 = count (0 for start)
+; R3 > name to match
+	STMFD	R13!,{R1-R6,R14}
+	MOV	R6,R3
+	MOV	R5,#32
+	MOV	R4,R2
+	MOV	R3,#1
+	MOV	R2,R1
+	MOV	R1,R0
+	MOV	R0,#9
+	SWI	&C ; OS_GBPB
+	MOV	R0,R4
+	LDMFD	R13!,{R1-R6,PC}^
+
+get_screen_size	STMFD	R13!,{R0-R6,R14}
+		MOV	R5,R0
+		MOV	R6,R1
+		ADR	R0,vdu_blk
+		ADR	R1,out_blk
+		SWI	&31 ; OS_ReadVduVariables
+		ADR	R0,out_blk
+		LDMIA	R0,{R1-R4}
+		MOV	R1,R1,LSL R3
+		MOV	R2,R2,LSL R4
+		STR	R1,[R5]
+		STR	R2,[R6]
+		LDMFD	R13!,{R0-R6,PC}
+
+file_exists	STMFD	R13!,{R1-R6,R14}
+		MOV	R1,R0
+		MOV	R0,#23
+		SWI	&8 + 1<<17 ; XOS_File
+		MOVVS	R0,#0
+		MOVVC	R1,#1
+		LDMFD	R13!,{R1-R6,PC}
+
+vdu_blk		& 11,12,4,5,-1
+out_blk		& 0,0,0,0
+
+ END
+ 

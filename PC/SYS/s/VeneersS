@@ -1,0 +1,81 @@
+;
+;    DivaPC ARM Assembler source
+;
+;    SYS.S.Veneers   Miscellaneous functions for front-end
+;
+;
+;      1998.02.16   MB  Original
+;
+
+
+ AREA VeneersS, CODE
+
+ GET Sys.s.StdDefs
+
+ EXPORT get_screen_size, confirm_reset, get_mode_num
+
+get_screen_size	STMFD	R13!,{R0-R6,R14}
+		MOV	R5,R0
+		MOV	R6,R1
+		ADR	R0,vdu_blk
+		ADR	R1,out_blk
+		SWI	&31 ; OS_ReadVduVariables
+		ADR	R0,out_blk
+		LDMIA	R0,{R1-R4}
+		MOV	R1,R1,LSL R3
+		MOV	R2,R2,LSL R4
+		STR	R1,[R5]
+		STR	R2,[R6]
+		LDMFD	R13!,{R0-R6,PC}
+
+vdu_blk		& 11,12,4,5,-1
+out_blk		& 0,0,0,0
+
+confirm_reset	STMFD	R13!,{R1-R5,R14}
+		SWI	&400EA ; Wimp_BaseOfSprites
+		MOV	R4,R1
+		ADR	R0,confirm_block
+		MOV	R1,#&990
+		ADR	R2,confirm_title
+		ADR	R3,confirm_sprite
+		ADR	R5,confirm_opts
+		SWI	&400DF ; Wimp_ReportError
+		MOV	R0,R1
+		LDMFD	R13!,{R1-R5,PC}^
+
+confirm_block	& 0
+		DCB "Please confirm you wish to reset !PC", 0
+confirm_title	DCB "Sure you want to reset?", 0
+confirm_opts	DCB "Reset,Cancel", 0
+confirm_sprite	DCB "!PC", 0
+		ALIGN
+
+get_mode_num	STMFD	R13!, {R14}
+		MOV	R0, #135
+		SWI	&6 ; OS_Byte
+		MOV	R0, R2
+		LDMFD	R13!, {PC}
+
+
+ EXPORT msgs_lookup, msg_block
+
+msg_block	% 20
+
+msg_buffer	% 256
+
+; Hopefully the same as RISC_OSLib's one
+msgs_lookup	STMFD	R13!,{R1, R4-R7, R14}
+		MOV	R1,R0
+		ADR	R0,msg_block
+		ADR	R2,msg_buffer
+		MOV	R3,#256
+		MOV	R4,#0
+		MOV	R5,#0
+		MOV	R6,#0
+		MOV	R7,#0
+		SWI	&41502 + 1<<17 ; XMessageTrans_Lookup
+		MOVVC	R0,R2
+		LDMFD	R13!,{R1, R4-R7, PC}
+		MOVVS	R0, R1
+
+ END

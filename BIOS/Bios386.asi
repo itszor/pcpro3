@@ -1,0 +1,1033 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOS386.ASI		Protected-mode/386-specific code for BIOS
+;
+; Versions
+; 0.1	19-02-92 INH	Original
+;	12-06-92	Cx486SLC cache routine added
+;	30-10-92	CR0 and CR3 set on power-up
+;	12-01-93	(1.04) Auto-detect 486SLC
+;	12-05-93	(1.14) Power saving messing (no overall change!)
+;	23-08-93	(1.20a) EnterPM thingy working
+;	24-05-94	(1.53) TI CPU detection working
+;	03-02-95	(1.69) Config bit for Cyrix/UMC 486-a-likes
+;	24-04-95	(1.73) Cyrix 486DX2 detection code, 16M RAMtest fix
+;	11-07-95	(1.86) SXLC2 detection for Geminis, flush bodge
+;				dropped.
+;	24-08-95	(1.89) Cache auto-detection
+;	24-04-96	(1.93) TI 486 detection
+;     1997.03.12 W      (2.04) Cx5x86 CCR4 address corrrected
+; *****************************************************************
+
+	.486P	; Drop into 486 Protected-mode Assembler syntax
+
+
+; DEFINITIONS AND MACROS **************************************************
+
+
+BIOSPhysBase	EQU	BIOSRomSeg SHL 4
+
+; Macro to define a 6-byte base:limit value for use with the
+; LGDT and LIDT instructions.
+
+DBL	MACRO	base, limit
+	DW	limit
+	DD	base
+	ENDM
+
+; Macro to define a base:limit value where the base is a label in ROM
+
+DGDT	MACRO	label, limit
+	DW	limit
+	DW	BIOSRomBase + offset CS:label
+	DW	BIOSPhysBase SHR 16
+	ENDM
+
+
+; Macro to define an entry in a descriptor table
+
+DESCR	MACRO	physbase, limit, accessrights
+	DW	limit
+	DW	physbase AND 0FFFFh
+	DB	physbase SHR 16
+	DB	accessrights
+	DW	0
+	ENDM
+
+	; Macro for a trap gate descriptor
+
+TRAPD	MACRO	selector, label
+	DW	label
+	DW	selector
+	DB	0
+	DB	087h	; Access rights for 286 trap gate
+	DW	0
+	ENDM
+
+
+	AR_Data	EQU	093h	; Access rights for data/stack segment
+	AR_Code	EQU	09Bh	; Access rights for code segment
+
+	; CR0 register macros
+
+ANDCR0	MACRO val
+	MOV	EAX, CR0
+	AND	EAX, val
+	MOV	CR0, EAX
+	ENDM
+
+ORCR0	MACRO val
+	MOV	EAX, CR0
+	OR	EAX, val
+	MOV	CR0, EAX
+	ENDM
+
+	; Macro to enter protected mode
+
+EnterProtMode	MACRO
+	ORCR0	1
+	ENDM
+
+
+	; Macro to exit protected mode
+
+ExitProtMode	MACRO
+	ANDCR0	0FFFFFFFEh
+	ENDM
+
+	; Cyrix reg read/write macros
+WrCyrix		MACRO  addr, data
+	MOV	AL, addr
+	OUT	022h, AL
+	MOV	AL, data
+	OUT	023h, AL
+	ENDM
+
+RdCyrix		MACRO  addr, data
+	MOV	AL, addr
+	OUT	022h, AL
+	IN	AL, 23h
+	ENDM
+
+; 386 Setup routine *********************************************************
+
+	; This initialises the 386-specific registers
+	; Pre-1.04 versions initialised CR0 to 00000010h
+
+B386_Init PROC NEAR
+	PUSHFD				; Get Eflags
+	POP	EAX
+	AND	EAX, 00000FFFh		; Reset all control flags
+	PUSH	EAX
+	POPFD
+
+	MOV	EAX, 0			; Paging base register
+	MOV	CR3, EAX
+	RET
+B386_Init ENDP
+
+; 486 Setup routine *********************************************************
+
+	; B486_SetupCPU
+
+	; This is now expanded to take on the world of possibilities for
+	; Divas, Elvises and Geminis. We have one of a number of possible
+	; hardware scenarios...
+	;
+	; 1. No caching required
+	; 2. 386
+	; 3. Cyrix or TI 486slc on Diva, without A20gate mods
+	; 4. Cyrix or TI 486slc on Elvis or Callas with A20gate mods
+	; 5. Cyrix or TI 486slc on Elvis with floppy mods (FLUSH pin+A20gate)
+	; 6. TI 486sxlc2 on Elvis (A20gate, clock doubling)
+	; 7. TI 486sxlc2 on Elvis with floppy mods (A20gate, clk x2, FLUSH)
+	; 8. TI 486sxl on Gemini
+	; 9. Intel 486dx on Gemini
+	; 10. Cyrix 486dx/dx2 on Gemini
+	; 11. TI 486sxlc2 on Gemini
+
+	; 486slc's and 486sxl's have configuration bits as follows:
+
+CCR0_NCA20	equ	1	; Set to disable caching on first 64K of each
+				; 1M in real mode (if we have no A20gate line)
+CCR0_NCUMB	equ	2	; Set to disable caching on A0000-FFFFFh
+				; (we never set this)
+CCR0_ENA20	equ	4	; Set to enable A20M input line-
+				; (for Elvis & Gemini only)
+CCR0_ENKEN	equ	8	; Set to enable KEN input pin (Gemini only)
+
+CCR0_ENFLUSH	equ	10h	; Set to enable FLUSH input pin (Elvis with
+				; floppy mods, and Gemini)
+CCR0_HLDFLUSH	equ	20h	; Flushes cache when HOLD state is entered
+				; (we never set this)
+CCR0_DIRMAPPED	equ	40h	; (486slc's only) Makes the cache direct
+				; -mapped rather than 2-way-set-associative
+CCR0_CLKDOUBLE	equ	40h	; (486sxlc2's only), enables the clock
+				;  doubling mode
+CCR0_ENSUSP	equ	80h	; Enables SUSP# input pin (we don't use this)
+
+CCR1_ENRPLSET	equ	1h	; (486slc's only) Enables RPLSET and RPLVAL
+				;  status output pins
+CCR1_ENSMM	equ	2h	; (486sxl's only) Enables SMM pins
+
+	; Other bits in CCR1 control System Management Mode & are
+	; considered to be for wimps only.
+
+GENCFG_CACHE_ON	equ	10h	; CPU control bits in CMOS_gencfg
+GENCFG_CACHE_WB	equ	 8h
+GENCFG_CLKDOUBLED equ	20h
+
+
+B486_SetupCPU PROC NEAR
+	MOV	SI, offset CS:CPUTypeMsg
+	CALL	MSC_SendMsg
+
+	; (i) Are we on a 386? ----------------------
+
+	; Intel's prescribed method is to see if we can set
+	; the AC (alignment check) bit in the EFLAGS register
+
+	MOV	SI, SP		; Align stack to avoid AC fault
+	AND	SP, not 3
+	PUSHFD
+	POP	ECX		; ECX<-flags
+
+	MOV	EAX, ECX
+	XOR	EAX, 40000h	; Invert AC bit (bit 18)
+	PUSH	EAX
+	POPFD			; Copy to flags
+
+	PUSHFD			; Retrieve flags
+	POP	EAX		; into AX
+
+	PUSH	ECX
+	POPFD			; And restore original flags
+	MOV	SP, SI		; Restore SP
+
+	; ECX = original flags, EAX = flags after AC flags set
+
+	XOR	EAX, ECX
+	AND	EAX, 40000h	; EAX is non-zero if bit changed OK
+	JNZ	B486_TestType
+
+	MOV	SI, offset CS:B386_Msg
+	CALL	MSC_SendMSg
+	RET			; If not, it's a 386: stop now
+
+	; (ii) Are we on Gemini or Diva/Callas/Elvis? ------------
+
+B486_TestType:
+	; Are we running on Gemini?
+
+	MOV	AL, 03h			; For consistency, use same test as in
+	OUT	IO_CFG_Index, AL	; BIOSRAM.ASI. If SCAMP exists, it will
+	IN	AL, IO_CFG_Data		; return a non-zero value in RAMMAP reg.
+	CMP	AL, 0
+	JNE	B486_PreGemini
+
+	; (iii) Gemini cards =====================================
+
+	; Do we have a CPUID instruction? (16/May/96)
+	; AMD (and possibly Intel) Pentium-class CPUs have a CPUID
+	; instruction, which is indicated by bit 21 of EFLAGS being
+	; modifiable
+
+	PUSHFD
+	POP	EAX		; Get EAX = flags
+	XOR	EAX, 1 SHL 21	; Flip bit 21
+	PUSH	EAX
+	POPFD			; Put it back into flags
+
+	PUSHFD
+	POP	EBX		; EBX = new flags
+	XOR	EAX, EBX	; EAX = difference in the bits
+	AND	EAX, 1 SHL 21	; Non-zero if the flag hasn't set properly
+	JNZ	B486_No_CPUID	; If so, don't do CPUID
+
+	; AMD 586 ------------------
+
+	MOV	SI, offset CS:B586AMD_Msg	; Assume it's AMD for now
+	CALL	MSC_SendMsg
+
+	; Tell ARM it's a writeback CPU
+	MOV	AL, 40h			; Register 40h in "artificial SCAMP"
+	OUT	IO_CFG_Index, AL	; bit 0 set if it's a writeback CPU
+	MOV	AL, 01h
+	OUT	IO_CFG_Data, AL
+
+	MOV	AL, GENCFG_CACHE_ON
+	CALL	CheckCacheReq		; Check if we need cache
+	JNZ	B486_I486Cache		; If so, Intel init will do
+	RET				; Else, stop now
+
+B486_No_CPUID:
+	; Is it an original Intel processor or a Cyrix/TI family?
+	; This technique is based on IBM's code
+	MOV	AX, 0
+	SAHF			; Zero the flags
+
+	MOV	AX, 5		; Intel CPUs will change some flags
+	MOV	BL, 2		; during a divide. TI/Cyrix ones
+	DIV	BL		; preserve them. M9 series CPUs
+				; *zero* them, hence TI's code doesn't
+				; work
+
+	LAHF			; Get flags into AH
+	AND	AH, 11111101b	; Mask off bit 1
+	JZ	B486_CyrixTI	; If none changed, it's Cyrix/TI part
+
+	; Intel 486 ----------------------
+
+	MOV	SI, offset CS:B486SXDX_Msg
+	CALL	MSC_SendMsg
+
+	MOV	AL, GENCFG_CACHE_ON
+	CALL	CheckCacheReq	; Set NZ if we need cache on
+	JZ	B486_exit
+
+	; Enable Intel 486 (write-through) cache
+B486_I486Cache:
+	CLI
+	WBINVD
+	ANDCR0	9FFFFFFFh	; Reset CD(bit30) and NW(bit29) bits
+	STI			; to enable caching
+B486_exit:
+	RET
+
+	; Is it a Cyrix/IBM 486DX or 486DX2? ------------
+
+B486_CyrixTI:
+	CLI
+	RdCyrix	0FEh			; Read device ID0
+	STI
+
+	CMP	AL, 01Ah		; Cx486DX code
+	JE	B486_CyrixDX
+	CMP	AL, 01Bh		; Cx486DX2 code
+	JE	B486_CyrixDX
+	CMP	AL, 01Fh		; Cx486DX4 code
+	JE	B486_DX4
+	CMP	AL, 081h		; TI DX4 (v1.93)
+	JE	B486_DX4
+	CMP	AL, 02Dh		; M1SC's seem to come
+	JE	B486_M1SC		; up with 2Dh
+
+B486_NotCyrix:				; If it's not Intel & not
+	JMP	B486_Gemini_SXL		; a blue lightning one, assume
+					; it's a TI SXL-style CPU
+
+	; Cyrix 486DX/DX2/DX4's (with writeback cache) -------
+
+B486_CyrixDX:
+	MOV	SI, offset CS:B486CxDX_Msg
+	CALL	MSC_SendMsg
+	JMP	short CxDx_Common
+
+B486_DX4:
+	MOV	SI, offset CS:B486DX4_Msg
+	CALL	MSC_SendMsg
+
+	; Notify ARM that it's a Cyrix CPU
+	; We need to set a few bits in config registers if so
+CxDx_Common:
+	MOV	AL, 40h			; Register 40h in "artificial SCAMP"
+	OUT	IO_CFG_Index, AL	; bit 0 set if it's a writeback CPU
+	MOV	AL, 01h
+	OUT	IO_CFG_Data, AL
+
+	MOV	AL, GENCFG_CACHE_ON+GENCFG_CACHE_WB
+	CALL	CheckCacheReq		; Check if we need cache
+	JZ	B486_exit		; and if so, should it be writeback
+	TEST	AL, GENCFG_CACHE_WB
+	JZ	B486_I486Cache		; If not, initialise as per Intel
+
+	CLI
+	ORCR0	040000000h		; = CD cache disable bit
+	WBINVD				; Invalidate cache
+
+	WrCyrix	0C1h, 0			; CCR1: SMM bits disabled
+	WrCyrix	0C2h, 00111000b		; CCR2: Flush-on-hold,
+					; write-thru-640Kto1M,
+					; suspend-on-HALT enabled
+
+	ANDCR0	0BFFFFFFFh		; Clear CR0 bit 30
+	WBINVD				; = Enable cache
+	STI
+	RET
+
+	; Cyrix/IBM M1SC ---------------------------
+
+B486_M1SC:
+	MOV	SI, offset CS:B486M1SC_Msg
+	CALL	MSC_SendMsg
+
+	MOV	AL, 40h			; Register 40h in "artificial SCAMP"
+	OUT	IO_CFG_Index, AL	; bit 0 set if it's a writeback CPU
+	MOV	AL, 01h
+	OUT	IO_CFG_Data, AL
+
+	MOV	AL, GENCFG_CACHE_ON+GENCFG_CACHE_WB
+	CALL	CheckCacheReq		; Check if we need cache
+	JZ	B486_exit		; and if so, should it be writeback
+	TEST	AL, GENCFG_CACHE_WB
+	JZ	B486_I486Cache		; If not, initialise as per Intel
+
+	CLI
+	ORCR0	040000000h		; = CD cache disable bit
+	WBINVD				; Invalidate cache
+
+	WrCyrix	0C1h, 00000000b		; CCR1: SMM bits disabled
+	WrCyrix	0C2h, 00011000b		; CCR2: suspend-on-halt
+					; write-thru-640Kto1M
+	WrCyrix 0C3h, 11110100b		; CCR3: most bits off
+	WrCyrix 0E8h, 00000001b		; CCR4: IO recovery set to 2 clocks
+
+	ANDCR0	0BFFFFFFFh		; Clear CR0 bit 30
+	WBINVD				; = Enable cache
+	STI
+	RET
+
+	; TI 486SXL/SXL2 on Gemini -----------------
+
+	; At present, there seems to be no test for clock
+	; doubled TI CPUs, and merely turning the clock
+	; doubling bit on anyway will kill non-x2 CPUs.
+	; Hence the need for a config bit
+
+B486_Gemini_SXL:
+	RDCMOS	CMOS_gencfg
+	TEST	AL, GENCFG_CLKDOUBLED	; gencfg bit 5 set if clock-doubled
+	JNZ	B486_Gemini_SXLC2
+
+	; TI 486SXL on Gemini (original Acorn spec)
+	MOV	SI, offset CS:B486SXL_Msg	; Send message
+	MOV	BL, CCR0_ENA20 + CCR0_ENKEN + CCR0_ENFLUSH ; Enable A20gate,
+	JMP	short B486_SetTIcache		; KEN and FLUSH pins.
+
+	; TI 486SXLC2 on Gemini (clock doubled)
+
+B486_Gemini_SXLC2:
+	MOV	SI, offset CS:B486SXL2_Msg	; Send message
+	MOV	BL, CCR0_ENA20 + CCR0_ENKEN + CCR0_ENFLUSH + CCR0_CLKDOUBLE
+	JMP	short B486_SetTIcache
+
+	; Diva/Callas or Elvis machines ================================
+
+	; Is it a 486SLC or 486SXLC2?
+	; (All SXLs on Elvises were clock doubled, so we can tell
+	; whether to turn on clock doubling by seeing if it's SLC-type
+	; or SXL-type).
+
+B486_PreGemini:
+	MOV	EAX, 0200h	; Try to set bit 9
+	MOV	TR4, EAX
+	MOV	EAX, 1		; 'Write' test command
+	MOV	TR5, EAX
+
+	MOV	EAX, 2		; 'Read' test command
+	MOV	TR5, EAX
+
+	MOV	EAX, TR4	; Get bit 9
+	AND	AX, 0200h	; Did it stay set?
+	; NZ condition if it's an SLC
+	; Z condition if it's SXLC2
+	JNZ	B486_Elvis_SLC
+
+	; 486SXLC2 on Diva/Callas/Elvis
+
+	MOV	SI, offset CS:B486SXLC2_Msg
+	MOV	BL, CCR0_ENA20 + CCR0_CLKDOUBLE
+	JMP	short B486_SetTIcache
+
+	; 486SLC on Diva/Callas/Elvis
+
+B486_Elvis_SLC:
+	MOV	SI, offset CS:B486SLC_Msg
+	MOV	BL, CCR0_NCA20		; Assume no A20gate line,
+					; disable caching on n*1M+64K
+					; boundaries
+
+	; Set up Cyrix/TI-family caches ------------------
+
+	; BL = value to put in CCR0
+	; SI = CPU type message
+
+B486_SetTIcache:
+	CALL	MSC_SendMsg		; Annouce CPU type
+
+	MOV	AL, GENCFG_CACHE_ON
+	CALL	CheckCacheReq		; See if cache required
+	JZ	B486_exit
+
+	CLI				; Set CR0 bit 30
+	ORCR0	040000000h		; = CD cache disable bit
+	WBINVD				; Invalidate cache
+
+	WrCyrix	0C0h, BL		; CCR0 = BL value
+	WrCyrix	0C1h, 0			; Just in case
+
+	; NCR1 is set to make 0A0000-0BFFFF uncacheable
+	; NCR2 is set to make 0C0000-0DFFFF uncacheable
+	WrCyrix 0C4h, 00h
+	WrCyrix 0C5h, 0Ah		; NCR1 = make A0000-BFFFF uncached
+	WrCyrix 0C6h, 06h
+
+	WrCyrix 0C7h, 00h
+	WrCyrix 0C8h, 0Ch		; NCR2 = make C0000-DFFFF uncached
+	WrCyrix 0C9h, 06h
+
+	WrCyrix 0CAh, 00h
+	WrCyrix	0CBh, 0			; Disable NCR3
+	WrCyrix 0CCh, 0
+
+	WrCyrix 0CDh, 00h
+	WrCyrix	0CEh, 0			; Disable NCR4
+	WrCyrix 0CFh, 0
+					; Clear CR0 bit 30
+	ANDCR0	0BFFFFFFFh		; = Enable cache
+	WBINVD
+	STI
+	RET
+
+B486_SetupCPU ENDP
+
+CPUTypeMsg	DB	"CPU Type    : ", 0
+CacheTypeMsg	DB	"CPU Cache   : ", 0
+B386_Msg	DB	"386", 13, 10, 0
+B486SXDX_Msg	DB	"486SX/DX", 13, 10, 0
+B486SLC_Msg	DB	"486SLC", 13, 10, 0
+B486SXL2_Msg	DB	"486SXL2", 13, 10, 0
+B486SXLC2_Msg	DB	"486SXLC2", 13, 10, 0
+B486SXL_Msg	DB	"486SXL", 13, 10, 0
+B486CxDX_Msg	DB	"Cx486DX/DX2", 13, 10, 0
+B486DX4_Msg	DB	"486DX4", 13, 10, 0
+B486M1SC_Msg	DB	"5x86", 13, 10, 0
+B586AMD_Msg	DB	"AMD 5x86", 13, 10, 0
+CacheOnMsg	DB	"Enabled", 13, 10, 0
+CacheOffMsg	DB	"Disabled", 13, 10, 0
+CacheWTMsg	DB	"Write through", 13, 10, 0
+CacheWBMsg	DB	"Write back", 13, 10, 0
+
+
+; Check cache routines ---------------------
+
+; Enter with AL = cache bits (CACHE_ON and CACHE_WB) relevant for this
+; processor.
+; Exits with AL = cache bits required for this processor
+
+CheckCacheReq proc near
+	MOV	SI, offset CS:CacheTypeMsg	; Say "Cache:"
+	CALL	MSC_SendMsg
+
+	MOV	AH, AL				; AH = flag bits
+	RDCMOS	CMOS_gencfg			; AL = req bits
+
+	TEST	AL, GENCFG_CACHE_ON		; Is cache required?
+	JNZ	CheckC_needed
+
+	MOV	AL, 0				; If not, clear all bits
+	MOV	SI, offset CS:CacheOffMsg	; & say 'disabled'
+	JMP	short CheckC_exit
+
+CheckC_needed:
+	MOV	SI, offset CS:CacheOnMsg	; If writeback isn't an
+	TEST	AH, GENCFG_CACHE_WB		; option, just say 'Enabled'
+	JZ	CheckC_exit
+
+	MOV	SI, offset CS:CacheWBMsg	; Otherwise, say
+	TEST	AL, GENCFG_CACHE_WB		; 'write-through' or 'write-back'
+	JNZ	CheckC_exit			; as appropriate
+	MOV	SI, offset CS:CacheWTMsg
+CheckC_exit:
+	CALL	MSC_SendMsg
+	OR	AL, AL
+	RET
+CheckCacheReq endp
+
+
+; Block Move Routine ******************************************************
+
+	; This is entered as from an INT instruction, with
+	; return CS, IP and Flags pushed on the stack.
+	; ES:SI points to a 30h-byte block containing...
+
+	; offset 0-7  - All zeroes (null descriptor)
+	; offset 8-F	Nothing (will be used as space to put the operand
+	;		for the LGDT instruction).
+	; offset 10-17	Descriptor for 'source' of copy: offsets 12-15h
+	;		are phys. addr of source.
+	; offset 18-1Fh	Descriptor for 'destination' of copy - 1A-1C is
+	;		phys. addr of destination.
+	;	 20-27	(will be used as CS descriptor during copy)
+	;	 28-2F	(will be used as SS descriptor during copy)
+
+	; It is assumed the calling program will fill in the 10h and 18h
+	; descriptors thoroughly (cf. Extending DOS, p84) although we will
+	; still have to catch potential 386 exceptions.
+
+	; CX contains the number of words (0 to 8000h) to be moved.
+	; On exit, AH = 00 - success
+	;		01 - parity error (not checked)
+	;		02 - CPU exception occurred
+	;		03 - A20 failed (not checked)
+
+B386_BlkMove PROC FAR
+	CLI
+
+	PUSH	DS
+	PUSH	ES
+	PUSHA
+
+	MOV	DS, CS:DataSeg@
+
+	CALL	EnableA20
+
+	MOV	word ptr [SYS_resetptr], SP
+	MOV	word ptr [SYS_resetptr+2], SS
+
+	CALL	B386_SetupGDT		; Fills in table entries and sets
+					; the GDTR to point to them
+
+	LIDT	fword ptr CS:BlockMoveIDTvalue
+
+	; Enter protected mode ***********************************
+
+	EnterProtMode
+
+	LONGJMP	020h, BlkMove_EnterPM	; Re-load CS descriptor to be 20h
+BlkMove_EnterPM:
+
+	MOV	AX, 10h			; DS = source descr. = 10h
+	MOV	DS, AX
+	MOV	AX, 18h			; ES = dest. = 18h
+	MOV	ES, AX
+	MOV	AX, 28h			; SS = 28h
+	MOV	SS, AX
+
+	MOV	BL, 0			; BL holds status
+
+	MOV	SI, 0
+	MOV	DI, 0
+
+	CLD				; Then do the block move...
+	REP	MOVSW
+
+					; Before we exit, the segment
+					; limits of the DS, ES and SS
+					; registers need to be reset
+					; (CS is already FFFF).
+BlkMove_Abort:
+	LGDT	fword ptr CS:ResetLimitGDTvalue
+	MOV	AX, 08h
+	MOV	DS, AX
+	MOV	ES, AX
+	MOV	SS, AX
+
+	ExitProtMode			; Leave protected mode
+	LONGJMP	BIOSRomSeg, BlkMove_ExitPM
+BlkMove_ExitPM:				; restore CS to Real-mode
+
+
+	LIDT	fword ptr CS:DefaultIDTvalue
+	LGDT	fword ptr CS:DefaultGDTvalue
+
+	MOV	DS, CS:DataSeg@			; Get back DS
+	MOV	SS, word ptr [SYS_resetptr+2]	; Get back stack
+	MOV	SP, word ptr [SYS_resetptr]
+
+	MOV	[SYS_BlkMvStat], BL		; Save status
+
+	CALL	DisableA20
+	POPA					; Get back regs
+	POP	ES
+	MOV	AH, [SYS_BlkMvStat]		; Restore status
+	POP	DS
+
+	CMP	AH, 0
+	JNE	BlkMove_Error
+	CLC
+	STI
+	RET	2
+
+BlkMove_Error:				; Z flag is also clear at this point
+	STC
+	STI
+	RET	2
+
+	; All entries in the IDT point to BlkMove_Exception
+	; If an exception occurs, set BL (status value) to be 2
+	; don't worry about state of stack, SS and SP will be restored
+	; anyway on exit.
+
+BlkMove_Exception:
+	MOV	BL, 2
+	JMP	BlkMove_Abort
+
+
+B386_BlkMove ENDP
+
+
+
+	; Interrupt descriptor table for block move *****************
+
+	; This has every entry as a trap gate descriptor, which simply
+	; causes a jump to BlkMove_Exception when any processor funnies
+	; happen. Hardware interrupts themselves are disabled, so we
+	; don't have to service them.
+
+BlockMoveIDTvalue:
+	DGDT	BlockMoveIDT, 0100h
+BlockMoveIDT:
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+	TRAPD	020h, BlkMove_Exception
+
+	; The 'ResetLimit' pointers and tables are used, just before
+	; leaving protected mode, to set the DS, ES, and SS limits back
+	; to 64K
+
+ResetLimitGDTvalue:
+	DGDT	ResetLimitGDT, 0018h
+ResetLimitGDT:
+	DESCR	0, 0, 0				; Null selector
+	DESCR	0, 0FFFFh, AR_Data		; Base = 0, limit = 0FFFFh
+	DESCR	BIOSPhysBase, 0FFFFh, AR_Code	; CS descriptor
+
+
+DefaultIDTvalue:				; Value to restore into
+	DBL	0, 0FFFFh			; IDT reg: base = 0,
+						; limit = 0FFFFh
+DefaultGDTvalue:
+	DBL	0, 0FFFFh
+
+
+
+
+; RAM Test routines ********************************************************
+
+	; These routines are used to read and write a test pattern into
+	; a block of RAM. They are entered with a 4K block number in BX.
+	; and should preserve BX and CX on exit.
+
+	; The routines are done in protected mode, set up as follows
+
+	; The GDT starts at RAM location 00800H, with these descriptors:
+
+	; 00h	Not used
+	; 08h	Not used
+	; 10h	DS value	; Limit=64K, base = BX<<12
+	; 18h	Not used
+	; 20h	CS value
+	; 28h	SS value
+
+
+
+B386_RAMTWriteBlock PROC NEAR
+	CLI
+	CALL	EnableA20
+	CALL	B386_RAMTSetup			; Fill in DS descriptor
+	CALL	B386_SetupGDT			; Fill in other entries
+	EnterProtMode
+	LONGJMP	020h, B386_RTW_1			; Set up CS value
+B386_RTW_1:
+	MOV	AX, 10h				; Set up DS value
+	MOV	DS, AX
+
+	; RAM write loop ********************************
+
+	MOV	SI, 0
+	MOV	AX, BX			; Test pattern values are based on
+					; block number to pick up errors
+					; due to repeated blocks
+
+B386_RTW2:
+	MOV	[SI], AX		; Only a few locations are checked,
+	ADD	AX, 11375		; but using a pattern that has an
+	ADD	SI, 153			; approx. even distribution of 1s
+	CMP	SI, 01000H		; and 0s in data and address bits
+	JB	B386_RTW2
+
+	; End of RAM write loop ************************
+
+	ExitProtMode			; Leave protected mode
+	LONGJMP	BIOSRomSeg, B386_RTW_3
+B386_RTW_3:				; restore CS to Real-mode
+	MOV	DS, CS:DataSeg@		; Get back DS
+					; ES and SS should not have been
+					; modified.
+	CALL	DisableA20
+	STI
+	RET
+B386_RAMTWriteBlock	ENDP
+
+
+	; ************************************************************
+
+	; RAMTReadBlock should read and verify the test pattern in the
+	; 4K memory block pointed to by BX. It should preserve BX and CX.
+
+	; On return, DX=AX indicates success. If it failed, AX=data written
+	; DX=data read back, SI = offset into block where it occurred.
+
+B386_RAMTReadBlock PROC NEAR
+	CLI
+	CALL	EnableA20
+	CALL	B386_RAMTSetup			; Fill in DS descriptor
+	CALL	B386_SetupGDT			; Fill in other entries
+	EnterProtMode
+	LONGJMP	020h, B386_RTR_1		; Set up CS value
+B386_RTR_1:
+	MOV	AX, 10h				; Set up DS value
+	MOV	DS, AX
+
+
+	; RAM Read loop ***********************
+
+	MOV	SI, 0
+	MOV	AX, BX
+
+B386_RTR_2:
+	MOV	DX, [SI]		; Read back data
+	CMP	AX, DX
+	JNE	B386_RTR_3		; If wrong, exit
+
+	MOV	word ptr [SI], 0	; Clear RAM at address
+	ADD	AX, 11375
+	ADD	SI, 153
+	CMP	SI, 01000H
+	JB	B386_RTR_2
+
+	MOV	DX, AX			; Success! Make sure DX=AX
+B386_RTR_3:
+
+	; Re-enter real mode *******************
+
+	MOV	DI, AX			; Save AX value
+	ExitProtMode			; Leave protected mode
+	LONGJMP	BIOSRomSeg, B386_RTR_4
+B386_RTR_4:				; restore CS to Real-mode
+
+	MOV	DS, CS:DataSeg@		; Get back DS
+					; ES and SS should not have been
+					; modified.
+	CALL	DisableA20
+	MOV	AX, DI			; restore AX value
+	STI
+	RET
+B386_RAMTReadBlock ENDP
+
+	; B386_RAMTSetup ***************************************
+
+	; Given a 4K block number in BX, this sets up ES:SI to point
+	; to a block of memory suitable for a GDT table (0080:0 will do)
+	; and sets descriptor 10h in it to be a valid DS descriptor
+	; for this block.
+
+B386_RAMTSetup PROC NEAR
+
+	MOV	AX, 080h
+	MOV	ES, AX
+	MOV	SI, 0
+
+	MOV	word ptr ES:[SI+10h], 0FFFFh	; Limit = 64K
+
+	MOV	AX, BX
+	SHL	AX, 12
+	MOV	ES:[SI+12h], AX			; Base(LSW) = BX<<12
+
+	MOV	AX, BX
+	SHR	AX, 4
+	MOV	ES:[SI+14h], AL			; Base(MSW) = BX>>4
+	MOV	ES:[SI+17h], AH			;
+
+	MOV	byte ptr ES:[SI+15h], AR_Data
+	MOV	byte ptr ES:[SI+16h], 0
+	RET
+
+B386_RAMTSetup ENDP
+
+
+
+; B386_SetupGDT ********************************************************
+
+	; This is used to set up the descriptor table pointed to by
+	; ES:SI. Descriptor 20h is used for the code segment, and
+	; 28h is used for the stack. The space for descriptor 08h
+	; is used as the operand for the LGDT instruction.
+
+
+B386_SetupGDT PROC NEAR
+
+	; First, set up aliases for the code and stack segments
+
+	; Code segment (descriptor = 20h) *********************
+
+	MOV	word ptr ES:[SI+20h], 0FFFFh	; Limit = 64K
+	MOV	word ptr ES:[SI+22h], BIOSPhysBase AND 0FFFFh
+	MOV	byte ptr ES:[SI+24h], BIOSPhysBase SHR 16
+	MOV	byte ptr ES:[SI+25h], AR_Code
+	MOV	word ptr ES:[SI+26h], 0
+
+	; Stack segment (descriptor = 28h) ********************
+
+	MOV	word ptr ES:[SI+28h], 0FFFFh	; Limit = 64K
+	MOV	AX, SS
+	MOV	DL, AH
+	SHL	AX, 4
+	SHR	DL, 4
+	MOV	ES:[SI+2Ah], AX
+	MOV	ES:[SI+2Ch], DL
+	MOV	byte ptr ES:[SI+2Dh], AR_Data
+	MOV	word ptr ES:[SI+2Eh], 0
+
+
+	; Then, set up ES:SI+8 to be an operand for the LGDT instr.
+
+	MOV	word ptr ES:[SI+08h], 0FFFFh	;Limit = 64K
+
+	MOV	AX, ES
+	MOV	DL, AH
+	SHL	AX, 4
+	SHR	DL, 4				;DL:AX = ES*16
+	ADD	AX, SI
+	ADC	DL, 0
+	MOV	DH, 0				;DX:AX = ES*16 + SI
+
+	MOV	ES:[SI+0Ah], AX			;Put base = BX:AX
+	MOV	ES:[SI+0Ch], DX
+
+	; Finally, load GDT register itself ***********
+
+	LGDT	ES:[SI+08h]			;GDT base = ES*16+SI
+						;GDT limit = 0FFFFh
+
+
+	RET
+
+B386_SetupGDT	ENDP
+
+
+
+; 'Enter protected mode' routine *****************************************
+
+; Entered as though INT 15h AH=89h had just been called.
+; On entry, BH = new Int vector base for PIC #1
+;	    BL = new Int vector base for PIC #2
+; 	ES:SI points to GDT with entries:
+;
+; +0   : NULL descriptor
+; +8   : Descriptor referencing this GDT
+; +10h : Descriptor for IDT
+; +18h : New DS descriptor
+; +20h : New ES descriptor
+; +28h : New SS descriptor
+; +30h : Descriptor for CS to return to
+; +38h : Blank descriptor (for BIOS code alias; we don't need this)
+
+B386_EnterPM PROC FAR
+	CLI
+	CALL	EnableA20
+
+	; Set up PIC #2 first
+
+	MOV	AL, 11h		; Cascade / edge-triggered / call interval 8
+	OUT	IO_PIC2_Ctrl, AL
+
+	IOWAIT
+	MOV	AL, BL
+	OUT	IO_PIC2_Mask, AL	; Set interrupt base
+
+	IOWAIT
+	MOV	AL, 02h
+	OUT	IO_PIC2_Mask, AL	; Slave: ID is 2
+
+	IOWAIT
+	MOV	AL, 01h
+	OUT	IO_PIC2_Mask, AL	; 8086 mode, normal EOI
+
+	IOWAIT
+	MOV	AL, 0FFh
+	OUT	IO_PIC2_Mask, AL	; All interrupts off
+
+	; Set up PIC #1
+
+	IOWAIT
+	MOV	AL, 11h		; Cascade / edge-triggered / call interval 8
+	OUT	IO_PIC1_Ctrl, AL
+
+	IOWAIT
+	MOV	AL, BH
+	OUT	IO_PIC1_Mask, AL	; Set interrupt base
+
+	IOWAIT
+	MOV	AL, 04h
+	OUT	IO_PIC1_Mask, AL	; Master: slave is on IRQ2
+
+	IOWAIT
+	MOV	AL, 01h
+	OUT	IO_PIC1_Mask, AL	; 8086 mode, normal EOI
+
+	IOWAIT
+	MOV	AL, 0FFh
+	OUT	IO_PIC1_Mask, AL	; All interrupts off
+
+					; Top of stack contains
+	POP	AX			; return IP, return CS
+	ADD	SP, 4			; and flags. Leave it
+	PUSH	0030h			; with just retCS=0030h
+	PUSH	AX			; and retIP as before
+
+	LGDT	ES:[SI+08h]		; Set up GDT
+	LIDT	ES:[DI+10h]		; Set up IDT
+
+	EnterProtMode			; Go protected mode!
+	IOWAIT
+
+	MOV	AX, 0018h
+	MOV	DS, AX
+	MOV	AX, 0020h
+	MOV	ES, AX
+	MOV	AX, 0028h
+	MOV	SS, AX
+
+	MOV	AX, 0
+	CLC
+	RET
+B386_EnterPM ENDP
+
+
+
+	.286	; Go back to 286 syntax for the rest of BIOS *************
+
+

@@ -1,0 +1,17 @@
+/*
+ * Name   : switching.h
+ * Desc   : Handlers for switching component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 1-Jun-1995
+ */
+
+
+#ifndef __switching_h
+#define __switching_h
+
+extern void do_switching_initialise(void);
+extern void setup_switching_window(void);
+extern void update_switching_window(void);
+extern int switching_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

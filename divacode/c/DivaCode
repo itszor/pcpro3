@@ -1,0 +1,243 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "iconbar.h"
+#include "menu.h"
+#include "wimplib.h"
+#include "window.h"
+
+#include "swis.h"
+
+#include "DivaSrc:sys.h.DivaSerial"
+
+MessagesFD   msg_block;
+IdBlock      id_block;
+ObjectId     MainWin;
+int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
+char         directory[32] = "<DivaCode$Dir>";
+void         *sprite_area;
+void         *er;
+
+#define ER(x) if (x != NULL) wimp_report_error((void*) x, 0, "DivaCode")
+
+#define REGCODE_1 0
+#define REGCODE_2 1
+#define SERIALNUM 0xd
+#define LICENSEES 0xe
+#define PRODUCT   0xf
+#define BUTTON_FROM_REGCODE 4
+#define BUTTON_TO_REGCODE   5
+#define RADIO_STAMP 0x11
+#define RADIO_READ  0x12
+
+void werr(int fatal, char* format, ...)
+{
+   va_list va;
+   _kernel_oserror e;
+   e.errnum = 0;
+   va_start(va, format);
+   vsprintf(&e.errmess[0], format, va);
+   va_end(va);
+   wimp_report_error(&e, 0, "DivaCode");
+   /*wimp_report_error(&e, 0, "PCConfig");*/
+   if (fatal) quit = TRUE;
+}
+
+_kernel_oserror * xosclif(char* format, ...)
+{
+   va_list va;
+   char cmd[256];
+
+   va_start(va, format);
+   vsprintf(cmd, format, va);
+   va_end(va);
+   return(_swix(OS_CLI, _IN(0), cmd));
+}
+
+void quit_handler(void)
+{
+  quit=1;
+}
+
+int dataload_handler(WimpMessage *message,void *handle)
+{
+  int sel;
+  unsigned int p, s, l, w0, w1, w2;
+  char b1[8], b2[8];
+
+  if (message->data.data_load.file_type == 0x2000) {
+    message->data.data_load.file_type = 0xFF8;
+    strcat(message->data.data_load.leaf_name, ".!Runimage");
+  }
+
+  xosclif("Set DivaCode$Filename %s", message->data.data_load.leaf_name);
+
+  _swi(Hourglass_On, 0);
+
+  ER(radiobutton_get_state(0, MainWin, RADIO_STAMP, NULL, &sel));
+  ER(writablefield_get_value(0, MainWin, REGCODE_1, b1, 8, NULL));
+  ER(writablefield_get_value(0, MainWin, REGCODE_2, b2, 8, NULL));
+  if (sel == RADIO_STAMP) {
+    if (DivaSerial_decode(DivaSerial_frombase33(b1), DivaSerial_frombase33(b2), &p, &s, &l)) {
+      werr(0, "Can't stamp with an invalid registraion code!");
+      return(1);
+    }
+    xosclif("Set DivaCode$Action stamp");
+    xosclif("Set DivaCode$RegCode \"%s %s\"", b1, b2);
+    srand(_swi(OS_ReadMonotonicTime, _RETURN(0)));
+    xosclif("Set DivaCode$w2 %08x", w2=rand());
+    xosclif("Set DivaCode$w0 %08x", w0=('DvSr' ^ w2));
+    xosclif("Set DivaCode$w1 %08x", w1=( ((p | (s<<8) | (l<<24))^w2) ^ w0));
+    wimp_start_task("<DivaCode$Dir>.Process", NULL);
+    if (getenv("DivaCode$Error") != NULL) {
+      werr(0, getenv("DivaCode$Error"));
+      return(1);
+    }
+  } else {
+    xosclif("Set DivaCode$Action read");
+    wimp_start_task("<DivaCode$Dir>.Process", NULL);
+    if (getenv("DivaCode$Error") != NULL) {
+      werr(0, getenv("DivaCode$Error"));
+      return(1);
+    }
+    sscanf(getenv("DivaCode$RegCode"), "%s %s", b1, b2); // yuck :-)
+    sscanf(getenv("DivaCode$w0"), "%x", &w0);
+    sscanf(getenv("DivaCode$w1"), "%x", &w1);
+    sscanf(getenv("DivaCode$w2"), "%x", &w2);
+    if (w0 == 'DvSr') {
+      werr(0, "This is a an uninstalled copy.");
+      return(1);
+    }
+    if (DivaSerial_decode(DivaSerial_frombase33(b1), DivaSerial_frombase33(b2), &p, &s, &l)) {
+      werr(0, "ASCII registration code (%s-%s) is invalid! (hacked?)", b1, b2);
+      return(1);
+    }
+    //werr(0, "%08x", ((w1 ^ w0) ^ w2));
+    if ( ((w1 ^ w0) ^ w2) != (p | (s<<8) | (l<<24)) ) {
+      werr(0, "ASCII registration code %s-%s does not match copy %08x (hacked?)", b1, b2, (p | (s<<8) | (l<<24) ));
+      return(1);
+    }
+    if ( (w0 ^ w2) != 'DvSr') {
+      werr(0, "Checksum is invalid (hacked?");
+      return(1);
+    }
+    writablefield_set_value(0, MainWin, REGCODE_1, b1);
+    writablefield_set_value(0, MainWin, REGCODE_2, b2);
+    numberrange_set_value(0, MainWin, SERIALNUM, s);
+    numberrange_set_value(0, MainWin, LICENSEES, l);
+    numberrange_set_value(0, MainWin, PRODUCT, p);
+
+    xosclif("Unset DivaCode$w*");
+    xosclif("Unset DivaCode$RegCode");
+  }
+  _swi(Hourglass_Off, 0);
+  return(1);
+}
+
+int convert(int e, ToolboxEvent *event, IdBlock *id, void *h)
+{
+  char b1[16], b2[16];
+  unsigned int p, s, l, enc, chk;
+
+  switch(id->self_component)
+  {
+    case BUTTON_FROM_REGCODE:
+      writablefield_get_value(0, MainWin, REGCODE_1, b1, 16, NULL);
+      writablefield_get_value(0, MainWin, REGCODE_2, b2, 16, NULL);
+      if (DivaSerial_decode(DivaSerial_frombase33(b1), DivaSerial_frombase33(b2), &p, &s, &l))
+        _swi(OS_CLI, _IN(0), "PlayIt_Play <DivaCode$Dir>.Bad");
+      else
+      {
+        numberrange_set_value(0, MainWin, SERIALNUM, s);
+        numberrange_set_value(0, MainWin, LICENSEES, l);
+        numberrange_set_value(0, MainWin, PRODUCT, p);
+      }
+      break;
+    case BUTTON_TO_REGCODE:
+      numberrange_get_value(0, MainWin, SERIALNUM, (int*) &s);
+      numberrange_get_value(0, MainWin, LICENSEES, (int*) &l);
+      numberrange_get_value(0, MainWin, PRODUCT, (int*) &p);
+      DivaSerial_encode(p, s, l, &enc, &chk);
+      DivaSerial_tobase33(enc, b1);
+      DivaSerial_tobase33(chk, b2);
+      writablefield_set_value(0, MainWin, REGCODE_1, b1);
+      writablefield_set_value(0, MainWin, REGCODE_2, b2);
+      numberrange_set_value(0, MainWin, SERIALNUM, s+1);
+      break;
+  }
+  return(1);
+}
+
+static char num_buffer[16]="\0";
+
+_kernel_oserror* DivaCode_SWI(int swi_no, _kernel_swi_regs *r, void *pw)
+{
+  unsigned int enc, chk;
+
+  switch (swi_no)
+  {
+    case 0:
+      DivaSerial_encode(r->r[0], r->r[1], r->r[2], &enc, &chk);
+      DivaSerial_tobase33(enc, num_buffer);
+      strcat(num_buffer, "-");
+      DivaSerial_tobase33(chk, num_buffer+strlen(num_buffer));
+      r->r[0] = (int) num_buffer;
+      break;
+  }
+  return 0;
+}
+
+_kernel_oserror *DivaCode_CLI(void)
+{
+  _swi(OS_Module, _IN(0)|_IN(1)|_IN(2), 2, "DivaCode", "");
+  return 0;
+}
+
+extern int Image__RO_Base;
+
+void service_handler(int number, _kernel_swi_regs *r, void *pw) {
+  switch (number) {
+    case Service_Memory:
+      if (r->r[2] == (int)Image__RO_Base)
+        //debug((0, "Service_Memory %d\n", r->r[0]));
+        r->r[1] = 0;			// to prevent app space remapping
+      break;
+    /* add other service call handlers here */
+  }
+}
+
+int main(void)
+{
+  int              event_code;
+  WimpPollBlock    poll_block;
+  char             conf_default[256];
+  int              mem;
+
+  if (task_handle != 0)
+    return(1);
+
+  event_initialise(&id_block);
+
+  ER(toolbox_initialise(0, 310, &interested, &interested, directory, &msg_block,
+                     &id_block, &current_wimp, &task_handle, &sprite_area));
+
+  ER(event_register_message_handler(0, (WimpMessageHandler*) quit_handler, NULL));
+  ER(event_register_message_handler(Wimp_MDataLoad, dataload_handler, 0));
+  ER(event_register_toolbox_handler(-1, 0x100, (ToolboxEventHandler*) quit_handler, NULL));
+  ER(event_register_toolbox_handler(-1, Adjuster_Clicked, convert, NULL));
+
+  ER(toolbox_create_object(0, "Main", &MainWin));
+  ER(toolbox_show_object(0, MainWin, Toolbox_ShowObject_Centre, NULL, 0, 0));
+
+  while (!quit)
+    event_poll(&event_code, &poll_block, NULL);
+
+  _swi(OS_ExitAndDie, _IN(0)|_IN(1)|_IN(2)|_IN(3), NULL, 0x58454241, NULL, "DivaCode");
+
+  return(0);
+}

@@ -1,0 +1,891 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSVID2.ASI		Video BIOS mode change/scroll routines
+;
+; Versions
+; 16-07-93 INH	1.19 Original
+;
+; *****************************************************************
+
+; VID_RectMove routine ------------------------------------------
+; Moves a rectangle of memory. Before entering, push the following
+; on the stack:
+;
+; top_seg, top_ofs : pointer to top-left of rectangular area
+; bwidth : number of bytes on each line to be moved
+; spacing: spacing in bytes between each line
+; dist: number of lines (-ve = down, +ve=up, 0 = fill) to be moved
+; nlines: total number of lines in the rectangle
+; fillval: byte of data to fill area with. If fillval bit 15
+;		is set, this is a WORD thing: all data is to
+;		be moved as words and the filldata is to be
+;		(fillval << 8). (i.e. a text-mode move).
+;
+; Trashes AX, BX, CX, DX, SI, DI
+
+RMParams  STRUC
+	RM_BP	DW  0
+	RM_IP	DW  0
+	fillval DW  0
+	nlines	DW  0
+	dist	DW  0
+	spacing	DW  0
+	bwidth	DW  0
+	top_ptr DD  0
+RMParams ENDS
+
+VID_RectMove PROC NEAR
+	PUSH	BP
+	MOV	BP, SP
+	PUSH	DS
+	PUSH	ES
+
+	MOV	BX, [BP].spacing
+	MOV	CX, [BP].dist
+	LES	DI, [BP].top_ptr
+
+	CMP	CX, 0
+	JE	VRM_Exit
+	JG	VRM_Normal
+
+VRM_MoveDown:			; Move Down if dist < 0
+	NEG	CX		; CX := |dist|
+
+	MOV	AX, [BP].nlines	; Set DI = top + (nlines-1)*spacing
+	DEC	AX
+	MUL	BX
+	ADD	DI, AX
+
+	MOV	AX, CX
+	MUL	BX		; AX := |dist| * spacing
+	MOV	SI, DI
+	SUB	SI, AX		; Set SI = top + (nlines-dist-1)*spacing
+
+	ADD	BX, [BP].bwidth
+	NEG	BX		; BX = - (spacing+width) 
+	JMP	VRM_Move	; i.e. offset to move up one line
+
+VRM_Normal:			; Move down:
+	MOV	AX, CX
+	MUL	BX		; AX = dist * spacing
+	MOV	SI, AX
+	ADD	SI, DI		; SI = top + (dist*spacing)
+	SUB	BX, [BP].bwidth	; BX = offset at end of line
+
+VRM_Move:	; At this point
+		; ES:DI = first byte to be written
+		; ES:SI = source for first byte
+		; CX = absolute value of dist
+		; BX = gap between end of one line & start of the next
+
+	MOV	DX, [BP].nlines		; DX = # of lines to move =
+	SUB	DX, CX			; nlines-dist
+	JLE	VRM_Exit		; if <=0, do nothing 
+
+	MOV	AX, ES
+	MOV	DS, AX
+	CLD
+
+	TEST	[BP].fillval, 08000h
+	JNZ	VRM_Move16Loop
+
+VRM_Move8Loop:
+	MOV	CX, [BP].bwidth
+	REP	MOVSB
+	ADD	DI, BX
+	ADD	SI, BX
+	DEC	DX
+	JNZ	VRM_Move8Loop
+	JMP	VRM_Exit
+
+VRM_Move16Loop:
+	MOV	CX, [BP].bwidth
+	SHR	CX, 1
+	REP	MOVSW
+	ADD	DI, BX
+	ADD	SI, BX
+	DEC	DX
+	JNZ	VRM_Move16Loop
+VRM_Exit:
+	POP	ES
+	POP	DS
+	POP	BP
+	RET
+
+VID_RectMove ENDP
+
+
+; RectFill routine ------------------------------------
+
+; This is called with the same parameters as VID_RectMove; it 
+; fills in the gap left over by a scroll operation. The two are
+; done separately to allow VGA registers to be frigged between the
+; move & fill operations.
+
+
+VID_RectFill PROC NEAR		; 
+	PUSH	BP
+	MOV	BP, SP
+	PUSH	DS
+
+	MOV	DX, [BP].dist
+	LES	DI, [BP].top_ptr
+
+	CMP	DX, 0			; If dist<0, scroll down =>
+	JL	VRF_FillTop		;   fill top of rectangle
+	JE	VRF_FillBlock		; If dist==0, fill whole block
+
+VRF_FillBottom:				; Fill gap at bottom of scrolled area
+	CMP	DX, [BP].nlines		; If dist > nlines, just
+	JGE	VRF_FillBlock		; fill whole of block.
+
+	MOV	AX, [BP].nlines
+	SUB	AX, DX
+	MUL	[BP].spacing		; DXAX := spacing * (nlines-dist)
+	ADD	DI, AX			; DI = top +spacing*(nlines-dist)
+	MOV	DX, [BP].dist
+	JMP	VRF_Fill
+
+VRF_FillTop:
+	NEG	DX			; DX = |dist| = # lines to fill
+	CMP	DX, [BP].nlines		; If DX > nlines,
+	JL	VRF_Fill		;    DX = nlines
+VRF_FillBlock:
+	MOV	DX, [BP].nlines
+VRF_Fill:	; At this point, ES:DI = first line to be filled
+		; DX = number of lines to be filled
+
+	CLD
+
+	MOV	BX, [BP].spacing
+	SUB	BX, [BP].bwidth
+
+	MOV	AX, [BP].fillval
+	TEST	AX, 08000h
+	JNZ	VRF_Fill16
+
+VRF_Fill8Loop:
+	MOV	CX, [BP].bwidth
+	REP	STOSB
+	ADD	DI, BX
+	ADD	SI, BX
+	DEC	DX
+	JNZ	VRF_Fill8Loop
+	JMP	VRF_Exit
+
+VRF_Fill16:
+	MOV	AH, AL
+	MOV	AL, 020h
+VRF_Fill16Loop:
+	MOV	CX, [BP].bwidth
+	SHR	CX, 1
+	REP	STOSW
+	ADD	DI, BX
+	ADD	SI, BX
+	DEC	DX
+	JNZ	VRF_Fill16Loop
+	
+VRF_Exit:
+	POP	DS
+	POP	BP
+	RET
+VID_RectFill ENDP
+
+; VID_CheckARMassist -------------------------------------------
+
+; This is used to check whether we are allowed to do ARM-assisted
+; scrolling and clearing operations; this basically detects whether
+; we're running in Windows' virtual DOS sessions or not. If we are,
+; the ARM shouldn't be allowed to change actual video memory & this
+; exits with the Z flag clear. If we can do it, the Z flag is set.
+; All regs preserved.
+
+VID_CheckARMassist PROC NEAR
+	PUSH	DX
+	PUSH	AX
+
+	MOV	DX, VID_CRTCport
+	MOV	AL, 28h			; Read CRTC reg CR28
+	OUT	DX, AL			; - an imaginary 'extended'
+					; register. This is not intercepted
+	INC	DX			; by Windows VxD's.
+	IN	AL, DX			;
+	MOV	AH, AL			; AH = initial value
+
+	MOV	AL, 043h		; 43h = 'toggle CR28 value' command
+	OUT	DX, AL			; This should XOR the value read back from
+					; CR28 with A5 hex
+	IN	AL, DX
+	XOR	AL, AH
+	CMP	AL, 0A5h		; Identified as 0A5h = our ID value
+	POP	AX
+	POP	DX
+	RET
+VID_CheckARMassist ENDP
+
+; VID_ScrollUpOne ----------------------------------------------
+
+; This is called by the text write routines when the whole of
+; the screen needs to be scrolled up by one character position.
+; Trashes AX-DX, SI, DI
+
+VID_ScrollUpOne PROC NEAR
+	MOV	CX, 0				; (top, left) = 0, 0
+	MOV	DH, VID_lastrow
+	MOV	DL, byte ptr VID_ncols		;(bottom,right) = (lastrow,
+	DEC	DL				;  ncols-1)
+	MOV	BX, 0001			; Distance =1, attrib = 0
+
+	MOV	AX, 0B000h
+	CMP	VID_mode, 7
+	JE	VID_SU1_Txt
+	CMP	VID_mode, 4
+	JAE	VID_SU1_DoIt
+	MOV	AX, 0B800h
+VID_SU1_Txt:					; If in text mode, get
+	PUSH	ES				; attrib from last character
+	MOV	ES, AX				; on the screen
+	MOV	AX, DX
+	ADD	AX, 0101h
+	MUL	AH
+	ADD	AX, AX
+	DEC 	AX
+	ADD	AX, VID_pgaddr
+	MOV	SI, AX
+	MOV	BH, ES:[SI]			; Get attribute
+	POP	ES
+VID_SU1_DoIt:
+	JMP	VID_Scroll
+VID_ScrollUpOne ENDP
+
+
+; VID_Scroll ---------------------------------------------------------
+
+; VID_Scroll is a general-purpose scroll routine, which switches
+;  according to screen mode
+;
+; Entered with	CH = top (all co-ords in char cells, 0=top/left)
+;		CL = left
+;		DH = bottom
+;		DL = right
+;		BH = attribute / graphics colour
+;		BL = distance (0=clear, + = move up, - move down)
+;
+; DS = BIOS video data segment
+; Trashes AX-DX, SI, DI
+
+; ---------------------------------------------------
+
+ScrollDispatch	DW	VID_TextScroll		; 0
+		DW	VID_TextScroll		; 1
+		DW	VID_TextScroll		; 2
+		DW	VID_TextScroll		; 3
+		DW	VID_CGA45Scroll		; 4
+		DW	VID_CGA45Scroll		; 5
+		DW	VID_CGA6Scroll		; 6
+		DW	VID_MonoTextScroll	; 7
+		DW	VS_Exit			; 8
+		DW	VS_Exit			; 9
+		DW	VS_Exit			; A
+		DW	VS_Exit			; B
+		DW	VS_Exit			; C
+		DW	VID_VGAScroll		; D
+		DW	VID_VGAScroll		; E
+		DW	VID_VGAScroll		; F
+		DW	VID_VGAScroll		; 10
+		DW	VID_VGAScroll		; 11
+		DW	VID_VGAScroll		; 12
+		DW	VID_M13Scroll		; 13
+
+VID_Scroll PROC NEAR
+	CALL	VID_CheckARMassist
+	JZ	VID_ScrollARM
+	MOV	AL, VID_mode
+	CMP	AL, 14h
+	JAE	VS_SVGA
+	MOV	AH, 0
+	ADD	AX, AX
+	MOV	SI, AX
+	JMP	CS:ScrollDispatch[SI]
+
+VS_Exit:
+	RET
+
+VS_SVGA:		; Assume VGA-compatible for now!!
+	JMP	VID_VGAScroll
+
+	; Scroll done by ARM ----------------------------------------
+
+; Send parameters to ARM side & send command
+
+VID_ScrollARM:
+	MOV	SI, DX
+	MOV	DX, VID_CRTCport
+	MOV	AL, 029h
+	MOV	AH, CH
+	OUT	DX, AX			; CR29=CH=top
+
+	INC	AX
+	MOV	AH, CL
+	OUT	DX, AX			; CR2A=CL=left
+
+	MOV	CX, SI
+	INC	AX
+	MOV	AH, CH
+	OUT	DX, AX			; CR2B=old DH=bottom
+
+	INC	AX
+	MOV	AH, CL
+	OUT	DX, AX			; CR2C=old DL=right
+
+	INC	AX
+	MOV	AH, BH			; CR2D=BH=attrib
+	OUT	DX, AX
+
+	INC	AX
+	MOV	AH, VID_charheight	; CR2E=char height
+	OUT	DX, AX
+
+	INC	AX
+	MOV	AH, BL			; CR2F=BL=(signed)dist
+	OUT	DX, AX
+
+	MOV	CX, VID_pgaddr
+	INC	AX
+	MOV	AH, CH
+	OUT	DX, AX			; CR30=page base MSB
+
+	INC	AX
+	MOV	AH, CL
+	OUT	DX, AX			; CR31=page base LSB
+
+	MOV	AX, 4128h		; CR28=command reg
+	OUT	DX, AX			; write 41h = 'Scroll' command
+	RET
+
+	; Text scroll -----------------------------------------------
+
+VID_MonoTextScroll:
+	PUSH    0B000h
+	JMP	VID_TS_1
+VID_TextScroll:
+	PUSH	0B800h			; Push top_seg = B800 or B000
+VID_TS_1:
+
+	MOV	AL, byte ptr VID_ncols
+	MUL	CH			; AX = ncols * top
+	ADD	AL, CL
+	ADC	AH, 0
+	ADD	AX, AX			; AX = ((ncols*top)+left)*2
+	ADD	AX, VID_pgaddr		;       +VID_pgaddr
+	PUSH	AX			; Push AX as top_ofs
+
+	MOV	AL, DL
+	SUB	AL, CL
+	INC	AL			; AL = right-left+1
+	MOV	AH, 0
+	ADD	AX, AX
+	PUSH	AX			; Push width = (right-left+1)*2
+
+	MOV	AX, VID_ncols
+	ADD	AX, AX
+	PUSH	AX			; Push spacing = VID_ncols*2
+
+	MOV	AL, BL
+	CBW
+	PUSH	AX			; Push dist
+
+	MOV	AL, DH
+	SUB	AL, CH
+	INC	AL			; AL = bottom-top+1
+	MOV	AH, 0
+	PUSH	AX			; Push nlines = (bottom-top+1)
+
+	MOV	AL, BH
+	MOV	AH, 80h
+	PUSH	AX			; Push fillval = (attrib | 8000h)
+
+	CALL	VID_RectMove
+	CALL	VID_RectFill
+
+	ADD	SP, 14
+
+	RET
+
+	; CGA Scroll -------------------------------------------
+
+VID_CGA45Scroll:
+	SHL	CL, 1			; CL = left*2
+	SHL	DL, 1
+	INC	DL			; DL = right*2+1
+        AND	BH, 3			; BH = colour 0..3
+        MOV	AL, BH			; AL = 000000cc
+	SHL	AL, 2
+	OR	BH, AL			; BH = 0000cccc
+	SHL	AL, 2
+	OR	BH, AL			; BH = 00cccccc
+	SHL	AL, 2
+	OR	BH, AL			; BH = cccccccc
+	JMP	short VID_CGAScroll_10
+
+VID_CGA6Scroll:
+	AND	BH, 1			; BH = 0 or 1, fill colour
+	NEG	BH			; BH = 0 or $FF
+VID_CGAScroll_10:
+	PUSH	0B800h			; top_seg = B800h
+	MOV	AH, CH
+	MOV	AL, 0
+	SHR	AX, 2			; AX= top*64
+	ADD	AX, CX			; AX = top*64+top*256+left
+	PUSH	AX			; push AX as top_ofs
+
+	MOV	AL, DL
+	SUB	AL, CL
+	INC	AL			; AL = right-left+1
+	MOV	AH, 0
+	PUSH	AX			; Push width = (right-left+1)*2
+
+	PUSH	80			; Push spacing = 80
+
+	MOV	AL, BL
+	CBW
+	SHL	AX, 2			; dist = (signed) dist*4
+	PUSH	AX			; Push dist
+
+	MOV	AL, DH
+	SUB	AL, CH
+	MOV	AH, 0
+	INC	AX			; AL = bottom-top+1
+	SHL	AX, 2
+	PUSH	AX			; Push nlines = (bottom-top+1)*4
+
+	SHR	BX, 8
+	PUSH	BX			; Push fillvalue
+	
+	CALL	VID_rectmove
+	CALL	VID_rectfill
+
+	PUSH	BP
+	MOV	BP, SP
+	ADD	word ptr [BP+12], 02000h	; Adjust top_ptr for
+	POP	BP				; second half of image
+
+	CALL	VID_rectmove
+	CALL	VID_rectfill
+
+	ADD	SP, 14
+	RET
+
+	; VGA Scroll -------------------------------------------
+
+VID_VGAScroll:
+	PUSH	0A000h			; top_seg = B800h
+
+	MOV	DI, DX			; Save DX
+
+	MOV	AL, VID_charheight	
+	MUL	CH			; AX = top * charheight
+	MUL	VID_ncols		; AX = top * charheight * ncols
+	ADD	AL, CL			
+	ADC	AH, 0			;  +left
+	ADD	AX, VID_pgaddr		;  +pgaddr
+	PUSH	AX			;  = top_ofs
+
+	MOV	DX, DI
+	MOV	AL, DL
+	SUB	AL, CL
+	INC	AL			; AL = right-left+1
+	MOV	AH, 0
+	PUSH	AX			; Push width = (right-left+1)
+
+	PUSH	VID_ncols		; Push spacing = VID_ncols
+
+	MOV	AL, VID_charheight
+	IMUL	BL			; dist = (signed) dist*charheight
+	PUSH	AX			; Push dist
+
+	MOV	AL, DH
+	SUB	AL, CH
+	INC	AL			; AL = bottom-top+1
+	MUL	VID_charheight
+	PUSH	AX			; Push nlines = (bottom-top+1)
+					;         *charheight
+
+	MOV	AL, BH
+	MOV	AH, 0
+	PUSH	AX			; Push fillvalue
+
+	; Set up VGA for move
+	; Read Mode 0; Write Mode 1
+	; Read Map = 4  (Use 'Fast' read mode)
+
+	MOV	DX, IO_VGA_GraphRegs
+	MOV 	AL, GR_RWMode
+	MOV	AH, 1			; Read mode 0, write mode 1
+	OUT	DX, AX
+
+	MOV	AL, GR_RdPlaneSel
+	MOV	AH, 4
+	OUT	DX, AX
+	
+	CALL	VID_rectmove
+
+	; Set up VGA for fill
+	; Write Mode 2
+	; (Bit Mask is still 0xFF)
+
+	MOV	DX, IO_VGA_GraphRegs
+	MOV	AL, GR_RWMode
+	MOV	AH, 2
+	OUT	DX, AX
+
+	CALL	VID_rectfill
+
+	; Restore VGA
+	; Write Mode = 0; Read Mode = 0
+	; Read Map = 0
+
+	MOV	DX, IO_VGA_GraphRegs
+	MOV	AL, GR_RWMode
+	MOV	AH, 0
+	OUT	DX, AX
+
+	MOV	AL, GR_RdPlaneSel
+	MOV	AH, 0
+	OUT	DX, AX
+
+	ADD	SP, 14
+	RET
+
+VID_M13Scroll:
+	PUSH	0A000h			; Push top_seg = A000
+
+	MOV	AL, VID_charheight
+	MUL	CH			; AX = top*charheight
+	MOV	AH, AL
+	MOV	AL, 0
+	MOV	DI, AX			; DI = top*height*256
+	SHR	AX, 2			; AX = top*height*64
+	ADD	DI, AX			; DI = top*height*320
+	MOV	AL, CL
+	MOV	AH, 0
+	SHL	AX, 3			; AX= left*3
+	ADD	AX, DI
+	PUSH	AX			; top_ofs = top*height*320+left*8
+
+	MOV	AL, DL
+	SUB	AL, CL
+	INC	AL			; AL = right-left+1
+	MOV	AH, 0
+	SHL	AX, 3
+	PUSH	AX			; Push width = (right-left+1)*2
+
+	PUSH	320			; Push spacing = 320 bytes per line
+
+	MOV	AL, VID_charheight
+	IMUL	BL
+	PUSH	AX			; Push dist = (dist*charheight)
+
+	MOV	AL, DH
+	SUB	AL, CH
+	INC	AL			; AL = bottom-top+1
+	MUL	VID_charheight
+	PUSH	AX			; Push nlines = (bottom-top+1)*charheight
+
+	MOV	AL, BH
+	MOV	AH, 0h
+	PUSH	AX			; Push fillval = (attrib)
+
+	CALL	VID_RectMove
+	CALL	VID_RectFill
+
+	ADD	SP, 14
+
+	RET
+	
+
+VID_Scroll ENDP
+
+; ---------------------------------------------------
+
+; VID_ModeChange
+
+; Entered with AL = new mode to be selected
+; Trashes AX-DX, SI, DI
+
+VID_ModeChange PROC NEAR
+	MOV	AH, AL			; Save 'memory clear' bit
+	AND	AL, 07Fh
+	CALL	VID_GetModeDef		; Can we do it?
+	JNC	VID_MC_SetMode		; If so, go for it
+
+	MOV	AL, AH			; Else, pass on to SVGA section
+	CALL	SVGA_SetBIOSmode
+	RET
+
+VID_MC_SetMode:
+	MOV	AL, AH			; AH = mode number+flags
+	AND	AL, 07Fh
+	MOV	VID_mode, AL		; Save new mode number
+	MOV	AL, VID_ctrlbits
+	AND	AX, 0807Fh		; AH bit 7 = 'don't clear' flag
+	OR	AL, AH
+	MOV	VID_ctrlbits, AL
+
+	MOV	AX, CS
+	MOV	ES, AX			; Put ES:DI->mode table entry
+
+	; Set up video control registers for mode -----------------
+
+	CALL	VGA_VideoOff
+
+	CALL	VGA_SetModeDI		; Set MiscOp, SR1-SR4, CR0-CR18
+					; GR0-GR8, AR0-AR13 from ES:DI table
+
+	MOV	AX, 01400h		; Set AR14=0 (colour select reg)
+	CALL	VGAI_WriteAR
+
+	MOV	DX, 03C6h		; Set pixel mask = 0FFh
+	MOV	AL, 0FFh
+	OUT	DX, AL
+
+	; Work out MDA mode reg & CGA pal reg values ------------
+
+	MOV	DX, 03B4h
+	TEST	byte ptr ES:[DI+09h], 1	; Is it mono or colour ?
+	JZ	VID_MC_2		; Bit 0 clear if mono
+	MOV	DX, 03D4h
+VID_MC_2:
+	MOV	VID_CRTCport, DX
+
+	MOV	AX, VESA_MODE_REQUEST	; Make sure we're not still in a
+	OUT	DX, AX			; VESA mode
+
+	MOV	BL, VID_mode
+	MOV	BH, 0
+	CMP	BL, 07h
+	JB	VID_MC_1
+	MOV	BL, 07h			; BL = max ( VID_mode & 0x7F, 7 )
+VID_MC_1:
+	MOV	AL, CS:VID_modevals[BX]
+	MOV	VID_modereg, AL
+	ADD	DX, 4			; 03B8h/03D8h = MDA/CGA mode reg
+	OUT	DX, AL
+
+	MOV	AL, CS:VID_CGApals[BX]
+	MOV	VID_palreg, AL
+	MOV	DX, 03D9h
+	OUT	DX, AL
+
+	CALL	VGA_VideoOn
+
+	; Initialise BIOS variables ------------------------
+
+	MOV	AX, 0
+	MOV	VID_pgaddr, AX		; VID_pgaddr = 0
+	MOV	VID_actpage, AL		; VID_actpage = 0
+	MOV	SI, offset DS:VID_curstbl
+	MOV	CX, 8
+VID_MC_curloop:
+	MOV	[SI], AX		; Cursor position on all pages
+	ADD	SI, 2			; = (0, 0)
+	LOOP	VID_MC_curloop
+
+	MOV	AL, ES:[DI+00h]		; Read no. of columns
+	MOV	VID_ncols, AX
+
+	MOV	AL, ES:[DI+01h]		; No. of rows-1
+	MOV	VID_lastrow, AL
+
+	MOV	AL, ES:[DI+02h]		; Character height
+	MOV	word ptr VID_charheight, AX
+
+	MOV	VID_curstype, 0607h	; Cur start=06, stop=07
+
+	MOV	AX, ES:[DI+03h]		; Page size
+	MOV	VID_pgsize, AX
+
+	; Load DAC values, if necessary --------------
+
+	TEST	VID_VGActrl, 08h
+	JNZ	VID_MC_NoPalLoad
+
+	MOV	SI, offset CS:TBL_DAC_Mode13
+	MOV	AL, VID_mode
+	CMP	AL, 013h
+	JE	VID_MC_PalLoad
+
+	MOV	SI, offset CS:TBL_DAC_Mono
+	CMP	AL, 07h
+	JE	VID_MC_PalLoad
+	CMP	AL, 0Fh
+	JE	VID_MC_PalLoad
+
+	MOV	SI, offset CS:TBL_DAC_Default
+VID_MC_PalLoad:
+	MOV	AX, CS
+	MOV	ES, AX			; ES:SI-> DAC table
+	MOV	BX, 0h			; BX = first colour = 0
+	MOV	CX, ES:[SI]		; CX=first entry=length
+	ADD	SI, 2
+	CALL	VGA_SetDACblock		; Set DAC block
+
+VID_MC_NoPalLoad:
+
+	; Load character font -----------------------
+
+	; Get SI = pointer to font, according to char height
+
+	MOV	BH, VID_charheight
+	MOV	SI, offset CS:VID_8x16Font
+	CMP	BH, 16
+	JE	VID_MC_LoadCh
+
+	MOV	SI, offset CS:VID_8x14Font
+	CMP	BH, 14
+	JE	VID_MC_LoadCh
+
+	MOV	SI, offset CS:VID_CGAFontLo
+
+	; Decide whether it's graphics or text mode
+		
+VID_MC_LoadCh:
+	CMP	VID_mode, 7
+	JE	VID_MC_TxtLoad
+	CMP	VID_mode, 4
+	JAE	VID_MC_GraphLoad
+VID_MC_TxtLoad:
+	MOV	AX, CS
+	MOV	ES, AX			; ES:SI = font table
+	MOV	BL, 0			; BL = block no = 0, BH = char height
+	MOV	CX, 0100h		; # of chars to load
+	MOV	DX, 0			; 1st char to load
+	CALL	VGAI_LoadFont		; Load character generator
+
+	MOV	SI, offset CS:VID_CGAFontLo
+					; Text modes set INT 43h
+					; to 8x8 font!
+
+	; If graphics, store INT 43h pointer
+VID_MC_GraphLoad:
+	LES	DI, CS:VGAI_43address
+	MOV	ES:[DI], SI
+	MOV	ES:[DI+2], CS
+
+	; Clear screen, if necessary
+
+	TEST	VID_ctrlbits, 80h	; Should we clear the screen?
+	JNZ	VID_MC_NoClear
+
+	CALL	VID_CheckARMassist	; Can we get the ARM to do it?
+	JNZ	VID_MC_386Clear		; if not, do-it-ourselves
+
+	MOV	DX, VID_CRTCport
+	MOV	AX, 03E28h		; Write CR28 = ARM-assist command reg 
+	OUT	DX, AX			; Send 3Eh = Clear Screen Command
+	JMP	VID_MC_NoClear
+
+VID_MC_386Clear:
+	MOV	AX, 0720h		; Colour text mode clear
+	MOV	CX, 4000h
+	MOV	DX, 0B800h
+	CMP	VID_mode, 3
+	JBE	VID_MC_DoClr
+
+	MOV	AX, 0h
+	MOV	CX, 2000h
+	MOV	DX, 0B800h
+	CMP	VID_mode, 6
+	JBE	VID_MC_DoClr		; Mono text mode clear
+
+	MOV	AX, 0720h
+	MOV	CX, 4000h
+	MOV	DX, 0B000h
+	CMP	VID_mode, 7
+	JE	VID_MC_DoClr
+
+	MOV	AX, 0h
+	MOV	CX, 8000h
+	MOV	DX, 0A000h
+VID_MC_DoClr:
+	MOV	DI, 0
+	MOV	ES, DX
+	REP	STOSW
+VID_MC_NoClear:
+	RET	
+VID_ModeChange ENDP
+
+
+; VID_GetModeDef --------------------------------------------------
+;
+; On entry, AL is a mode number
+; 	    DS = BIOS data seg
+; On exit:
+;  DS, BP, AH must be preserved
+;  Carry clear if mode legal
+;    CS:DI = pointer to 64-byte mode definition structure
+;  Carry set if mode illegal
+; 
+; This routine does all standard VGA modes and VESA mode 6AH (800x600
+; VGA-compatible 16-colour mode).
+
+VID_noVGAtbl	DB 0, 1, 2, 3, 4, 5, 6, 7
+		DB 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0FFh
+		DB 0FFh, 0FFh, 0FFh, 0FFh
+VID_400linetbl	DB 0, 1, 0Ah, 0Ah, 4, 5, 6, 7
+		DB 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0Dh, 0Eh, 0Fh
+		DB 010h, 011h, 012h, 013h
+VID_350linetbl	DB 0, 1, 0Bh, 0Bh, 4, 5, 6, 8
+		DB 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0Dh, 0Eh, 0Fh
+		DB 010h, 011h, 012h, 013h
+VID_200linetbl	DB 0, 1, 0Ch, 0Ch, 4, 5, 6, 9
+		DB 0FFh, 0FFh, 0FFh, 0FFh, 0FFh, 0Dh, 0Eh, 0Fh
+		DB 010h, 011h, 012h, 013h
+
+VID_GetModeDef PROC NEAR
+	CMP	AL, 13h			; Is mode in range 0-13h
+	JA	VID_GMD_SVGA		; If not, try SVGA definitions
+
+	; If no VGA, use 'noVGAtable'
+	MOV	BX, offset CS:VID_noVGAtbl
+	TEST	VID_CtrlBits, 8		; If no VGA attached, use
+	JNZ	VID_GMD_xlat		; default video definitions
+
+	MOV	BX, offset CS:VID_200linetbl
+	TEST	VID_VGActrl, 080h	; bit 7 of [40:89] set for 200
+	JNZ	VID_GMD_xlat
+
+	MOV	BX, offset CS:VID_400linetbl
+	TEST	VID_VGActrl, 010h	; bit 4 of [40:89] set for 400
+	JNZ	VID_GMD_xlat
+
+	MOV	BX, offset CS:VID_350linetbl	; else it's 350-line modes
+VID_GMD_xlat:
+	XLAT	CS:[BX]			; Translate to get index into
+	CMP	AL, 0FFh		; mode definition table: 0FFh = 
+	JE	VID_GMD_Err		; bad mode
+
+	MOV	BH, AL
+	MOV	BL, 0
+	SHR	BX, 2			; BX = entry no * 64
+	LEA	DI, VGA_ModeTbl[BX]	; DI->Mode Table entry
+	CLC
+	RET
+
+VID_GMD_SVGA:
+	CMP	AL, 6Ah			; Is it our one VGA-compatible mode?
+	JNE	VID_GMD_Err		; If not, we can't do it
+	TEST	VID_CtrlBits, 8		; VGA installed??
+	JNZ	VID_GMD_Err		; if not, we can't do it
+	MOV	DI, offset CS:SVGA_mode6Ah
+	CLC
+	RET
+
+VID_GMD_Err:
+	STC
+	RET
+
+VID_GetModeDef ENDP
+

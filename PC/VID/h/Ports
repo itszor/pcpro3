@@ -1,0 +1,123 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.PORTS  - Video Port-related things
+*
+*
+*    09-01-92 INH  Original
+*/
+
+enum page_copying_states {
+  off,
+  copy_on_swap,
+  copy_on_vsync
+};
+
+extern BYTE VID_CRTCregs  [];
+extern BYTE VGA_SeqRegs   [];
+extern BYTE VGA_GraphRegs [];
+extern BYTE VGA_AttrRegs  [];
+extern int  VGA_CRTC_index;
+extern int  VGA_Seq_index;
+extern int  VGA_Graph_index;
+extern int  VGA_Attr_index;
+extern int  VGA_DAC_index;
+extern bool VID_PaletteChanged;
+extern int  VID_VideoEnabled;
+extern int  VID_CGAPalReg;
+extern int  VGA_MiscOut;
+extern int  VID_DispStart32;
+extern bool *VID_VSyncUpdated;
+
+/* Initialise functions *********************/
+
+extern void VID_PortsHardReset ( void );
+
+extern void VID_PortsModeChange(void);
+extern void VID_SaveVESA (void);
+
+extern enum page_copying_states VID_PageCopyingStatus(void);
+extern void VID_FreezePageCopying(bool freeze);
+extern void VID_SwitchPageCopying(void);
+
+/*    Definition of register names for Video system ********************** */
+
+#define CRTC_max  0x3B
+#define Seq_max   0x05
+#define Attr_max  0x15
+#define Graph_max 0x09
+
+#define CRTC_Columns        0x01
+#define CRTC_Overflow       0x07
+#define CRTC_ScanLines      0x12
+#define CRTC_BytesPerRow    0x13
+#define CRTC_UnderlinePos   0x14
+#define CRTC_ModeCtrl       0x17
+#define CRTC_CharHeight     0x09
+#define CRTC_CursorMSB      0x0E
+#define CRTC_CursorLSB      0x0F
+#define CRTC_OffsetMSB      0x0C
+#define CRTC_OffsetLSB      0x0D
+#define CRTC_CurStartLine   0x0A
+#define CRTC_CurStopLine    0x0B
+#define CRTC_last           0x26
+
+#define CRTC_ExtensionFirst 0x27
+
+#define CRTC_CommandReg     0x28
+#define CRTC_ScrollTop      0x29
+#define CRTC_ScrollLeft     0x2A
+#define CRTC_ScrollBottom   0x2B
+#define CRTC_ScrollRight    0x2C
+#define CRTC_ScrollAttrib   0x2D
+#define CRTC_ScrollHeight   0x2E
+#define CRTC_ScrollDist     0x2F
+#define CRTC_ScrollBaseH    0x30
+#define CRTC_ScrollBaseL    0x31
+
+#define CRTC_ExtensionLast  0x31
+
+#define CRTC_VESAFirst      0x32
+
+#define CRTC_VESAModeReq    0x32
+#define CRTC_VESAMemSize    0x33
+#define CRTC_VESAModeCaps   0x34
+#define CRTC_VESADispStart  0x35
+#define CRTC_VESAMemPageA   0x36
+#define CRTC_VESADirect     0x37
+#define CRTC_VESADACWidth   0x38
+#define CRTC_VESAScanLine   0x39
+#define CRTC_VESADispStart32 0x3A
+
+#define CRTC_VESALast       0x3A
+
+
+#define MC_REAL_PAL	1
+#define MC_8BPP		2
+#define MC_16BPP	4
+#define MC_24BPP	8
+
+
+#define SEQ_Reset          0
+#define SEQ_PlaneMask      2
+#define SEQ_CharMap        3
+#define SEQ_MemMode        4
+
+#define GR_RWMode          5
+#define GR_SetReset        0
+#define GR_SetResEnable    1
+#define GR_ColourCompare   2
+#define GR_DataRotate      3
+#define GR_ReadMapSel      4
+#define GR_MiscCtrl        6
+#define GR_ColourDontCare  7
+#define GR_BitMask         8
+
+#define Attr_ModeCtrl      0x10
+#define Attr_BorderColour  0x11
+#define Attr_ColourEnable  0x12
+#define Attr_ColourSelect  0x14
+
+
+
+

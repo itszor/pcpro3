@@ -1,0 +1,16 @@
+GuardDD 0.03
+------------
+
+This is a simple module which you can stick into your startup sequence to
+guard DOS partitions over 2MB in size from being accidentally deleted.  If
+you try, you'll get an error.  To kill the module, press F12 and type 'RMKill
+GuardDD' at the * prompt.  If you want to delete just one partition, it's
+probably better to bypass the protection by setting the partition's type to
+Text and then deleting it.
+
+This program is freeware; anyone may use and copy it without charge providing
+all files are included and unaltered when copying.
+
+Any problems to <matthew@aleph1.co.uk.>
+
+Updates, if any, will be available from http://www.aleph1.co.uk/

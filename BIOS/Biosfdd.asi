@@ -1,0 +1,906 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSFDD.ASI   Floppy disk BIOS for Elvis
+;
+; Versions
+; 1.24  31-01-94 INH     Original
+; 2.00	31-10-95 INH	Rewritten for HPC
+; ****************************************************************
+
+; Floppy drives never worked on Elvis. The 'real' floppy BIOS code has 
+; been deleted as of version 2.00. For reference, see any BIOS from
+; version 1.60 to 1.92.
+
+; HPC floppy-call definitions -------------------------
+
+HPC_FD_ID	equ	0002h		; Hard Disk = service ID 0002
+
+
+; Drive information call --------------
+
+HPC_FD_INFO	equ	0000h		; FD Get-info command
+
+FD_Info_Params	struc
+
+FDIP_id		dw	0
+FDIP_fncode	dw	0
+FDIP_drvnum	dw	0
+		ends
+
+FD_Info_Result	struc
+
+FDIR_status	dw	0
+FDIR_ndrives	dw	0
+FDIR_sizecode	db	0	; 'CMOS' drive size code
+FDIR_flags	db	0
+FDIR_nheads	db	0
+FDIR_nsects	db	0
+FDIR_ntracks	dw	0
+		ends
+
+FDIR_FLG_CHANGE	equ 1		; Flags bit - set if drive can detect disk change
+
+
+; Drive Status call ------------------
+
+HPC_FD_STATUS	equ	0001h		; FD Get drive status
+
+FD_Status_Params	struc
+
+FDSP_id		dw	0
+FDSP_fncode	dw	0
+FDSP_drvnum	dw	0
+
+		ends
+
+FD_Status_Result	struc
+
+FDSR_status	dw	0
+
+		ends
+
+
+; Read/Write/Verify call -------------
+
+HPC_FD_READ	equ	0002h		; FD Read command
+HPC_FD_WRITE	equ	0003h		; FD Write command
+HPC_FD_VERIFY	equ	0004h		; FD Verify command
+
+FD_RWV_Params	struc
+
+FDRWP_id	dw	0
+FDRWP_fncode	dw	0
+FDRWP_drvnum	dw	0
+FDRWP_track	dw	0
+FDRWP_head	db	0
+FDRWP_sect	db	0
+FDRWP_nsects	db	0
+FDRWP_sectsize	db	0
+		ends
+
+FD_RWV_Result	struc
+
+FDRWR_status	dw	0
+FDRWR_nsects	db	0
+FDRWR_density	db	0
+		ends
+
+; Format call ------------------------
+
+HPC_FD_FORMAT	equ	0005h		; FD Format command
+
+
+FD_Format_Params	struc
+
+FDFP_id		dw	0
+FDFP_fncode	dw	0
+FDFP_drvnum	dw	0
+FDFP_track	dw	0
+FDFP_head	db	0
+FDFP_nsects	db	0
+FDFP_density	db	0
+FDFP_pad	db	0
+		ends
+
+FDFP_DENS_DEFAULT	equ	0	; Default density
+FDFP_DENS_2		equ	4	; Low density
+FDFP_DENS_2_DBL		equ	5	; Low density with double-stepping
+FDFP_DENS_4		equ	6	; 'High' density
+
+
+FD_Format_Result	struc
+
+FDFR_status	dw	0
+		ends
+
+; Disk info definitions -------------------------------
+
+FloppyParms	STRUC		; Diskette parameter table layout
+  Specify1	DB	0
+  Specify2	DB	0
+  MotorDly	DB	0
+  SectShift	DB	0	; 0=128 byte sectors, 1=256 byte, et
+  Sectors	DB	0
+  GapLen	DB	0
+  DataLen	DB	0
+  FmtGap	DB	0
+  FillByte	DB	0
+  HeadTime	DB	0
+  StartTime	DB	0
+  LastTrk	DB	0	; } Added by me to standard tables in ROM
+  CMOSType	DB	0	; }
+  Density	DB	0	; } 0=single, 1=double density
+		ENDS
+
+; These entries consist of a standard FD parameters table followed
+; by the max. track number for that format, the FDD_mediastate entry
+; for that format, and the CMOS drive type number for the drive which
+; supports this format.
+
+; These are used during the 'set media type for format' call to see if
+;  we can support a specified format.
+
+FDD_formats_table:
+
+FDD_Tbl360K	DB 0DFh, 02h, 25h, 02h, 09h, 2Ah, 0FFh, 50h, 0F6h, 0Fh, 08h
+		DB 27h, 1, FDFP_DENS_2
+FDD_Tbl1M2	DB 0DFh, 02h, 25h, 02h, 0Fh, 1Bh, 0FFh, 54h, 0F6h, 0Fh, 08h
+		DB 4Fh, 2, FDFP_DENS_4
+FDD_Tbl720K	DB 0DFh, 02h, 25h, 02h, 09h, 2Ah, 0FFh, 50h, 0F6h, 0Fh, 08h
+		DB 4Fh, 3, FDFP_DENS_2
+FDD_Tbl1M44	DB 0AFh, 02h, 25h, 02h, 12h, 1Bh, 0FFh, 6Ch, 0F6h, 0Fh, 08h
+		DB 4Fh, 4, FDFP_DENS_4
+FDD_Tbl360K1M2	DB 0DFh, 02h, 25h, 02h, 09h, 2Ah, 0FFh, 50h, 0F6h, 0Fh, 08h
+		DB 27h, 2, FDFP_DENS_2_DBL	; 360K in 1M2 drive
+FDD_Tbl720K1M44	DB 0DFh, 02h, 25h, 02h, 09h, 2Ah, 0FFh, 50h, 0F6h, 0Fh, 08h
+		DB 4Fh, 4, FDFP_DENS_2		; 720K in 1M44 drive
+
+FDD_MAX_FORMATS equ 6
+
+
+; FD_GetInfo routine --------------------------------------------
+
+; We keep very little state about the floppy drive subsystem. Each drive
+; has a byte of info about it kept in FDD_driveinfo in the extended data
+; segment.
+
+; Each byte is made up of:
+;
+; bits 0..3: size (0=none, 1=360K, 2=1.2M, 3=720K, 4=1.44M)
+; bits 4   : 1 iff drive has a change line
+; bits 5..6: density settings for format
+;		 (00 = low density, 01=low density with double-stepping,
+;		   10 = high density)
+; bits 7: must be zero
+;
+FDFLG_CHANGE	 equ	10h
+FDFLG_DENSITY	 equ	60h
+;
+;
+; GetDriveInfo is entered with
+;   DS = Data Seg
+;   DL = drive number
+; and exits with
+;   AL = drive info, ES:DI points to the drive type byte
+;
+; If no drive is present (AL bits 0..3 are zero), AH will be set to 01h
+;  and carry will be set (suitable for easy drive-not-present checking).
+;  Otherwise carry will be clear.
+;
+
+FD_GetInfo proc near
+	assume	DS:BIOSData
+
+	CMP	DL, FDD_MAX_DRIVES
+	JAE	FDGI_err_exit
+
+	MOV	ES, SYS_XDataSeg
+	assume	ES:BIOSXData
+	MOV	DI, DX
+	AND	DI, 00FFh
+	ADD	DI, offset ES:FDD_driveinfo
+
+	MOV	AL, ES:[DI]
+	TEST	AL, 01111b	; Will clear carry!
+	JNZ	FDGI_OK_exit
+FDGI_err_exit:
+	MOV	AX, 0100h	; No drive, set 'bad params' error
+	STC
+FDGI_OK_exit:
+	RET
+FD_GetInfo endp
+
+; FDD_ReadDrvParams ---------------------------------------------
+
+; This routine reads drive information for the given drive
+; using the HPC call.
+; Enter with
+;
+; DX = Drive number
+;
+; Exit with
+;
+; AL = 'CMOS' drive type (bits 0..3), bit 4 set if drive
+;        supports change line, other bits zero.
+; AH = number of drives
+;
+; Other regs exluding BP are corrupted. DS set to Data Seg.
+;
+; AX = 0, carry set if there's an error (e.g. drive doesn't exist).
+
+FDD_ReadDrvParams proc near
+
+
+	CALL	HPC_QuickSetup	; ES:BX->call block, ES:DI->params
+				; All lengths zero, CLD.
+
+	MOV	ES:[BX].Buff_flag, HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size FD_Info_Params
+	MOV	ES:[BX].Ret_Len_1,  size FD_Info_Result
+
+	MOV	AX, HPC_FD_ID		; FD identifier
+	STOSW
+	.errnz	FDIP_id
+
+	MOV	AX, HPC_FD_INFO		; 'Drive Status' cmd
+	STOSW
+	.errnz	(FDIP_fncode-2)
+
+	MOV	AX, DX			; Drive number
+	STOSW
+	.errnz	(FDIP_drvnum-4)
+
+	CALL	HPC_ExecCall		; Do call
+	JC	FDRDP_NoDrive
+
+	LES	DI, ES:[BX].Ret_Ptr_1	; ES:DI->returned results
+
+	MOV	AX, ES:[DI].FDIR_status
+	CMP	AX, 0
+	JNZ	FDRDP_NoDrive
+
+	MOV	AL, ES:[DI].FDIR_sizecode	; Type (0..4)
+	OR	AL, AL
+	JZ	FDRDP_NoDrive			; Zero = no drive
+	CMP	AL, 4				; Don't know drives > 4
+	JA	FDRDP_NoDrive
+
+	TEST	ES:[DI].FDIR_flags, FDIR_FLG_CHANGE ; Get change-detect flag
+	JZ	FDRDP_10
+	OR	AL, FDFLG_CHANGE		; Set flag bit in AL 
+FDRDP_10:
+	MOV	AH, ES:[DI].FDIR_ndrives.byte0	; AH = number of drives
+	CLC
+	RET
+
+FDRDP_NoDrive:
+	MOV	AX, 0
+	STC
+	RET
+FDD_ReadDrvParams endp
+
+
+; Initialise routine --------------------------------------------
+
+FDD_Init PROC NEAR
+	assume	DS:BIOSData
+
+	; Int 40h and Int 1Eh should be already initialised, no
+	; further interrupt-vector-table initialisation is needed.
+
+	; Here we read the drive information for each HPC drive, and
+	; fill in:
+	;
+	; Floppy drive count in FDD_ndrives, SYS_equipmt & CMOS_equip
+	;
+	; Drive type for drives 0 & 1 in CMOS_disktype
+	;
+	; Drive info bytes in FDD_driveinfo
+
+	MOV	ES, SYS_XDataSeg
+	assume	ES:BIOSXData
+	MOV	DI, offset ES:FDD_driveinfo
+
+	MOV	AL, 0			; First, clear out drive all info
+	MOV	CX, FDD_MAX_DRIVES
+	CLD
+	REP	STOSB
+
+	MOV	DX, 0		; Drive number; start at 0
+
+	; Here, we keep on requesting drive information until
+	; we've hit the maximum number, or some error occurs
+FDInit_loop:
+	PUSH	DX
+	CALL	FDD_ReadDrvParams
+	POP	DX
+	JC	FDInit_No_More		; If no more drives, stop now
+
+	MOV	ES, SYS_XDataSeg
+	assume	ES:BIOSXData
+	MOV	DI, offset ES:FDD_driveinfo
+	ADD	DI, DX			; ES:DI->drive info byte
+	STOSB				; Store it
+	INC	DX
+	CMP	DX, FDD_MAX_DRIVES	; Carry on until we're full
+	JB	FDInit_loop
+FDInit_No_More:
+	MOV	FDD_ndrives, DL		; Store final drive count
+
+	; Now set SYS_equipmt and CMOS_equip from drive count
+
+	MOV	AX, SYS_equipmt
+	AND	AL, 00111110b	; Mask off FD-available & drives-present bits
+	
+	CMP	DL, 0
+	JE	FDInit_NoDrives
+
+	OR	AL, 000000001b	; Set FD available bit
+	DEC	DL
+	SHL	DL, 6
+	OR	AL, DL		; Bits 6..7 are 00 for 1 drive, 01 for 2, etc
+FDInit_NoDrives:
+	MOV	SYS_equipmt, AX
+	MOV	AH, AL
+	WRCMOS	CMOS_equip, AH	; Update CMOS RAM for completeness
+
+
+	; Write drive info for drives 0 and 1 back into CMOS RAM
+
+	MOV	ES, SYS_XDataSeg		; Get AL = drive 0 info
+	assume	ES:BIOSXData			; AH = drive 1 info
+	MOV	AX, word ptr ES:FDD_driveinfo
+	AND	AX, 0F0Fh
+
+	SHL	AL, 4			; CMOS_disktype bits 7..4 are for
+	OR	AH, AL			; drive 0, bits 3..0 are for drive
+	WRCMOS	CMOS_disktype, AH	; 1
+
+	RET
+FDD_Init ENDP
+
+
+; Floppy Disk BIOS (INT 40h) service routine --------------------
+
+FDD_Int40	PROC FAR
+	STI
+	PUSH	DS
+	PUSH	ES
+	PUSHA
+
+	CLD
+	MOV	BP, SP			; SS:BP->PUSHAFrame structure
+	MOV	DS, CS:DataSeg@
+
+	AND	[BP].retFlg, not CARRY_FLAG	; Start out with carry clear
+
+	CMP	AH, 08h			; Commands in range 0..8
+	JBE	FDI_DoCmd
+	CMP	AH, 18h			; And 15..18h
+	JA	FDI_BadCmd		; are legal
+	CMP	AH, 15h
+	JB	FDI_BadCmd
+
+	SUB	AH, 15h-09h
+FDI_DoCmd:
+	MOV	SI, AX			; Get on with it straight away
+	SHR	SI, 8
+	ADD	SI, SI
+
+	JMP	CS:FDD_HPC_Dispatch[SI]
+
+FDI_BadCmd:
+	MOV	AH, 01h
+FDI_Exit:
+	MOV	[BP].SavedAH, AH
+	MOV	FDD_LastErr, AH		; Save last op. status
+	OR	AH, AH			; If it's 00, we're OK
+	JZ	FDI_Exit2
+	OR	[BP].retFlg, CARRY_FLAG	; If not, set carry
+FDI_Exit2:
+	POPA
+	POP	ES
+	POP	DS
+	IRET
+
+FDD_HPC_Dispatch	DW	FDI_Reset	; 00h
+			DW	FDI_GetLastErr	; 01h
+			DW	FDI_Read	; 02h
+			DW	FDI_Write	; 03h
+			DW	FDI_Verify	; 04h
+			DW	FDI_FormatTrack	; 05h
+			DW	FDI_BadCmd	; 06h 
+			DW	FDI_BadCmd	; 07h 
+			DW	FDI_GetParms	; 08h
+
+			DW	FDI_DriveType	; 15h 
+			DW	FDI_MediaChange	; 16h 
+			DW	FDI_SetMedia	; 17h
+			DW	FDI_SetFormat	; 18h
+
+FDD_Int40 ENDP
+
+; Dispatch points =======================================================
+
+; Dispatch points are entered with AX-DX as on entry to INT, DS = DataSeg
+; and SS:BP->saved regs on stack
+;
+; The drive number is *not checked* on entry to these routines.
+; Exit by jumping to FDI_Exit with AH = error code.
+; Jump to FDI_Exit2 if all regs/flags have been set before exit
+
+FDI_Reset:	; Reset (00h) ------------------
+
+	MOV	AH, 0		; No error
+	JMP	FDI_Exit
+
+	
+FDI_GetLastErr:	; Get Last Error (01h) ---------
+
+	MOV	AH, 0
+	XCHG	AH, FDD_LastErr		; Get last error and clear it
+	MOV	[BP].SavedAH, AH
+	OR	AH, AH
+	JZ	FDI_GLE_10
+	OR	[BP].retFlg, CARRY_FLAG	; If an error, set carry
+FDI_GLE_10:
+	JMP	FDI_Exit2
+
+
+FDI_GetParms:	; Get drive parameters (08h) ---
+
+	CALL	FD_GetInfo
+	JC	FDI_GP_NoDrive
+
+	; AL[0..3] hold drive type, non-zero
+	AND	AX, 0Fh			; Get drive type bits
+	CMP	AX, 4			; Abort for drive types we don't
+	JA	FDI_GP_NoDrive		; know about
+	
+	MOV	DI, AX
+	ADD	DI, DI
+	MOV	DI, CS:FDTbls[DI-2]	; Get DI = offset of parm table for
+	MOV	[BP].SavedES, CS	; given drive
+	MOV	[BP].SavedDI, DI	;
+
+	MOV	BX, AX			; BL = drive type code, BH=0
+	MOV	CL, CS:[DI].Sectors	; CH = no of sectors
+	MOV	CH, CS:[DI].LastTrk	; CL = max track = 39 or 79
+	MOV	DH, 1			; DH = max head = 1
+	JMP	short FDI_GP_Finish
+
+FDTbls	DW	FDD_Tbl360K
+	DW	FDD_Tbl1M2
+	DW	FDD_Tbl720K
+	DW	FDD_Tbl1M44
+
+FDI_GP_NoDrive:				; For invalid/nonexistent drive no
+	MOV	BX, 0			; Return BX=CX=DH=0
+	MOV	CX, 0
+	MOV	DH, 0
+	MOV	[BP].SavedES, BX	; Return ES:DI=NULL pointer
+	MOV	[BP].SavedDI, BX
+FDI_GP_Finish:
+	MOV	DL, FDD_ndrives
+	MOV	[BP].SavedAL, 0
+	MOV	[BP].SavedBX, BX
+	MOV	[BP].SavedCX, CX
+	MOV	[BP].SavedDX, DX
+	MOV	AH, 0			; Never generates an error
+	JMP	FDI_Exit
+
+
+FDI_DriveType:	; Get drive type (15h) ----------
+
+	; Given DL = drive no, returns AH = drive type
+	; 00 = no drive, 01 = no change line, 02 = with change line
+	; For invalid drive no in DL, returns AH=01, carry set
+
+	CMP	DL, FDD_MAX_DRIVES	; In range?
+	JAE	FDI_DT_Invalid
+
+	CALL	FD_GetInfo
+	MOV	AH, 0			; Use AH=0 if drive not present
+	JC	FDI_DT_Set
+	MOV	AH,1			; AH=1 if no change detect
+	TEST	AL, FDFLG_CHANGE
+	JZ	FDI_DT_Set
+	MOV	AH, 2
+FDI_DT_Set:
+	MOV	[BP].SavedAH, AH
+	MOV	FDD_LastErr, 0		; LastErr = 0, carry remains clear
+	JMP	FDI_Exit2
+
+FDI_DT_Invalid:
+	MOV	AH, 01h
+	JMP	FDI_Exit
+	
+
+FDI_SetMedia:	; Set media type (17h) ----------
+
+	; This is used to manually set the media density for a given
+	; drive. It is of relevance here only because it may be used
+	; for setting the format density. On entry, DL is the drive no,
+	; and AL is:
+	;
+	; 01 = 360K disk in 360K drive
+	; 02 = 360K in 1.2M
+	; 03 = 1.2M in 1.2M
+	; 04 = 720K in 720K drive
+
+	CALL	FD_GetInfo		; Get AL=drive type, ES:DI->drive byte
+	JC	FDI_SM_Exit
+
+	MOV	AH, [BP].SavedAL	; AL = set type code
+	AND	AL, 0Fh			; AH = drive type
+
+	MOV	BL, FDFP_DENS_2		; Double density is:
+	CMP	AX, 0101h		; 360K in 360K?
+	JE	FDI_Gen_SetDensity
+	CMP	AX, 0403h		; 720K in 720K?
+	JE	FDI_Gen_SetDensity
+
+	MOV	BL, FDFP_DENS_2_DBL	; Double density with double-stepping:
+	CMP	AX, 0202h		; 360K in 1.2M?
+	JE	FDI_Gen_SetDensity
+
+	MOV	BL, FDFP_DENS_4		; High density
+	CMP	AX, 0302h		; 1.2M in 1.2M?
+	JE	FDI_Gen_SetDensity
+	; If none of the above, return with error
+	MOV	AH, 01h			; Bad parameters
+FDI_SM_Exit:
+	JMP	FDI_Exit
+
+	; ----------------
+
+FDI_Gen_SetDensity:
+	; Get here with ES:DI->info byte for the drive,
+	; BL = new format density (FDFP_DENS_xxx)
+	MOV	AL, ES:[DI]
+	AND	AL, not FDFLG_DENSITY	; Mask out density bits
+	SUB	BL, 4			; Get in range 0..2
+	SHL	BL, 5
+	.errnz	FDFLG_DENSITY-01100000b
+	AND	BL, FDFLG_DENSITY
+	OR	AL, BL
+	MOV	ES:[DI], AL
+	MOV	AH, 0
+	JMP	FDI_Exit
+
+
+FDI_SetFormat:	; Set format type (18h) ---------
+
+	; This is used to set the system up for format commands
+	; with a given format. On entry, DL = drive number,
+	; CH = maximum number of tracks
+	; CL = maximum sectors per track
+	;
+	; On exit, AH=00 if this format is possible, in which
+	;  case ES:DI->a disk parameter table for the format.
+
+	CALL	FD_GetInfo		; ES:DI->info byte
+	JC	FDI_SF_Exit
+
+	AND	AL, 0Fh			; AL = "CMOS" drive type
+
+	MOV	SI, offset CS:FDD_formats_table	; Search through our
+	MOV	BL, FDD_MAX_FORMATS	; format tables
+FDI_SF_Loop:
+	CMP	AL, CS:[SI].CMOSType	; Check parameters:
+	JNE	FDI_SF_TryNext		; CMOS drive type
+	CMP	CH, CS:[SI].LastTrk
+	JNE	FDI_SF_TryNext		; # of tracks
+	CMP	CL, CS:[SI].Sectors
+	JNE	FDI_SF_TryNext		; # of sectors
+
+	; Success: CS:SI->format table, ES:DI->info byte for this drive
+
+	MOV	[BP].SavedDI, SI	; Set returned ES:DI->parameter block
+	MOV	[BP].SavedES, CS
+	MOV	BL, CS:[SI].Density	; BL = density code
+	JMP	FDI_Gen_SetDensity
+
+FDI_SF_TryNext:
+	ADD	SI, size FloppyParms	; Try next table entry
+	DEC	BL
+	JNZ	FDI_SF_Loop		; More entries?
+
+	; Can't be done - return 'Media Unknown'
+
+	MOV	AH, 0Ch
+FDI_SF_Exit:
+	JMP	FDI_Exit
+
+
+; HPC-specific bits ---------------------------------
+
+
+FDI_MediaChange:	; Check for changed disk (16h) --------
+
+	; On entry, DL = drive number
+	; returns AH=00 if OK, AH=06 if change detect isn't
+	; available, or the disk has changed.
+
+	CALL	FD_GetInfo		; Get AL = drive info
+	JC	FDI_MC_Exit		; If no drive, stop now
+
+	MOV	AH, 06h			; 'Changed' status
+	TEST	AL, FDFLG_CHANGE	; Can we detect change?
+	JZ	FDI_MC_Exit		; If not return AH=06h
+
+	CALL	HPC_QuickSetup		; Set up ES:BX->call block,
+					; ES:DI->params to send, CLD
+
+	MOV	ES:[BX].Buff_flag, HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size FD_Status_Params
+	MOV	ES:[BX].Ret_Len_1,  size FD_Status_Result
+
+	MOV	AX, HPC_FD_ID		; FD identifier
+	STOSW
+	.errnz	FDSP_id
+
+	MOV	AX, HPC_FD_STATUS	; 'Drive Status' cmd
+	STOSW
+	.errnz	(FDSP_fncode-2)
+
+	MOV	AL, [BP].SavedDL	; AL = drive number
+	MOV	AH, 0
+	STOSW
+	.errnz	(FDSP_drvnum-4)
+
+	CALL	HPC_ExecCall		; Do command
+	MOV	AH, 20h			; 'Controller failed' error
+	JC	FDI_MC_Exit		; if failed
+
+	MOV	SI, ES:[BX].Ret_Ptr_1.PtrOFS	; ES:SI->result
+	MOV	AX, ES:[SI].FDSR_status
+
+	CALL	FD_Status_Xlate		; Convert to AH = error code
+FDI_MC_Exit:
+	JMP	FDI_Exit
+
+
+	; Read/Write/Verify -------------------------
+	
+	; These share a common entry point. On entry,
+	;
+	; AH = reason code
+	; AL = number of sectors
+	; CH = track number
+	; CL = sector number
+	; DH = Head number
+	; DL = Drive number
+	; ES:BX->Pointer to data (Read & Write calls only)
+	;
+	; We also need to check the sector size in the disk parameter
+	; table pointed to by Int 1Eh; it's used by some funny-disk-format
+	; programs, including IBM's and Microsoft's distribution formats.
+
+FDI_Read:	
+FDI_Write:
+FDI_Verify:
+	CALL	FD_GetInfo		; Check drive exists
+	JC	FDI_RWV_Exit
+
+	MOV	BX, 0			; Get ES:BX=Int 01Eh vector
+	MOV	ES, BX
+	LES	BX, ES:dword ptr [01Eh*4]
+
+	MOV	CL, ES:[BX].SectShift
+	ADD	CL, 7			; CL = log2 of sector size
+	CMP	CL, 13			; Must be in range 7..13
+	JBE	FDI_RWV_10		; (128 bytes to 8K)
+	MOV	AH, 01h			; Else bad parameters
+FDI_RWV_Exit:
+	JMP	FDI_Exit
+
+FDI_RWV_10:
+	CALL	HPC_QuickSetup		; Set up ES:BX->call block,
+					; ES:DI->params to send, CLD
+
+	MOV	ES:[BX].Buff_flag, HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size FD_RWV_Params
+	MOV	ES:[BX].Ret_Len_1,  size FD_RWV_Result
+
+	MOV	ES:[DI].FDRWP_id, HPC_FD_ID
+
+	MOV	ES:[DI].FDRWP_sectsize, CL	; lg2 sector size
+
+	MOV	AX, [BP].SavedDX		; Get AL=drive AH=head
+	MOV	ES:[DI].FDRWP_head, AH		; Set head
+	MOV	AH, 0
+	MOV	ES:[DI].FDRWP_drvnum, AX	; Set drive number
+
+	MOV	AX, [BP].SavedCX		; AH = track, AL=sector
+	MOV	ES:[DI].FDRWP_sect, AL
+	SHR	AX, 8				; Convert AH to word
+	MOV	ES:[DI].FDRWP_track, AX
+
+	; Set sector count:
+	; Don't try to read/write more sectors than will fit in the
+	; buffer (this is unlikely to cause problems as the buffer
+	; is 16K and a typical disk track is 10K or less). This code
+	; implicitly assumes the parameter & results block will occupy
+	; less than 1 sectors worth; it gives nsects = (16K >>sectshift)-1
+
+	MOV	AH, 0
+	MOV	AL, [BP].SavedAL	; AX = no of sectors requested
+
+	MOV	DX, 16383		; Get DX = no. of sectors in 16K
+	SHR	DX, CL			; (range 1..128)
+	
+	CMP	AX, DX			; Is it within range?
+	JB	FDI_RWV_20
+	MOV	AX, DX			; If not, limit it
+FDI_RWV_20:
+
+	MOV	ES:[DI].FDRWP_nsects, AL	; Set sector count
+
+	; Set Read/Write/Verify-dependent parameters
+
+	SHL	AX, CL			; AX = transfer length in bytes
+	MOV	DX, 0			; DX = 0
+	MOV	CX, HPC_FD_WRITE	; CX = opcode
+
+	CMP	[BP].SavedAH, 03h	; 02=Read, 03=Write, 04=Verify
+	JE	FDI_RWV_30		; If write, AX = write length, DX =0
+	JA	FDI_RWV_Verify		; If above, it's a verify
+FDI_RWV_Read:
+	MOV	CX, HPC_FD_READ
+	XCHG	AX, DX			; Get AX=0, DX=length to read
+	JMP	short FDI_RWV_30
+FDI_RWV_Verify:
+	MOV	CX, HPC_FD_VERIFY
+	MOV	AX, 0
+FDI_RWV_30:
+	MOV	ES:[DI].FDRWP_fncode, CX	; CX = opcode
+	MOV	ES:[BX].Send_Len_2, AX		; AX = length to write
+	MOV	ES:[BX].Ret_Len_2, DX		; DX = length to read
+
+	; Nearly there: get pointer (normalised)
+
+	MOV     AX, [BP].SavedBX
+	MOV     CX, AX
+	AND     AX, 0Fh
+	MOV	ES:[BX].Send_Ptr_2.PtrOFS, AX
+	MOV	ES:[BX].Ret_Ptr_2.PtrOFS, AX
+
+	SHR     CX, 4				; Get CX = segment of 
+	ADD     CX, [BP].SavedES		; normalised pointer
+	MOV	ES:[BX].Send_Ptr_2.PtrSeg, CX
+	MOV	ES:[BX].Ret_Ptr_2.PtrSeg, CX
+
+	; OK! Here goes
+
+	CALL	HPC_ExecCall			; 'Controller failed'
+	MOV	AH, 20h				; if error
+	JC	FDI_RWV_Exit2
+
+	MOV	SI, ES:[BX].Ret_Ptr_1.PtrOFS	; Get ES:SI->returns
+
+	MOV	AL, ES:[SI].FDRWR_nsects	; AL = no. of sectors done
+	MOV	[BP].SavedAL, AL
+
+	MOV	AX, ES:[SI].FDRWR_status	; Translate status
+	CALL	FD_Status_Xlate			; & exit
+FDI_RWV_Exit2:
+	JMP	FDI_Exit
+
+
+
+FDI_FormatTrack:	; 05h -----------------------
+
+	; On entry here
+	; AL = number of sectors
+	; CH = track number
+	; DH = Head number
+	; DL = Drive number
+	; ES:BX->Pointer to format-spec buffer
+
+	CALL	FD_GetInfo		; Check drive in DL
+	JC	FDI_FT_Exit
+
+	MOV	CL, AL			; CL = drive type & density code
+
+	; AL = drive type & format spec
+
+	CALL	HPC_QuickSetup		; Set up ES:BX->call block,
+					; ES:DI->params to send, CLD
+					; All lengths zero
+	MOV	ES:[BX].Buff_flag, HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size FD_Format_Params
+	MOV	ES:[BX].Ret_Len_1,  size FD_Format_Result
+
+	MOV	AX, HPC_FD_ID
+	STOSW
+	.errnz	FDFP_id
+
+	MOV	AX, HPC_FD_FORMAT
+	STOSW
+	.errnz	(FDFP_fncode-2)
+
+	MOV	AH, 0
+	MOV	AL, DL			; Drive number in DL
+	STOSW
+	.errnz	(FDFP_drvnum-4)
+
+	MOV	AL, CH			; Track no (AH=0 still)
+	STOSW
+	.errnz	(FDFP_track-6)
+
+	MOV	AL, DH			; Head no
+	STOSB
+	.errnz	(FDFP_head-8)
+
+	MOV	AL, [BP].SavedAL	; No. of sectors
+	STOSB
+	.errnz	(FDFP_nsects-9)
+
+	; Get density setting.
+
+	MOV	AL, CL			; Get back AL = drive type byte
+	AND	AL, FDFLG_DENSITY	; Get density setting bits
+	SHR	AL, 5
+	.errnz	FDFLG_DENSITY-01100000b
+	ADD	AL, 4			; Get in range
+	.errnz	(FDFP_DENS_2-4)
+
+	STOSB
+	.errnz	(FDFP_density-10)
+
+	; Set transfer pointer and lengths
+
+	MOV	AX, [BP].SavedBX	; Don't bother to normalise pointer!
+	MOV	ES:[BX].Send_Ptr_2.PtrOFS, AX
+	MOV	AX, [BP].SavedES
+	MOV	ES:[BX].Send_Ptr_2.PtrSEG, AX
+
+	MOV	AL, [BP].SavedAL
+	MOV	AH, 0			; AX = no of sectors
+	SHL	AX, 2			; 4-byte entry per sector
+	MOV	ES:[BX].Send_Len_2, AX	; Transfer length in bytes
+
+	; Do it and exit
+
+	CALL	HPC_ExecCall			; 'Controller failed'
+	MOV	AH, 20h				; if error
+	JC	FDI_FT_Exit
+
+	MOV	SI, ES:[BX].Ret_Ptr_1.PtrOFS	; Get ES:SI->returns
+	MOV	AX, ES:[SI].FDFR_status		; Translate status
+	CALL	FD_Status_Xlate			; & exit
+FDI_FT_Exit:
+	JMP	FDI_Exit
+
+; FD_Status_Xlate ==========================================
+
+; Enter with AX = HPC status code
+; Returns AH = BIOS equivalent error
+; Corrupts BX
+
+FD_Status_Xlate proc near
+	CMP	AX, 8		; Don't know about statuses > 8
+	JA	FDSX_unknown
+	MOV	BX, offset CS:FD_HPC_Errors
+	XLAT	CS:[BX]
+	MOV	AH, AL		; Get into AH
+	RET
+FDSX_unknown:
+	MOV	AH, 0BBh	; 'Undefined' error
+	RET
+FD_Status_Xlate endp
+
+FD_HPC_Errors	DB	0	; 'OK'
+		DB	01h	; Bad parameters
+		DB	04h	; Sector not found
+		DB	03h	; Write protected
+		DB	06h	; Disk changed
+		DB	10h	; Data/CRC error
+		DB	80h	; Drive not ready (actually 'timeout')
+		DB	20h	; Unknown reason code (controller failure)
+		DB	0Dh	; Format request not supported
+
+

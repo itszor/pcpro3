@@ -1,0 +1,28 @@
+; SWI numbers for PCsupport module
+
+; SWI Base is &44680 
+
+PCSupport_KeyInstall      * &44680
+PCSupport_KeyRelease      * &44681
+PCSupport_KeyCount        * &44682
+PCSupport_KeyGet          * &44683
+PCSupport_KeyFlush        * &44684
+PCSupport_KeySetLEDs      * &44685
+
+PCSupport_MouInstall      * &44686
+PCSupport_MouRemove       * &44687
+PCSupport_MouGetState     * &44688
+
+PCSupport_ModeSetup       * &44689
+PCSupport_LockCard        * &4468a
+PCSupport_CallbackSetup   * &4468b
+PCSupport_SetCallback     * &4468c
+PCSupport_GetCallback     * &4468d
+PCSupport_IrqRequest      * &4468e
+PCSupport_DmaRequest      * &4468f
+
+PCSupport_ModuleInfo      * &44690
+PCSupport_GetInternalAddr * &44691
+
+                            
+	END

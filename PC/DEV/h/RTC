@@ -1,0 +1,11 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.RTC - header file
+*
+*/
+
+
+/* EXPORTED ROUTINES */
+
+extern bool RTC_Init ( void );

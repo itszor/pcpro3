@@ -1,0 +1,795 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSSYS.ASI   BIOS Miscellaneous system services
+;               contains:
+;                       8237 DMA chip initialisation
+;                       8259 PIC chip initialisation
+;                       system info interrupts 11H and 12H
+;
+; Versions
+; 0.1   16-08-91 INH    Original
+;                       Now has INT 1Ah handler
+;        2-12-91        TracerInt and UnwantedInt handlers
+;                       Mouse Int 7Fh fix
+;       21-12-91        Real boot interrupt
+;        6- 1-92        Coprocessor Int 75h in place
+;       10- 1-92        Real video interrupt
+;       27- 1-92        Unwanted interrupts more detailed
+;       06-02-92        Int 0Eh SVC interrupt
+;       07-02-92        Mouse BIOS call
+;       19-02-92        Switchable RAM at C000-EFFF
+;       04-03-92        Tidied up interrupt vectors
+;       01-04-92        Added "user" BIOS calls
+;       21-09-92        GetSVCvector now updated
+;       30-10-92        (0.97) Some vectors now left as '0'
+;       31-03-93        OS hooks Int15h 80, 81, 82, 90, 91 added
+;       23-08-93        Enter Protected Move Int 15h/89h added
+;       27-01-94        Extended BIOS data seg added
+;       13-06-94        Copro interrupt enabled
+;       15-06-94        DMA Ch4 enabled for floppy
+;       14-11-94        Suspend & quit functions
+;	21-09-95	EnableA20 & DisableA20 subs
+;2.06 1997.06.12 W      Joystick int15,84 from Stdev added
+;2.34 1998.09.08 W      HPC_DebugT port and single-task request added
+; *****************************************************************
+
+SYS_Init PROC NEAR
+	CLI
+
+	;Initialise system info words from CMOS RAM data
+
+	RDCMOS  CMOS_equip              ;Copy system equipment flags
+
+	MOV     AH, 0                   ;from CMOS RAM
+	MOV     [SYS_equipmt], AX
+
+	CALL    RAM_GetRAMsize          ;Return no. of K in AX
+	MOV     BX, AX                  ;Save in BX
+	CMP     AX, 640                 ;If more than 640K of RAM
+	JBE     SYS_I1                  ;set system RAM size to 640K
+	MOV     AX, 640
+SYS_I1:
+	DEC     AX                      ; Minus One for Xtd data seg
+	MOV     [SYS_RAMsize], AX
+
+	; Set up extended data segment ************************
+
+	SHL     AX, 6                   ; Convert to segment address
+	MOV     SYS_XDataSeg, AX        ; & store in BIOS data seg
+
+	MOV     ES, AX                  ; Clear 1K of extended data area
+	MOV     DI, 0
+	MOV     CX, 512
+	CLD
+	MOV     AX, 0
+	REP     STOSW
+
+	; Write extended RAM size into CMOS RAM ***************
+
+	SUB     BX, 1024                ;Xtd size = total -1024K
+	JAE     SYS_I12                 ;If negative, treat as zero
+	MOV     BX, 0
+SYS_I12:
+	WRCMOS  CMOS_XtdSizeL, BL
+	WRCMOS  CMOS_XtdSizeH, BH
+	WRCMOS  CMOS_XtdSiz2L, BL
+	WRCMOS  CMOS_XtdSiz2H, BH
+
+	;Initialise dummy interrupt vectors ***************
+
+	MOV     DI, 0
+	MOV     ES, DI
+	CLD
+
+	; Vectors 0h to 1Fh ********
+
+	MOV     DI, 0
+	MOV     CX, 020h
+SYS_I15:
+	MOV     AX, offset CS:SYS_DummyInt
+	STOSW
+	MOV     AX, CS
+	STOSW
+	LOOP    SYS_I15
+
+	; Vectors 40h to 5Fh ********
+
+	MOV     DI, 040h * 4
+	MOV     CX, 020h
+SYS_I20:
+	MOV     AX, offset CS:SYS_DummyInt
+	STOSW
+	MOV     AX, CS
+	STOSW
+	LOOP    SYS_I20
+
+	; Vectors 68h to 6Fh *******
+ 
+	MOV     DI, 068h * 4
+	MOV     CX, 08h
+SYS_I21:
+	MOV     AX, offset CS:SYS_DummyInt
+	STOSW
+	MOV     AX, CS
+	STOSW
+	LOOP    SYS_I21
+
+	; Install other vectors ****
+
+	MOV     BX, offset CS:SYS_VectTable
+	CALL    MSC_InstallVec
+
+	;Initialise 8237 DMA chips, 8259 PIC chips & MultiIO ********************************
+
+	MOV     BX, offset CS:SYS_MiscInitTbl
+	CALL    MSC_MultiOut
+
+	;Set up RAM switching *************************************
+
+	; HighRAMEnable deleted 17/01/96
+
+	MOV     AL, 0FH                         ; Address CAXS register
+	OUT     IO_CFG_Index, AL
+	MOV     AL, 0                           ; Send to slots
+	OUT     IO_CFG_Data,  AL
+
+	MOV     AL, 10H                         ; Address DAXS register
+	OUT     IO_CFG_Index, AL
+	MOV     AL, 0                           ; Send to slots
+	OUT     IO_CFG_Data,  AL
+
+	MOV     AL, 11H                         ; Address FEAXS register
+	OUT     IO_CFG_Index, AL
+	MOV     AL, 10100000b                   ; Send to slots
+	OUT     IO_CFG_Data,  AL                ; (except shadow ROM).
+
+	; Set up power-saving mode if configured **************
+
+	RDCMOS  CMOS_gencfg             ; CMOS_gencfg bit 2 is set
+	TEST    AL, 4                   ; for power saving mode
+	JZ      SYS_I6
+
+	MOV     AL, 13h                 ; Select SLPTCTL register
+	OUT     IO_CFG_Index, AL
+	IOWAIT
+	MOV     AL, 01000001b           ; Set for /1024 sleep mode
+	OUT     IO_CFG_Data, AL
+
+SYS_I6:
+
+	; Enable co-pro interrupt if present ******************
+
+	TEST    [SYS_equipmt], 2        ; Copro installed?
+	JZ      SYS_I7                  ; No, skip
+
+	IN      AL, IO_PIC2_Mask        ; Enable IRQ 13
+	AND     AL, 11011111b           ; if so.
+	OUT     IO_PIC2_Mask, AL
+SYS_I7:
+
+	STI
+
+	RET     
+
+SYS_Init ENDP
+
+
+; INT 11H Get System Equipment word ********************************
+
+SYS_EquipInt PROC FAR
+
+	STI
+	PUSH    DS
+
+	MOV     DS, CS:DataSeg@
+	MOV     AX, [SYS_equipmt]
+
+	POP     DS
+	IRET
+
+SYS_EquipInt ENDP
+
+
+; INT 12H Get System RAM size word *********************************
+
+SYS_RAMInt PROC FAR
+
+	STI
+	PUSH    DS
+
+	MOV     DS, CS:DataSeg@
+	MOV     AX, [SYS_RAMsize]
+
+	POP     DS
+	IRET
+
+SYS_RAMInt ENDP
+
+
+; Dummy Interrupt routines *****************************************
+
+SYS_DummyInt:
+	IRET
+
+SYS_UnknownInt:
+	IRET
+
+SYS_DummyException:             ; All untrapped CPU exceptions here
+	IRET
+
+SYS_DummyIntEOI:                ; All untrapped PIC1 interrupts get here
+	PUSH    AX
+	MOV     AL, 020H
+	OUT     IO_PIC1_Ctrl, AL
+	POP     AX
+	IRET
+
+SYS_DummyIntEOI2:
+	PUSH    AX
+	MOV     AL, 020H
+	OUT     IO_PIC2_Ctrl, AL
+	OUT     IO_PIC1_Ctrl, AL
+	POP     AX
+	IRET
+
+
+; Interrupt 15H handler **********************************
+
+Int15S_Dispatch DW      Int15_OShook    ; Fn 80h Device open hook
+		DW      Int15_OShook    ; Fn 81h Device close hook
+		DW      Int15_OShook    ; Fn 82h Program terminate hook
+		DW      Int15_NotUs     ; Fn 83h Timer (not supported)
+		DW      Int15_Joystick  ; Fn 84h Read joystick
+		DW      Int15_OShook    ; Fn 85h Sys Req key pressed
+		DW      Int15_NotUs     ; Fn 86h Wait (not supported)
+		DW      Int15_XMemMove  ; Fn 87h XMS move
+		DW      Int15_XMemSize  ; Fn 88h Read Xtd Mem. Size
+		DW      Int15_EnterPM   ; Fn 89h Enter prot. mode
+		DW      Int15_NotUs     ; Fn 8Ah
+		DW      Int15_NotUs     ; Fn 8Bh
+		DW      Int15_NotUs     ; Fn 8Ch
+		DW      Int15_NotUs     ; Fn 8Dh
+		DW      Int15_NotUs     ; Fn 8Eh
+		DW      Int15_NotUs     ; Fn 8Fh
+		DW      Int15_OShook    ; Fn 90h Device busy 
+		DW      Int15_OShook    ; Fn 91h Interrupt complete
+
+SYS_Int15 PROC FAR
+	STI
+
+	CMP     AH, 80h                 ; Cassette and AH=4F (keyboard
+	JB      Int15_ErrorExit         ; intercept) functions all generate
+					; errors
+	CMP     AH, 092h                ; Only functions in the range 80-91h
+	JAE     Int15_OddCases
+
+	PUSH    BX
+	MOV     BL, AH
+	AND     BX, 07Fh
+	ADD     BX, BX
+	JMP     CS:Int15S_Dispatch[BX]
+
+Int15_OddCases:
+	CMP     AH, 0C0H
+	JE      Int15_SysInfo
+
+	CMP	AX, 0B902h		; Used to be 'Get SVC vector', now
+	JE	Int15_GetMouseVector	; just get INT 33h vector for AMOUSE
+
+	CMP     AH, 0BAH
+	JE      Int15_SuspendQuit       ; Invented by me
+
+Int15_ErrorExit:
+	MOV     AH, 086h
+	STC
+	RET 2
+
+	; --------------------
+
+Int15_SysInfo:				; Int15/AH=C0h system info
+	MOV     BX, CS
+	MOV     ES, BX
+	MOV     BX, offset CS:SYSParams
+	MOV     AH, 0
+
+	CLC
+	RET 2
+
+	; --------------------
+
+Int15_GetMouseVector:			; Int 15h/AX=0B902h is Get Mouse Vector
+	MOV	AX, CS
+	MOV	ES, AX
+	MOV	SI, offset CS:MOU_Int	; Return ES:SI = address of AMOUSE
+	MOV	AX, 0FFB9h		;  INT 33h entry point
+	CLC
+	RET 2
+
+        ;------------------------
+	
+Int15_SuspendQuit:                      ; Int15/AX=BA00h go to multitask mode
+	MOV     AH, HPC_MULTI_REQ
+	CMP     AL, 00h                 ; Int15/AX=BA01h quit !PC
+	JE      I15_SQ10		; Int15/AX=BA02h freeze !PC
+                                        ; Int15/AX=BA03h single-task !PC
+	MOV     AH, HPC_QUIT_REQ        ; Int15/AX=BA04h get current tasking state
+	CMP     AL, 01h
+	JE      I15_SQ10
+
+	MOV     AH, HPC_FREEZE_REQ
+	CMP     AL, 02h
+	JE      I15_SQ10
+	
+	MOV     AH, HPC_SINGLE_REQ
+	CMP     AL, 03h
+	JE      I15_SQ10
+	
+	;MOV     AH, HPC_GET_TASKMODE
+	;CMP     AL, 04h
+	;JE      I15_SQ20
+
+	MOV     AH, 0BAh		; Invalid request.
+	STC
+	RET     2
+
+I15_SQ10:
+	PUSH    DX			; If it's one we recognise
+
+	MOV     DX, HPC_Cmd_Port	; Send command to port
+	MOV     AL, AH
+	OUT     DX, AL
+
+	POP     DX
+	MOV     AX, 00BAh		; Set AX = 00BAh, Carry clear to
+	CLC				; signal success
+	RET     2
+	
+I15_SQ20:                               ; send command and get status back
+	PUSH    DX			; If it's one we recognise
+
+	MOV     DX, HPC_Cmd_Port	; Send command to port
+	MOV     AL, AH
+	OUT     DX, AL
+	;IN      DX,            ;need to get answer back from somewhere
+                                ; NOT IMPLEMENTED!
+	POP     DX
+	MOV     AX, 00BAh		; Set AX = 00BAh, Carry clear to
+	CLC				; signal success
+	RET     2
+	
+	; Int 15h dispatch routines ---------------
+
+Int15_NotUs:
+	POP     BX
+	MOV     AL, 0
+	STC
+	RET 2
+
+Int15_OShook:
+	POP     BX
+	MOV     AL, AH
+	MOV     AH, 0
+	CLC
+	RET 2   
+
+Int15_EnterPM:				; Int 15/AH=89h Enter protected mode
+	POP     BX
+	JMP     B386_EnterPM
+
+Int15_XMemMove:				; Int 15/AH=87h Copy extended memory
+	POP     BX
+	JMP     B386_BlkMove
+
+Int15_XMemSize:				; Int 15/AH=88h Get extended memory size
+	POP     BX
+	CALL    RAM_GetRAMsize
+	SUB     AX, 1024                ;If more than 1024K of RAM
+	JA      Int15_XM_1              ;return value as 'extended' size
+	MOV     AX, 0                   ;Else return no extended memory
+Int15_XM_1:
+	CLC
+	RET 2
+
+Int15_Joystick:
+        POP     BX                      ; 'cos pushed before dispatch
+        CMP     DX, 00                  ; function DX=0 - get switch status
+        JZ      Int15_Joy_switch 
+        CMP     DX, 01                  ; function DX=1 - get joystick position
+        JZ      Int15_Joy_position 
+       
+Int15_Joy_switch:
+        CLI                             ; ints off
+        MOV     DX, 0201h
+        IN      AL, DX                  ; get joystick port (201h)
+        XOR     AL, 0FFh                ; invert bits (required by hardware)
+        AND     AL, 0F0h                ; and reset bottom 4       
+        STI                             ; enable ints and clear carry
+        CLC         
+        RET 2                           ; return
+        
+Int15_Joy_position:
+        CLI                             ; ints off
+        PUSH    BP                      ; save BP
+        MOV     AX, 0000                ; clear AX and then 
+        PUSH    AX                      ; create temp data space on the stack.
+        PUSH    AX     
+        PUSH    AX     
+        PUSH    AX     
+        MOV     BP, SP                  ; copy stack pointer.
+        MOV     CX, 0000                ; set counter to 0
+        MOV     BX, 000fh               ; mask for bottom nibble
+        MOV     DX, 0201h
+        OUT     DX, AL                  ; write to joystick port (201h) to start timing
+        
+Int15_JY4:
+        INC     CX                      ; CX is counter that becomes position data
+        CMP     CX, 0300h               ; got to 300 yet? 
+        JG      Int15_JYdone            ; if so return results
+        IN      AL, DX                  ; get joystick port (201h)
+        AND     AL, BL                  ; mask out bottom nibble of AL
+        CMP     AL, BL     
+        JZ      Int15_JY4               ; If AL=0f go round again.
+        DEC     CX                      ; C--, as we have now counted one too many
+        XOR     AL, BL                  ; invert bottom 4 bits of AL
+        TEST    AL, 01                  ; if bit 1 set then save CX as stick A X-coord
+        JZ      Int15_JY5
+        MOV     [BP+00], CX
+Int15_JY5:
+        TEST    AL, 02                  ; if bit 2 set then save stick A Y-coord
+        JZ      Int15_JY6
+        MOV     [BP+02], CX
+Int15_JY6:
+        TEST    AL,04                   ; if bit 3 set then save stick B X-coord
+        JZ      Int15_JY7
+        MOV     [BP+04], CX 
+Int15_JY7:
+        TEST    AL,08                   ; if bit 4 set then save stick B Y-coord
+        JZ      Int15_JY8
+        MOV     [BP+06], CX
+Int15_JY8:
+        INC     CX                      ; back to previous value
+        XOR     BL, AL                  ; not sure what this does
+        JNZ     Int15_JY4               ; carry on counting CX
+        
+Int15_JYdone:
+        CLC                             ;   clear carry
+        POP     AX                      ;   stick A, X-coord
+        POP     BX                      ;         A, Y-coord
+        POP     CX                      ;   stick B, X-co-rd
+        POP     DX                      ;         B, Y-coord
+        POP     BP                      ; and set the base pointer back
+        STI                             ; enable ints and return
+        RET 2
+
+        ;-------------------------
+	
+SYS_Int15 ENDP
+
+; Coprocessor interrupt handler *****************************
+
+SYS_FPUInt      PROC    FAR
+
+	PUSH    AX
+
+	MOV     AL, 0                   ; Some form of coprocessor reset
+	OUT     0F0h, AL                ; (FIND OUT!!!)
+
+	MOV     AL, 020h                ; End of Interrupt command
+	OUT     IO_PIC2_Ctrl, AL        ; Give interrupt acknowledge
+	OUT     IO_PIC1_Ctrl, AL
+
+	POP     AX                      
+	INT     2                       ; Invoke NMI handler
+	IRET
+
+SYS_FPUInt      ENDP
+
+; NMI interrupt handler *************************************
+
+; In a full system, this should check for parity and I/O channel
+; errors. However, as we don't actually generate these, the check
+; is not present. Any NMIs are assumed to be from the FPU and I'm
+; going to ignore them!
+
+SYS_NMIInt      PROC FAR
+
+	PUSH    AX                      ; Just disable NMIs
+	MOV     AL, 080h                ; so it doesn't happen again
+	OUT     IO_CMOS_Index, AL
+	POP     AX
+	IRET
+
+SYS_NMIInt      ENDP
+
+; Bad Opcode handler ****************************************
+
+; This is put in to see if we need to write a LOADALL handler
+; It's also handy for detecting dodgy systems
+
+SYS_BadOpcodeInt PROC FAR
+	PUSH    BP              ; [BP]->savedBP
+	MOV     BP, SP          ; [BP+2]->retIP,[BP+4]->retCS,[BP+6]->retflg
+	PUSH    AX
+	PUSH    DX
+	PUSH    SI
+	LDS     SI, [BP+2]      ; DS:SI->faulting instruction
+	MOV     DX, HPC_DebugB_Port
+	MOV     AL, 99h         ; Trace 99h
+	OUT     DX, AL
+	MOV     DX, HPC_DebugW_Port
+	MOV     AX, DS          ; Trace CS
+	OUT     DX, AX
+	MOV     AX, SI          ; Trace IP
+	OUT     DX, AX
+	MOV     AX, [SI]        ; AX = opcode
+	OUT     DX, AX          ; Trace opcode
+	ADD     word ptr [BP+2],2       ; Skip over it!!
+	POP     SI
+	POP     DX
+	POP     AX
+	POP     BP
+	IRET
+SYS_BadOpcodeInt ENDP
+
+; Coprocessor detection code *******************************
+
+; Added 10/07/95
+;
+; Should be called during initialisation with DS=Data seg
+
+SYS_CoprocessorCheck PROC NEAR
+	CLI
+	MOV	AX, 0
+	MOV	ES, AX
+	MOV	DI, 06h * 4	; 6 = illegal opcode trap
+	PUSH	ES:[DI]		; Save old trap vector
+	PUSH	ES:[DI+02h]
+
+				; Install our new handler
+	MOV	ES:[DI], offset CS:FP_Check_Handler
+	MOV	ES:[DI+02h], CS
+
+	MOV	CX, 0		; 0 if no copro
+
+	FNINIT			; Do (or die)
+
+	MOV	AX, 0FFFFh
+	FSTSW	AX		; Should be zero
+	CMP	AX, 0
+	JNE	SYS_CC_Abort
+
+	FSTCW	word ptr FDD_workarea	; Store control word (should be 37Fh)
+	MOV	AX, word ptr FDD_workarea
+	CMP	AX, 037Fh
+	JNE	SYS_CC_Abort
+
+	INC	CX
+
+SYS_CC_Abort:
+	POP	ES:[DI+02h]	; Restore old handler
+	POP	ES:[DI]
+	STI
+
+	JCXZ	SYS_CC_ret
+
+	OR	SYS_equipmt, 00000010b	; Set copro-available bit
+	
+	MOV	SI, offset CS:CoproMsg
+	CALL	MSC_SendMsg
+SYS_CC_ret:
+	RET
+SYS_CoprocessorCheck ENDP
+
+; This gets called if the FNINIT or FSTSW instructions are
+; bad opcodes.
+
+FP_Check_Handler PROC FAR
+	PUSH	BP
+	MOV	BP, SP		; [BP]->saved BP, retIP, retCS, retFlags
+	MOV	word ptr [BP+2], offset CS:SYS_CC_Abort
+				; Skip FP instructions
+	POP	BP
+	IRET
+FP_Check_Handler ENDP
+
+CoproMsg  DB "Numeric coprocessor detected", 13, 10, 0
+
+; Initialisation table for DMA, PIC and PIT chips *****************
+
+SYS_MiscInitTbl:
+				;Master clear all DMA's
+	DW      IO_DMA1_Clr
+	DB      00H
+	DW      IO_DMA2_Clr
+	DB      00H
+
+				;Set Disable bit
+	DW      IO_DMA2_Cmd
+	DB      04H
+	DW      IO_DMA1_Cmd
+	DB      04H
+
+				;Reset mode bits for all DMA1 channels
+	DW      IO_DMA1_Mode
+	DB      00H
+	DW      IO_DMA1_Mode
+	DB      01H
+	DW      IO_DMA1_Mode
+	DB      02H
+	DW      IO_DMA1_Mode
+	DB      03H
+
+				;Reset mode bits for all DMA2 channels
+	DW      IO_DMA2_Mode
+	DB      0C0H            ;DMA2 channel 0 = cascade for DMA1 channels
+	DW      IO_DMA2_Mode
+	DB      01H
+	DW      IO_DMA2_Mode
+	DB      02H
+	DW      IO_DMA2_Mode
+	DB      03H
+				;Re-enable channels
+	DW      IO_DMA2_Cmd
+	DB      00H
+	DW      IO_DMA1_Cmd
+	DB      00H
+
+	DW      IO_DMA2_Mask    ; Unmask cascade channel 4
+	DB      00h             ;
+
+	; Interrupt controller init
+
+	DW      IO_PIC2_Ctrl
+	DB      015H                    ;Edge-triggered, cascade mode
+	DW      IO_PIC2_Mask
+	DB      070H                    ;Int vector base = 70H
+	DW      IO_PIC2_Mask
+	DB      002H                    ;Slave: ID is 2
+	DW      IO_PIC2_Mask
+	DB      001H                    ;8086 mode, normal EOI
+	DW      IO_PIC2_Mask
+	DB      0BFH                    ;Int mask (only FPU enabled)
+
+	DW      IO_PIC1_Ctrl
+	DB      015H                    ;Edge-triggered, cascade mode
+	DW      IO_PIC1_Mask
+	DB      008H                    ;Int vector base = 08H
+	DW      IO_PIC1_Mask
+	DB      004H                    ;Master: slave is on IRQ2
+	DW      IO_PIC1_Mask
+	DB      001H                    ;8086 mode, normal EOI
+	DW      IO_PIC1_Mask
+	DB      0FBH                    ;Int mask (only IRQ2 enabled)
+
+	; Multi-IO controller init
+
+	DW      IO_MultiIO_Addr         ; 'Attention' to multiIO
+	DB      055h
+	DW      IO_MultiIO_Addr
+	DB      055h
+
+	DW      IO_MultiIO_Addr
+	DB      01h                     ; Address CR1
+	DW      IO_MultiIO_Data
+	DB      10011110b               ; Data: printer port is 'normal'
+					; type at 378h
+	DW      IO_MultiIO_Addr
+	DB      02h                     ; Address CR2
+	DW      IO_MultiIO_Data
+	DB      11011100b               ; Serial: COM1 is 3F8, COM2 is 2F8
+
+	DW      IO_MultiIO_Addr
+	DB      0AAh                    ; Exit configuration mode
+
+	DW      0FFFFH                  ;End of table
+
+; Initialisation table for interrupt vectors *********************
+
+SYS_VectTable:
+	DW      006H, SYS_BadOpcodeInt
+
+	; PIC #1 vectors
+
+	DW      008H, TIC_Isr		; Irq 0 = timer
+	DW      009H, KBD_Isr		; Irq 1 = keyboard
+	DW      00AH, SYS_DummyIntEOI	; Irq 2 = 'cascade'
+	DW      00BH, SYS_DummyIntEOI	; Irq 3 = COM2
+	DW      00CH, SYS_DummyIntEOI	; Irq 4 = COM1
+	DW      00DH, SYS_DummyIntEOI	; Irq 5 = Spare / LPT2
+	DW      00EH, SYS_DummyIntEOI	; Irq 6 = floppy
+	DW      00FH, SYS_DummyInt	; Irq 7 = LPT1
+
+	; PIC #2 vectors
+
+	DW      070H, SYS_DummyIntEOI2	; Irq 8  = RTC (not present)
+	DW      071H, SYS_DummyIntEOI2	; Irq 9  = spare
+	DW      072H, SYS_DummyIntEOI2	; Irq 10 = spare
+	DW      073H, SYS_DummyIntEOI2	; Irq 11 = spare
+	DW      074H, SYS_DummyIntEOI2	; Irq 12 = spare
+	DW      075H, SYS_FPUInt	; Irq 13 = FPU exception
+	DW      076H, HDD_ISR		; Irq 14 = IDE on Elvises
+	DW      077H, HPC_ISR		; Irq 15 = HPC interrupt
+	.errnz	(HPC_IRQ_line-15)
+
+	; DOS & BIOS service vectors
+
+	DW      002H, SYS_NMIint
+	DW      005H, BIOS_PrtScreen            
+	DW      010H, VID_Int
+	DW      011H, SYS_EquipInt
+	DW      012H, SYS_RAMInt
+	DW      013H, HDD_Int13
+	DW      014H, SER_Int
+	DW      015H, SYS_Int15         ;System functions
+	DW      016H, KBD_Int
+	DW      017H, PRN_Int
+	DW      018H, SYS_DummyInt      ;ROM BASIC service
+	DW      019H, MSC_BootInt
+	DW      01AH, TIC_Int
+	DW      01BH, SYS_DummyInt      ;Not used
+	DW      01CH, SYS_DummyInt      ;User Timer tick
+	DW      01DH, VID_params        ;Video parms
+	DW      01EH, FDD_Tbl1M44	;FDD parms
+	DW      01FH, VID_CGAfontHi     ;CGA font, chars 80h-FFh
+
+	DW	04DH, HPC_UserInt	; HPC User services
+
+	; Dummy vectors/parameter pointers
+
+	DW      040H, FDD_Int40		;Floppy BIOS revectored
+	DW      041H, HD_parms1         ;HDD parms
+	DW      043H, VID_CGAFontLo     ;CGA font, chars 00h-7Fh
+	DW      046H, HD_parms2
+
+	DW      068H, SYS_DummyInt      ;Used by EMM386.SYS
+
+	DW      0FFFFH                  ;End of table
+
+; A20Gate routines ----------------------------
+
+; Moved here 'cos we were having a lot of trouble with M1sc's
+; and the Gemini-2 A20gate simulator. Doing it twice seems to
+; work.
+
+EnableA20 proc near
+	MOV     AL, 0D1h                ; D1 = write output port
+	OUT     IO_Kbd_Cmd, AL          ;
+	IOWAIT
+	MOV     AL, 0DFh                ; bit1 = 1 = A20 gated on
+	OUT     IO_Kbd_Data, AL
+	IOWAIT
+	IN	AL, IO_Kbd_Cmd		; Read status bit
+	IOWAIT
+	MOV     AL, 0D1h                ; D1 = write output port
+	OUT     IO_Kbd_Cmd, AL          ;
+	IOWAIT
+	MOV     AL, 0DFh                ; bit1 = 1 = A20 gated on
+	OUT     IO_Kbd_Data, AL
+	IOWAIT
+	IN	AL, IO_Kbd_Cmd		; Read status bit
+	RET
+EnableA20 endp
+
+; -------------------
+
+DisableA20 proc near
+	MOV     AL, 0D1h                ; D1 = write output port
+	OUT     IO_Kbd_Cmd, AL          ;
+	IOWAIT
+	MOV     AL, 0DDh                ; bit1 = 0 = A20 gated off
+	OUT     IO_Kbd_Data, AL
+	IOWAIT
+	IN	AL, IO_Kbd_Cmd		; Read status bit
+	IOWAIT
+	MOV     AL, 0D1h                ; D1 = write output port
+	OUT     IO_Kbd_Cmd, AL          ;
+	IOWAIT
+	MOV     AL, 0DDh                ; bit1 = 0 = A20 gated off
+	OUT     IO_Kbd_Data, AL
+	IOWAIT
+	IN	AL, IO_Kbd_Cmd		; Read status bit
+	RET
+DisableA20 endp
+

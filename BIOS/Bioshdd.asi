@@ -1,0 +1,1667 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSHDD.ASI   HPC & local-IDE Hard Disk BIOS
+;
+; Versions
+; 2.00  30-10-95 INH    Converted for HPC calls
+;
+; ****************************************************************
+
+; HPC hard disk definitions ---------------------------
+
+; Service & function codes
+
+HPC_HD_ID	equ	0001h		; Hard Disk = service ID 0001
+
+HPC_HD_INFO	equ	0000h		; HD Get-info command
+HPC_HD_READ	equ	0001h		; HD Read command
+HPC_HD_WRITE	equ	0002h		; HD Write command
+HPC_HD_MEDIA	equ	0003h		; HD media-control command
+
+; Parameters for GetInfo command
+
+HD_GetInfo_Parms struc
+
+HDGIP_id	dw ?			; Service ID = HPC_HD_ID
+HDGIP_fncode	dw ?			; Function code = HPC_HD_INFO
+HDGIP_drvno	dw ?			; Drive number
+		ends
+
+
+HD_GetInfo_Result struc
+
+HDGIR_status	dw ?		; Error code, 0 = success
+HDGIR_ndrives	dw ?		; Number of drives
+HDGIR_drvsize	dd ?		; Drive size in logical sectors
+HDGIR_flags0	dw ?		; Flags, word 0
+HDGIR_flags1	dw ?		; Flags, word 1
+HDGIR_ncyls	dw ?		; Recommended number of cylinders
+HDGIR_nheads	dw ?		; Number of heads
+HDGIR_nsects	dw ?		; Number of sectors
+		ends
+
+
+FLG0_RDONLY	equ 1		; Values for flags word 0
+FLG0_CHANGES	equ 2
+FLG0_LOCKS	equ 4
+FLG0_VOLATILE	equ 8
+
+
+; Parameters for read & write commands
+
+HPC_HD_BLK_SIZE	equ	30		; No of blocks to do in one go
+
+HD_ReadWrite_Parms	struc
+
+HDRW_id		dw ?			; Service ID
+HDRW_fncode	dw ?			; Function code
+HDRW_drvno	dw ?			; Drive number
+HDRW_nsects	dw ?			; Number of sectors this go
+HDRW_lsectLSW	dw ?			; Logical sector no lo
+HDRW_lsectMSW	dw ?			; Logical sector no hi
+HDRW_totlen	dw ?			; Total transfer length
+HDRW_pad	dw ?			; Pad bytes
+
+		ends
+
+; Parameters for media control command
+
+HD_Media_Parms struc
+HDMP_id		dw ?			; Service ID
+HDMP_fncode	dw ?			; Function code
+HDMP_drvno	dw ?			; Drive number
+HDMP_reason	dw ?			; Subfunction code
+		ends
+
+; General status results
+
+HD_General_Result struc		; Returned from read, write
+HDGR_status	dw ?			; and get-media commands
+HDGR_pad	dw ?
+		ends
+
+; Status codes
+HDST_OK		equ 0
+HDST_BADCMD	equ 1
+HDST_BADPARAM	equ 2
+HDST_BADSECT	equ 3
+HDST_DATAERR	equ 4
+HDST_WRITEPROT	equ 5
+HDST_CHANGED	equ 6
+
+
+
+
+; Hard disk initialisation ===============================================
+;
+; Hard drives may be either HPC-based (supplied by RISCOS) or
+; local IDE drives (on Elvis cards only). The config information
+; is kept in the following variables:
+;
+; HDD_ndrives is the total number of IDE+HPC hard disks (0..2 at present)
+;
+; HDD_cfgbits bit 0 is set if drive 0 is present and is local IDE
+; HDD_cfgbits bit 1 is set if drive 1 is present and is local IDE
+; HDD_cfgbits bit 4 is set if there is one local IDE drive configured as
+;   drive 1 (i.e. drive 1 is the IDE 'master').
+;
+; HDD_Drv0Parms and HDD_Drv1Parms structures contain the heads/cylinders/
+;   sectors info for drives 0 and 1, for all types of drive.
+;
+; HDD_ndrives is read using HPC (the HPC disk services know about the
+;   total number of drives). HDD_cfgbits are read from CMOS RAM. The
+;   head/cylinders/sectors parameters are read from CMOS for IDE drives,
+;   and via HPC for HPC drives.
+;
+
+; HDD_Init -----------------------------------
+
+; on entry and exit, DS = Data seg. Stack set up.
+
+HDD_Init proc near
+	; Set Int 41h and Int 46h entries to point to drive parameters
+	assume	DS:BIOSData
+	assume	ES:Nothing
+
+	MOV	AX, 0
+	MOV	ES, AX
+
+	MOV     DI, 41h*4
+	MOV     AX, offset BIOSXData:HDD_Drv0Parms
+	STOSW
+	MOV     AX, SYS_XDataSeg
+	STOSW
+
+	MOV     DI, 46h*4
+	MOV     AX, offset BIOSXData:HDD_Drv1Parms
+	STOSW
+	MOV     AX, SYS_XDataSeg
+	STOSW
+
+	; Read drive parameters using HPC --------
+
+	MOV	DX, 0			; DX = drive number 0
+	CALL	HDD_ReadHPCInfo
+
+	MOV	DX, 1
+	CALL	HDD_ReadHPCInfo
+
+	; Now get IDE drive parameters -----------
+
+	RDCMOS  CMOS_dskcfg             ; Get disk configuration
+	AND     AL, 3                   ; Isolate local IDE bits
+	CMP     AL, 00000010b           ; Is only IDE drive drive 1?
+	JNE     HDDI_10
+	OR      AL, 10h                 ; If so, set 'swap' bit
+HDDI_10:
+	MOV     HDD_cfgbits, AL		; Set cfgbits
+
+	TEST	AL, 3			; Do we have any IDE drives
+	JZ	HDDI_20
+	CALL	HDD_IDE_Startup		; If so, do IDE reset & startup
+HDDI_20:
+	RET
+
+HDD_Init ENDP
+
+; General-purpose subroutines =======================================
+
+; GetInfoPtr ---------------------
+
+; GetInfoPtr gets a pointer to the drive parameter info
+;  for a given drive.
+;
+; On entry, DL = Drive number (0 or 1)
+; On exit, ES:DI->drive parameter info
+;
+	assume	DS:BIOSData
+;
+; Note: we used to look HD params up from the Int 41h and
+; Int 46h vectors, which pointed into the extended data
+; area. However, it seems that EMM386 copies the xtd data
+; to a new location in RAM, and alters SYS_XDataSeg to
+; point to it, but not any other vectors! Just how spazzy
+; are we talking here guys?
+
+GetInfoPtr proc near
+	MOV	ES, SYS_XDataSeg
+	assume	ES:BIOSXData
+
+	TEST	DL, 1
+	JNZ	GIP_10
+	MOV     DI, offset ES:HDD_Drv0Parms
+	RET
+GIP_10:
+	MOV	DI, offset ES:HDD_Drv1Parms
+	RET
+GetInfoPtr endp
+
+; CheckPointer -------------------
+
+; This checks that the pointer in ES:BX is legal for the
+; number of sectors given in AL to be read or written. This pointer
+; will be normalised before use, so that 128 512-byte sectors can be
+; read or written if BX is on a 16-byte boundary, and 127
+; otherwise.
+;
+; On entry, AL is the number of sectors and BX is the pointer offset
+; (ES is ignored).
+;
+; On exit, BX is *not preserved*. Carry is set and AH=09h (Data
+; boundary error) if there is a problem. Otherwise Carry is clear,
+; and SI is set to a copy of the sector count.
+
+CheckPointer PROC NEAR
+	MOV     AH, 0
+	MOV     SI, AX
+
+	CMP     AL, 0           ; 0 sectors are not allowed
+	JE      CP_Err
+	CMP     AL, 128         ; If < 128 sectors, always OK
+	JE      CP_1
+	JA      CP_Err
+CP_OK:
+	CLC
+	RET
+
+CP_1:   TEST    BX, 000Fh       ; If 128 sectors, and BX is not
+	JZ      CP_OK           ; 16-byte aligned, it's an error
+CP_Err: MOV     AH, 09h
+	STC
+	RET
+CheckPointer ENDP
+
+; CheckLongPointer ---------------
+
+; This functions as for CheckPointer but for use with 'long'
+; 516-byte sectors with CRC data. (We can read 127 long sectors
+; if BX mod 16 is in the range 0..4, otherwise only 126).
+;
+; On entry, AL is the number of sectors and BX is the pointer.
+;
+; On exit, AH & carry are set if there is an error. BX is
+; *not preserved*. SI is set to the sector count.
+
+CheckLongPointer PROC NEAR
+	MOV     AH, 0
+	MOV     SI, AX
+
+	CMP     AL, 0
+	JE      CP_Err
+	CMP     AL, 127
+	JE      CLP_1
+	JA      CLP_Err         ; If > 127 sectors, it's always an error
+CLP_OK:
+	CLC
+	RET
+
+CLP_1:  AND     BX, 0Fh         ; If 127 sectors, it's allowed only if
+	CMP     BX, 4           ; (BX and 0Fh) is in the range 0..4
+	JBE     CLP_OK
+CLP_Err:
+	MOV     AH, 09h
+	STC
+	RET
+CheckLongPointer ENDP
+
+
+; GetNormalPtr -------------------------------------------------
+
+; This gets the pointer supplied in SavedES:SavedBX on the stack
+; and returns it in AX:BX after normalisation. All regs except
+; AX and BX are preserved.
+
+GetNormalPtr    PROC NEAR
+	MOV     AX, [BP].SavedBX
+	MOV     BX, AX
+	AND     BX, 0Fh
+	SHR     AX, 4
+	ADD     AX, [BP].SavedES
+	RET
+GetNormalPtr    ENDP
+
+
+
+; INT 13h Hard Disk BIOS handler =========================================
+
+
+HDD_Int13 proc far
+	STI
+	TEST    DL, 80h		; Is it for hard disks?
+	JNZ     I13_HardDisk	; If so, process it
+	INT     40h		; Else pass on to floppy code
+	RET     2
+
+I13_HardDisk:
+	CLD					; It's the law!
+	PUSH    DS
+	PUSH    ES
+	PUSHA
+
+	MOV     BP, SP				; SS:BP->PushA frame
+	MOV     DS, CS:DataSeg@			; DS = Data seg
+
+	AND     [BP].retFlg, not CARRY_FLAG     ; Clear returned carry
+
+	; Check function request --------------
+
+	CMP	AH, 15h			; Fail all commands above 15h
+	JA	I13_BadCmd
+
+	MOV     SI, AX			; Get SI = index into jump table
+	SHR     SI, 8
+	ADD     SI, SI
+
+	; Check drive number ------------------
+
+	MOV	ES, SYS_XDataSeg
+	assume	ES:BIOSXData
+
+	MOV     DI, offset ES:HDD_Drv0Parms
+	AND	DL, 07Fh		; DL = drive no (should be 0 or 1)
+	JZ	I13_010			; Is it zero?
+
+	MOV	DI, offset ES:HDD_Drv1Parms
+	CMP	DL, 01h
+	JNE	I13_UnknownDrive
+I13_010:
+
+	; Check drive type --------------------
+
+	CMP	ES:[DI].DrvType, DRVTYPE_HPC	; Is it an HPC drive?
+	JE	I13_Do_HPC
+
+	CMP	ES:[DI].DrvType, DRVTYPE_IDE	; Is it an IDE drive?
+	JE	I13_Do_IDE
+
+	; Unknown drive
+	;
+	; Certain commands (namely 00=reset disk, 01=GetLastError,
+	;   08=ReadDriveParams, 15h=ReadDriveInfo) don't automatically
+	;   give a 'bad command' error if the drive in DL is not valid.
+	;   For these, we dispatch to the generic handler routines in
+	;   the HPC dispatch table
+I13_UnknownDrive:
+	CMP	AH, 00h
+	JE	I13_Do_HPC
+	CMP	AH, 01h
+	JE	I13_Do_HPC
+	CMP	AH, 08h
+	JE	I13_Do_HPC
+	CMP	AH, 15h
+	JNE	I13_BadCmd
+
+I13_Do_HPC:
+	JMP	CS:HD_HPC_Dispatch[SI]		; HPC dispatch table
+
+I13_Do_IDE:
+	JMP	CS:HD_IDE_Dispatch[SI]		; Use IDE dispatch table
+
+
+	; -------------------
+
+I13_BadCmd:
+	MOV	AH, 01h			; 'Bad command' exit
+I13_Exit:
+	MOV     [BP].SavedAH, AH
+	MOV     HDD_LastErr, AH         ; Save last op. status
+	OR      AH, AH
+	JZ      I13_Exit2
+	OR      [BP].retFlg, CARRY_FLAG ; Set returned carry if error
+I13_Exit2:				; Exit here if regs already set
+	POPA
+	POP     ES
+	POP     DS
+	IRET
+
+
+; Dispatch tables ----------------------------------------------
+
+; Points in this table are jumped to with:
+;
+; AX-CX, DH as on entry to Int,
+; DS = BIOS data seg
+; SS:BP->saved regs on stack
+; DL = drive number, 0-1
+; For all except codes 00, 01, 08 and 15h, the drive number will have
+; been checked, and ES:DI->parameter table info for that drive
+;
+
+HD_HPC_Dispatch DW      I13_Reset		; (generic reset routine)
+		DW      I13_GetLastErr		; (generic last-error routine)
+		DW      HDH_Read		; 02h Read sectors
+		DW      HDH_Write		; 03h Write sectors
+		DW      I13_NOP			; 04h Verify
+		DW      I13_NOP			; 05h FormatCyl
+		DW      I13_BadCmd      	; 06h Format bad track
+		DW      I13_BadCmd      	; 07h Format drive
+		DW      I13_GetParms		; (generic Get drive parameters)
+		DW      I13_NOP			; 09h InitParms
+		DW      I13_BadCmd		; 0Ah Read Long
+		DW      I13_BadCmd		; 0Bh Write Long
+		DW      I13_NOP			; 0Ch Seek
+		DW      I13_NOP			; 0Dh Alternate reset
+		DW      I13_BadCmd		; 0Eh Diagnostic 1
+		DW      I13_BadCmd		; 0Fh Diagnostic 2
+		DW      I13_NOP			; 10h Test drive ready
+		DW      I13_NOP			; 11h Recalibrate
+		DW      I13_BadCmd      	; 12h Diagnostic 3
+		DW      I13_BadCmd      	; 13h Diagnostic 4
+		DW      I13_BadCmd      	; 14h Diagnostic 5
+		DW      I13_GetType		; (generic Get drive type)
+
+HD_IDE_Dispatch DW      I13_Reset		; (generic reset routine)
+		DW      I13_GetLastErr		; (generic last-error routine)
+		DW      HDI_Read		; 02h Read sectors
+		DW      HDI_Write		; 03h Write sectors
+		DW      HDI_Verify		; 04h Verify
+		DW      HDI_FormatCyl		; 05h FormatCyl
+		DW      I13_BadCmd      	; 06h Format bad track
+		DW      I13_BadCmd      	; 07h Format drive
+		DW      I13_GetParms		; (generic Get drive parameters)
+		DW      HDI_InitParms		; 09h InitParms
+		DW      HDI_ReadLong		; 0Ah Read Long
+		DW      HDI_WriteLong		; 0Bh Write Long
+		DW      HDI_Seek		; 0Ch Seek
+		DW      HDI_AltReset		; 0Dh Alternate reset
+		DW      HDI_Diag1		; 0Eh Diagnostic 1
+		DW      I13_BadCmd		; 0Fh Diagnostic 2
+		DW      HDI_TestRdy		; 10h Test drive ready
+		DW      HDI_Recalibrate		; 11h Recalibrate
+		DW      I13_BadCmd      	; 12h Diagnostic 3
+		DW      I13_BadCmd      	; 13h Diagnostic 4
+		DW      I13_BadCmd      	; 14h Diagnostic 5
+		DW      I13_GetType		; (generic Get drive type)
+
+
+
+; Generic routines ====================================================
+
+; Called where the drive type is not important.
+;
+; NB: ES:DI will not contain a valid info pointer if DL is out-of-range
+
+
+I13_NOP:	; NOP (always success) ----------------
+
+	MOV	AH, 0			; Success
+	JMP	I13_Exit
+
+
+I13_Reset:	; Reset drive system   ----------------
+
+	TEST	HDD_cfgbits, 3		; Either drive is IDE?
+	JZ	I13_NOP			; If not, stop now
+	JMP	HDI_Reset
+
+
+I13_GetLastErr:	; Get Last Error ----------------------
+
+	MOV	AL, HDD_LastErr
+	MOV	[BP].SavedAL, AL
+	MOV	AH, 0
+	JMP	I13_Exit
+
+
+I13_GetParms:	; Read Drive Parameters ---------------
+
+	; This behaves as follows:
+	; for drives 0 and 1, (whether or not they exist!) returns
+	;  CX = max cylinder number/sector number
+	;  DH = max head number
+	;  DL = number of drives
+	; for drives > 2, returns
+	;  AX = 0700h, CX=DX=0, carry set
+
+	CMP	DL, 02h			; Is drive in range?
+	JAE	I13_GP_Invalid		; If not, give error return
+
+	; At this point, ES:DI->drive param table
+
+	MOV     AL, ES:[DI].NHeads	; Set maximum head number
+	DEC     AL
+	MOV     [BP].SavedDH, AL
+
+	MOV     AX, ES:[DI].NCyls	; Get number of cylinders
+
+	SUB     AX, 2                   ; -1 for being zero-based, -1 for
+	CMP     AX, 1023                ; not using last cylinder.
+	JBE     HDI_GP_1                ; Maximum of 1023 cylinders anyway
+	MOV     AX, 1023
+HDI_GP_1:
+
+	MOV     [BP].SavedCH, AL        ; Save max cyl (LSB) in CH
+	MOV     AL, 0
+	SHR     AX, 2
+	OR      AL, ES:[DI].NSects      ; Get Nsects + ((Ncyls >> 2) & C0)
+	MOV     [BP].SavedCL, AL
+
+	MOV     AL, HDD_ndrives
+	MOV     [BP].SavedDL, AL
+	MOV     AH, 0
+	JMP     I13_Exit		; Successful exit
+
+I13_GP_Invalid:				; Invalid drive number
+	MOV     AX, 0700h		; Exit with AH = 'Drive parameter fail'
+	MOV	[BP].SavedAL, AL
+	MOV     CX, 0
+	MOV     [BP].SavedCX, CX
+	MOV     [BP].SavedDX, CX
+	JMP     I13_Exit
+
+
+I13_GetType:	; Get Drive Type ----------------------
+
+	; Function 15h. On exit:
+	; AH = 00h, carry clear if no disk installed
+	; AH = 03h, carry clear if disk installed
+	;    (also CX:DX = number of 512-byte sectors)
+
+	CMP	DL, HDD_ndrives		; Is it a valid drive number?
+	JAE	I13_GT_Invalid		; If not, exit
+
+	MOV     AL, ES:[DI].NSects      ; No. of sectors =
+	MUL     ES:[DI].NHeads          ; ncyls*nheads*(ncyls-1)
+	MOV     CX, ES:[DI].NCyls       ; because last cylinder is
+	DEC     CX                      ; not usable.
+	MUL     CX
+
+	MOV	CX, DX			; CX:DX = 32 bit result
+	MOV	DX, AX
+	MOV	AH, 03h
+	JMP	short I13_GT_10
+
+I13_GT_Invalid:
+	MOV     AH, 0			; If invalid drive, return
+	MOV	CX, 0			; AX=CX=DX=0, carry clear
+	MOV	DX, 0
+I13_GT_10:
+	MOV	[BP].SavedAH, AH
+	MOV     [BP].SavedCX, CX
+	MOV     [BP].SavedDX, DX
+	MOV	HDD_LastErr, 0		; last error = 0
+	JMP	I13_Exit2
+
+; HPC Specific routines ===============================================
+
+
+; HPC Read/Write sectors point ----------------------------
+
+; This is a dispatch-table entry point. On entry,
+; AX-CX, DH, as on entry to Int,
+; DS = BIOS data seg
+; SS:BP->saved regs on stack
+; DL = drive number, 0-1
+; ES:DI->drive info pointer
+
+HDH_Read:
+HDH_Write:
+	CALL	CheckPointer		; Validate pointer offset in BX
+					; for AL sectors
+	JC	HDHRW_Abort		; Exit if error
+
+	; Check parameters are in range
+	; DH = head, CL[5..0]=sector, CL[7..6]::CH=cylinder
+
+	MOV	BL, CH			; BL = cylinder LSB
+	MOV	BH, CL			; BH[7..6] = cylinder extra bits
+	SHR	BH, 6			; BX = cylinder number
+
+	AND	CX, 03Fh		; CX = sector no
+	JZ	HDHRW_SectNF		; Can't be zero
+	CMP	CL, ES:[DI].NSects	; In range 1..NSects
+	JA	HDHRW_SectNF
+
+	CMP	DH, ES:[DI].NHeads	; Check head in range
+	JAE	HDHRW_SectNF		; 0..NHeads-1 ?
+
+	CMP	BX, ES:[DI].NCyls	; range 0..NCyls-1
+	JAE	HDHRW_SectNF		; (approximately)
+
+	; Calculate logical starting address from parameters
+	; Lsect = cyl*nheads*nsects + head*nsects + sect - 1
+	; (Only cyl * nheads * nsects needs to be a 32bit mul)
+	; BX = cylinder no, DH = head no, DL = drive no, CX = sector no
+
+	MOV	SI, CX
+	DEC	SI			; SI = sect-1
+
+	MOV	CH, ES:[DI].NSects	; CH = NSects
+	MOV	AL, DH
+	MUL	CH			; AX = NSects * Head
+	ADD	SI, AX			; SI = head*nsects+sect-1
+					; (in range 0..64*255 approx)
+	MOV	AL, ES:[DI].NHeads
+	MUL	CH			; AX = NHeads*NSects
+	MUL	BX			; DX::AX = NHeads*NSects*Cyl
+	ADD	SI, AX
+	ADC	DX, 0			; DX::SI = NHeads*Nsects*cyl +
+					; head*NSects+sect-1
+	JMP	short HDHRW_Setup
+
+HDHRW_SectNF:					; Get here for bad sector addresses
+	MOV	AH, 04h				; Sector not found code
+HDHRW_Abort:					; Exit point if failed
+	MOV	[BP].SavedAL, 0			; Say no sectors were read
+	JMP	I13_Exit
+
+
+HDHRW_Setup:	; Control block setup ---------------
+
+	CALL	HPC_QuickSetup		; Set up ES:BX->call block,
+					; ES:DI->params to send
+
+	MOV	ES:[BX].Buff_flag, HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size HD_ReadWrite_Parms
+	MOV	ES:[BX].Ret_Len_1,  size HD_General_Result
+
+	; Generate command packet
+
+	MOV	ES:[DI].HDRW_id, HPC_HD_ID	; Service ID
+
+	MOV	AX, HPC_HD_WRITE		; Function code (read/write)
+	CMP	[BP].SavedAH, 03h
+	JE	HDHRW_10
+	MOV	AX, HPC_HD_READ
+HDHRW_10:
+	MOV	ES:[DI].HDRW_fncode, AX
+
+	MOV	AX, [BP].SavedDX		; Drive number (0..1)
+	AND	AX, 007Fh
+	MOV	ES:[DI].HDRW_drvno, AX
+
+	MOV	ES:[DI].HDRW_lsectLSW, SI	; Logical sector number
+	MOV	ES:[DI].HDRW_lsectMSW, DX
+
+	MOV	AL, [BP].SavedAL		; Total sector count
+	MOV	AH, 0
+	MOV	ES:[DI].HDRW_totlen, AX
+
+	MOV	ES:[DI].HDRW_pad, 0		; Pad byte
+
+
+	MOV	SI, BX
+	CALL	GetNormalPtr			; Get AX = Seg, BX = offset
+						; of xfer pointer (normalised)
+	XCHG	SI, BX				; AX:SI = pointer, ES:BX->parm block
+
+	MOV	ES:[BX].Send_Ptr_2.PtrOFS, SI	; Store transfer pointer in both
+	MOV	ES:[BX].Send_Ptr_2.PtrSEG, AX	; parameter blocks. The length fields
+	MOV	ES:[BX].Ret_Ptr_2.PtrOFS, SI	; will determine which one is actually
+	MOV	ES:[BX].Ret_Ptr_2.PtrSEG, AX	; used
+
+	; Read/Write main loop ------------------
+
+	; During the loop, ES:BX points to the call block,
+	; and ES:DI points to the parameters to be sent
+	;
+	; HDRW_totlen is the number of sectors left to do, and
+	; HDRW_nsects is the number of sectors done this do.
+
+HDHRW_loop:
+
+	; Sort out how many sectors to do
+
+	MOV	AX, ES:[DI].HDRW_totlen		; No of sectors left
+	CMP	AX, HPC_HD_BLK_SIZE
+	JBE	HDHRW_15
+	MOV	AX, HPC_HD_BLK_SIZE		; AX = min(blksize, sects_left)
+HDHRW_15:
+	MOV	ES:[DI].HDRW_nsects, AX		; = no of sectors this go
+
+	; Read or write?
+	SHL	AX, 9				; Convert to length in bytes
+	MOV	CX, 0				; CX = 0
+
+	CMP	[BP].SavedAH, 03h		; If write, AX = write length,
+	JE	HDHRW_20			; CX = 0.
+	XCHG	AX, CX				; If read, AX = 0, CX = read length
+HDHRW_20:
+	MOV	ES:[BX].Send_Len_2, AX		; Save write length
+	MOV	ES:[BX].Ret_Len_2, CX		; Save read length
+
+	; Do call
+	CALL	HPC_ExecCall			; Do call
+	MOV	AH, 20h				; 'Controller failed' error code
+	JC	HDHRW_AbortX			; if this fails.
+
+	MOV	DI, ES:[BX].Send_Ptr_1.PtrOFS	; Get back ES:DI->send parameters
+	MOV	SI, ES:[BX].Ret_Ptr_1.PtrOFS	; Get ES:SI->returned status
+
+	MOV	AX, ES:[SI].HDGR_status		; Check returned result
+	CMP	AX, HDST_OK			; Was it OK?
+	JNE	HDHRW_HostError
+
+	; OK, it worked
+
+	MOV	AX, ES:[DI].HDRW_nsects		; Get number of sectors read
+	MOV	CX, AX
+	SHL	CX, 9				; Convert to length in bytes
+	ADD	ES:[BX].Send_Ptr_2.PtrOFS, CX	; Keep write pointer and read pointer
+	ADD	ES:[BX].Ret_Ptr_2.PtrOFS, CX	; in correct position
+
+	ADD	ES:[DI].HDRW_lsectLSW, AX	; Bump starting sector number
+	ADC	ES:[DI].HDRW_lsectMSW, 0
+
+	SUB	ES:[DI].HDRW_totlen, AX		; Decrease number of sectors left to do
+	JA	HDHRW_loop			; If more, go back
+
+	MOV	AH, 0				; Success!
+	JMP	I13_Exit
+
+
+HDHRW_HostError:
+	; If HPC call fails, we get here with AX = error code
+	CMP	AX, 6				; We know 6 error codes
+	JBE	HDHRW_XlatErr
+	MOV	AH, 0BBh			; Undefined error
+HDHRW_AbortX:
+	JMP	HDHRW_Abort
+
+HDHRW_XlatErr:
+	MOV	BX, offset CS:HDErrTable
+	XLAT	CS:[BX]
+	MOV	AH, AL
+	JMP	HDHRW_Abort
+
+HDErrTable	DB 0		; OK
+		DB 020h		; Bad command = controller failed
+		DB 01h		; Bad parameters
+		DB 040h		; Bad sector no (seek failed)
+		DB 010h		; CRC error
+		DB 0CCh		; Write protect (write fault)
+		DB 0AAh		; Media changed = 'not ready'
+
+
+; HDD_ReadHPCInfo -----------------------------------------
+;
+; Initialisation subroutine, Called with DS = DataSeg, DX = drive number
+;
+; Should fill in information for that particular drive.
+
+HDD_ReadHPCInfo proc near
+
+	CALL	HPC_QuickSetup		; Set ES:BX->call block, ES:DI->param buffer
+	assume	DS:BIOSData
+
+	MOV	ES:[BX].Buff_flag,  HPC_BUF_A
+	MOV	ES:[BX].Send_Len_1, size HD_GetInfo_Parms
+	MOV	ES:[BX].Ret_Len_1,  size HD_GetInfo_Result
+
+	; Set parameters
+
+	MOV	AX, HPC_HD_ID
+	STOSW				; HDGIP_id
+	MOV	AX, HPC_HD_INFO
+	STOSW				; HDGIP_fncode
+	MOV	AX, DX
+	STOSW				; HDGIP_drvno
+
+	PUSH	DX
+	CALL	HPC_ExecCall		; Do call to ARM
+	POP	DX
+	JC	HPCI_NoDrive		; If error, fail
+
+	LES	DI, ES:[BX].Ret_Ptr_1	; Get back ES:DI->results
+
+	CMP	ES:[DI].HDGIR_status, HDST_OK
+	JNE	HPCI_NoDrive		; Did it work?
+
+	MOV	AX, ES:[DI].HDGIR_ndrives	; Set no. of drives
+	MOV	HDD_ndrives, AL
+
+	MOV	AX, ES:[DI].HDGIR_ncyls		; Get parameters
+	MOV	BX, ES:[DI].HDGIR_nheads
+	MOV	CX, ES:[DI].HDGIR_nsects
+	MOV	DH, DRVTYPE_HPC
+	JMP	short HPCI_SetDrive
+
+HPCI_NoDrive:
+	MOV	AX, 0				; NCyls
+	MOV	BX, 0				; NHeads
+	MOV	CX, 0				; NSects
+	MOV	DH, DRVTYPE_NONE
+HPCI_SetDrive:
+	CALL	GetInfoPtr			; Get ES:DI->drive parm table
+						; for drive in DL
+	MOV	ES:[DI].DrvType, DH
+	MOV	ES:[DI].NCyls, AX
+	MOV	ES:[DI].NHeads, BL
+	MOV	ES:[DI].NSects, CL
+
+	RET
+
+HDD_ReadHPCInfo endp
+
+
+
+
+
+; IDE-Specific dispatch points ===================================================
+
+; These are entered with:
+;
+; AX/BX/CX/DH as on entry, BP pointing to saved regs on stack
+; DS = BIOS Data Seg, ES:DI = parameter table for drive,
+; DL = checked drive number, 0 or 1
+;
+; Return is by jumping to I13_Exit with AH = error code. Zero is
+; success, anything else sets HDD_LastErr and carry flag.
+
+
+	; Reset ---------------------------
+
+HDI_Reset:
+	; The generic reset thing jumps here if any IDE drives
+	; are installed
+
+	; Note! HDI_Reset doesn't return errors because
+	; it gives a 'Non-system disk or disk error' when
+	; booting DOS, which is not very helpful.
+
+	CALL    ResetInterface		; Reset IDE interface
+
+	; Reset individual drives
+
+	TEST    HDD_cfgbits, 1		; Drive 0 exists?
+	JZ      HDIRst_10
+	MOV	DL, 0
+	CALL	InitParms		; Reset drive parameters
+	MOV	DL, 0
+	CALL	RecalibrateDrive
+HDIRst_10:
+
+	TEST    HDD_cfgbits, 2		; Drive 1 exists?
+	JZ      HDIRst_20
+	MOV	DL, 1
+	CALL	InitParms		; Reset drive parameters
+	MOV	DL, 1
+	CALL	RecalibrateDrive
+HDIRst_20:
+	MOV	AH, 0			; Always no error
+	JMP	I13_Exit
+
+
+	; Read and read-long -----------------------------------
+
+HDI_ReadLong:
+	CALL    CheckLongPointer
+	JC      HDIR_Exit
+	MOV     AL, 022h        ; 'Read long' command
+	JMP     HDIR_Common
+
+HDI_Read:
+	CALL    CheckPointer
+	JC      HDIR_Exit
+	MOV     AL, 020h         ; 'Read' command
+
+HDIR_Common:
+	MOV     HDD_CmdByte, AL
+
+	; CX/DX = drive/sector info still
+	CALL    SetupDrive
+	JC      HDIR_Exit
+
+	CALL    SendCommand
+	JC      HDIR_Exit
+
+	CALL    GetNormalPtr    ; Get data transfer pointer (normalised)
+	MOV     ES, AX          ; into AX:BX
+	MOV     DI, BX
+	CLD
+
+	; At this point
+	; SI = sector count
+	; ES:DI = data pointer
+
+HDIR_Loop:
+	CALL    WaitForInt      ; Wait for int & get status
+	JNC     HDIR_L1         ; All OK?
+	CMP     AH, 011h        ; Was it ECC-corrected data error?
+	JNE     HDIR_Exit       ; If so, forgive it.
+HDIR_L1:
+	MOV     DX, IO_HD_Data
+	MOV     CX, 0100h       ; 256 words of data
+
+	CLI
+	REP     INSW            ; Get it, with ints off
+	STI
+
+	TEST    HDD_CmdByte, 2  ; Is it a 'read long'?
+	JZ      HDIR_L2
+
+	CALL    WaitDREQ        ; Check that DREQ's still there
+	MOV     DX, IO_HD_Data
+	MOV     CX, 4
+
+HDIR_L15:                       ; Get ECC data in, one byte at
+	INSB                    ; a time.
+	IOWAIT
+	LOOP    HDIR_L15
+
+HDIR_L2:
+	DEC     SI              ; More sectors?
+	JNZ     HDIR_Loop       ; If so, wait for int
+	MOV     AH, 0           ; Else: we win!
+HDIR_Exit:
+	JMP	I13_Exit
+
+
+	; Write and Write-long --------------------------
+
+HDI_WriteLong:
+	CALL    CheckLongPointer
+	JC      HDIW_Exit
+	MOV     AL, 32h         ; Write long command
+	JMP     HDIW_Common
+
+HDI_Write:
+	CALL    CheckPointer
+	JC      HDIW_Exit
+	MOV     AL, 30h         ; Write command
+
+HDIW_Common:
+	MOV     HDD_CmdByte, AL
+
+	; CX/DX = drive/sector info still
+	CALL    SetupDrive
+	JC      HDIW_Exit
+
+	CALL    SendCommand
+	JC      HDIW_Exit
+
+	MOV     DI, SI          ; DI holds sector count
+	CALL    GetNormalPtr
+	MOV     SI, BX          ; SI holds data pointer
+	MOV     ES, AX
+	CLD
+
+HDIW_Loop:
+	; At this point:
+	; DI = count of sectors left to go
+	; ES:SI = data pointer
+	; DS = BIOS code seg
+
+	CALL    WaitDREQ        ; Wait for drive to request data
+	JC      HDIW_Exit
+
+	MOV     DX, IO_HD_Data
+	MOV     CX, 0100h       ; 256 words to write
+	MOV     AX, ES
+	MOV     DS, AX
+	CLI
+	REP     OUTSW
+	STI
+
+	MOV     DS, CS:DataSeg@ ; Restore DS
+	TEST    HDD_CmdByte, 2  ; Was it 'long' command
+	JZ      HDIW_L1         ; If not, skip ECC bit
+
+	CALL    WaitDREQ        ; Wait for ECC data request
+	JC      HDIW_Exit
+
+	MOV     DX, IO_HD_Data
+	MOV     CX, 4
+HDIW_L2:
+	LODS    byte ptr ES:[SI]        ; Send ECC data, bytewise
+	OUT     DX, AL          ; (and slowly).
+	IOWAIT
+	LOOP    HDIW_L2
+
+HDIW_L1:
+	CALL    WaitForInt      ; All data sent, wait for drive to ack it.
+	JC      HDIW_Exit       ; If error, exit
+	DEC     DI              ; All done? (DI holds sector count)
+	JNZ     HDIW_Loop       ; If not, loop
+	MOV     AH, 0           ; We win!
+HDIW_Exit:
+	JMP	I13_Exit
+
+
+	; Verify -----------------------------------------------
+
+HDI_Verify:
+	MOV     SI, AX          ; Save sector count in SI LSB
+	MOV     AL, 40h         ; Verify command = 40h
+	CALL	HDSimpleCmd     ; Do simple command
+	JMP	I13_Exit
+
+
+	; Format Cylinder ---------------------------------------
+
+HDI_FormatCyl:
+	AND     CL, 0C0h
+	INC     CL              ; Sector number = 01
+	MOV     AL, ES:[DI].NSects
+	MOV     SI, AX          ; Sector count = nsects
+	CALL    SetupDrive      ; Send parameters
+	JC      HDIF_Exit
+
+	MOV     HDD_CmdByte, 50h        ; Send Format command,
+	CALL    SendCmdPlain    ; Don't adjust for 'retries'
+	JC      HDIF_Exit
+
+	CALL    WaitDREQ        ; Wait for format data request
+	JC      HDIF_Exit
+
+	MOV     DS, [BP].SavedES        ; Get format table pointer
+	MOV     SI, [BP].SavedBX
+
+	MOV     CX, 100h
+	MOV     DX, IO_HD_Data
+	CLI
+	REP     OUTSW
+	STI                     ; Send format data
+	MOV     DS, CS:DataSeg@ ; Restore DS
+
+	CALL    WaitForInt      ; Wait for completion and get status
+HDIF_Exit:
+	JMP	I13_Exit
+
+
+	; Initialise drive parameters --------------------------
+
+HDI_InitParms:
+	CALL	InitParms
+	JMP	I13_Exit
+
+
+	; Seek -------------------------------------------------
+
+HDI_Seek:
+	MOV     AL, 70h         ; Seek command
+	CALL    HDSimpleCmd
+	JMP	I13_Exit
+
+
+	; Alternate reset --------------------------------------
+
+	; This simply performs a InitParms followed by a Recalibrate
+	; on the chosen drive.
+
+HDI_AltReset:
+	CALL    InitParms
+	JC      HDIAR_Exit
+
+	MOV     DL, [BP].SavedDL        ; Restore drive no.
+	AND	DL, 07Fh
+	CALL	RecalibrateDrive
+HDIAR_Exit:
+	JMP	I13_Exit
+
+
+	; Recalibrate ----------------------------------------
+
+HDI_Recalibrate:
+	CALL	RecalibrateDrive
+	JMP	I13_Exit
+
+
+	; Test for drive ready ---------------------------------
+
+HDI_TestRdy:
+	MOV     CX, 01h         ; Set up sect=1, head=0, cyl=0
+	MOV     DH, 0           ; (imaginary values)
+	MOV     SI, 1           ; and check that drive comes
+	CALL    SetupDrive      ; back with Ready bits.
+	JC      HDIT_Exit
+	MOV     AH, 0
+HDIT_Exit:
+	JMP	I13_Exit
+
+
+	; Read Diagnostic buffer --------------------
+
+	; For testing, this is an 'identify drive' command.
+
+HDI_Diag1:
+	MOV     CX, 01h         ; Set up sect=1, head=0, cyl=0
+	MOV     DH, 0           ; (imaginary values)
+	MOV     SI, 1           ; and check that drive comes
+	CALL    SetupDrive
+	JC      HDID1_Exit
+
+	MOV     HDD_CmdByte, 0ECh
+	CALL    SendCmdPlain    ; Send command
+	JC      HDID1_Exit
+
+	CALL    WaitForInt      ; Wait for reply
+	JC      HDID1_Exit
+
+	CALL    WaitDREQ        ; Check data is available
+	JC      HDID1_Exit
+
+	MOV     ES, [BP].SavedES
+	MOV     DI, [BP].SavedBX
+	CLD
+
+	MOV     DX, IO_HD_Data
+	MOV     CX, 100h
+	REP     INSW            ; Read in data
+
+	MOV     AH, 0           ; Success!
+HDID1_Exit:
+	JMP	I13_Exit
+
+
+; IDE Subroutines ===============================================================
+
+st_TIMEOUT      EQU     80h
+
+
+; IDE Interrupt Service routine ----------------------------
+
+; This is the IRQ 14 interrupt service routine for
+; the hard disk. Its job is simply to set the 'interrupt
+; happened' flag & dispatch an Int 15h hook.
+
+HDD_ISR PROC FAR
+	PUSH    DS
+	PUSH    AX
+
+	MOV     DS, CS:DataSeg@
+
+	MOV     HDD_IntFlag, 0FFh       ; Set Int flag
+
+	MOV     AL, 20h
+	OUT     IO_PIC2_Ctrl, AL        ; Ack interrupts
+	IOWAIT
+	OUT     IO_PIC1_Ctrl, AL
+
+	MOV     AX, 9100h               ; Dispatch 'Int complete'
+	INT     15h                     ; hook
+
+	POP     AX
+	POP     DS
+	IRET
+
+HDD_ISR ENDP
+
+
+; StatusWait ------------------------------------------------
+;
+; Waits for the hard disk to get into a given state
+; carry set and AH=TIMEOUT if it doesn't. Carry clear if OK.
+;
+; AX, BX, CX, DX corrupted.
+; ES:DI preserved
+
+StatusWait PROC NEAR
+	MOV     CX, TIC_daytime         ; Get starting time
+	MOV     DX, IO_HD_Status
+
+SW_BsyLoop:
+	IN      AL, DX
+	MOV     HDD_StatusReg, AL
+
+	AND     AL, BH
+	CMP     AL, BL
+	JE      SW_Success
+
+	MOV     AX, TIC_daytime
+	SUB     AX, CX
+	CMP     AX, 90                  ; Timeout value = 5 secs
+	JBE     SW_BsyLoop
+
+	MOV     AH, st_TIMEOUT
+	STC
+	RET
+
+SW_Success:
+	CLC
+	RET
+
+	; StatusWait derivatives
+
+WaitNonBusy:
+	MOV     BX, 8000h       ; Wait for BSY bit to be zero
+	JMP     StatusWait
+
+WaitDrvReady:                   ; Wait for RDY and SeekComplete bits
+	MOV     BX, 5050h       ; to be set
+	JMP     StatusWait
+
+WaitDREQ:
+	MOV     BX, 0808h       ; Wait to DREQ to go active
+	JMP     StatusWait
+
+StatusWait ENDP
+
+
+; GetStatus -----------------------------------
+
+; GetStatus reads the current drive status & (if necessary)
+; the error register, & returns a suitable state in the
+; carry flag & AH register. AH=00 and carry clear if OK.
+; Trashes DX.
+; ES:DI preserved
+
+GetStatus PROC NEAR
+	MOV     DX, IO_HD_Status
+	IN      AL, DX
+
+	MOV     HDD_StatusReg, AL
+
+	AND     AX, 0075h       ; Put 00 in AH
+	CMP     AL, 50h
+	JNE     GS_NotOK
+	CLC
+	RET
+
+GS_NotOK:
+	MOV     AH, 11h
+	TEST    AL, 04h
+	JNZ     GS_Err          ; ECC needed
+
+	MOV     AH, 0CCh
+	TEST    AL, 20h
+	JNZ     GS_Err          ; Write fault
+
+	MOV     AH, 0AAh
+	TEST    AL, 40h
+	JZ      GS_Err          ; Drive not ready
+
+	MOV     AH, 40h
+	TEST    AL, 10h
+	JZ      GS_Err          ; Seek failed
+
+	; Try error reg.
+
+	MOV     DX, IO_HD_Error
+	IN      AL, DX
+	MOV     HDD_ErrReg, AL
+
+	MOV     AH, 02h
+	TEST    AL, 01h
+	JNZ     GS_Err          ; Address mark not found
+
+	MOV     AH, 01h
+	TEST    AL, 04h         ; Bad drive command
+	JNZ     GS_Err
+
+	MOV     AH, 04h
+	TEST    AL, 10h         ; Sector not found
+	JNZ     GS_Err
+
+	MOV     AH, 10h
+	TEST    AL, 40h
+	JNZ     GS_Err          ; CRC failure
+
+	MOV     AH, 40h
+	TEST    AL, 02h
+	JNZ     GS_Err          ; Seek failed
+
+	MOV     AH, 0Ah
+	TEST    AL, 80h
+	JNZ     GS_Err          ; Bad sector.
+
+	MOV     AH, 0BBh        ; Undefined error
+GS_Err:
+	STC
+	RET
+
+GetStatus ENDP
+
+
+; SetupDrive ---------------------------------------------------
+
+; This selects and initialises the given drive with the
+; parameters specified. On entry
+
+; ES:DI = parameter table pointer
+; SI(LSB) = value for sector count register (port 1F2h)
+; DL = drive number (0 or 1, or 80h or 81h)
+; DH = head number
+; CL = cylinder bits 8..9 and sector bits 0..5
+; CH = cylinder bits 0..7
+
+; On exit:
+;
+; Carry set, AH = error code
+; or
+; Carry clear if no error.
+;
+; ES:DI still point to parameter table.
+; SI is still sector count.
+
+SetupDrive PROC NEAR
+
+	; (i) Select appropriate drive
+
+	MOV     AL, DL          ; Get 'select' byte =
+	SHL     AL, 4           ; 101dhhhh
+	XOR     AL, HDD_cfgbits ; Swap drive bit 0<->1 if
+	AND     AL, 10h         ; cfgbits bit 4 is set.
+	AND     DH, 0Fh
+	OR      AL, DH          ; where d = drive sel (0 or 1)
+	OR      AL, 0A0h        ; and h = head no. (0..15)
+	MOV     DX, IO_HD_Select
+	OUT     DX, AL                  ; Port 1F6h
+	MOV     HDD_CtrlByte, AL        ; Save value
+
+	; (i) Wait for busy to go non-active
+
+	PUSH    CX
+	CALL    WaitNonBusy
+	POP     CX
+	JC      SD_Error
+
+	MOV     DX, IO_HD_Select
+	MOV     AL, HDD_CtrlByte        ; Get select value back
+	OUT     DX, AL
+
+	MOV     AL, ES:[DI].CtlByte
+	MOV     HDD_CtrlByte, AL        ; Why??
+	AND     AL, 0F8h                ; Ensure RESET low &
+	MOV     DX, IO_HD_MiscCtrl      ; IRQs enabled.
+	OUT     DX, AL
+
+	MOV     AX, ES:[DI].PreComp
+	SHR     AX, 2
+	MOV     DX, IO_HD_PreComp       ; Set Write Precomp value
+	OUT     DX, AL                  ; Port 1F1h
+	IOWAIT
+
+	MOV     AX, SI
+	INC     DX                      ; Set sector count
+	OUT     DX, AL                  ; Port 1F2h
+	IOWAIT
+
+	MOV     AL, CL                  ; Sector number
+	AND     AL, 03Fh                ; Port 1F3h
+	INC     DX
+	OUT     DX, AL
+	IOWAIT
+
+	MOV     AL, CH
+	INC     DX                      ; Cylinder number
+	OUT     DX, AL                  ; LSB - Port 1F4h
+	IOWAIT
+
+	MOV     AL, CL
+	SHR     AL, 6
+	INC     DX
+	OUT     DX, AL                  ; MSB - Port 1F5h
+	IOWAIT
+
+	; (iii) Wait for drive to respond
+
+	CALL    WaitDrvReady
+	JC      SD_StatErr
+	CLC
+	RET
+
+SD_StatErr:
+	CALL    GetStatus
+SD_Error:
+	RET
+
+SetupDrive ENDP
+
+
+; WaitForInt ---------------------------------------------------
+
+; WaitForInt waits for one IRQ 14 interrupt to
+; happen. If nothing happens within 'quite a long
+; while', it returns a timeout error. Otherwise,
+; it reads the status register & gives a result in
+; AH.
+
+; CX, DX corrupted. ES:DI preserved
+
+WaitForInt PROC NEAR
+	; First, dispatch 'Device Busy' hook.
+	CLC
+	MOV     AX, 9000h
+	INT     15h
+	STI
+	JC      WFI_Timeout
+
+	MOV     CX, TIC_daytime
+WFI_Loop:
+	MOV     AL, 0
+	XCHG    AL, HDD_IntFlag
+	CMP     AL, 0FFh
+	JE      WFI_GotIt
+
+	MOV     AX, TIC_daytime
+	SUB     AX, CX
+	CMP     AX, 90          ; 5 second timeout
+	JBE     WFI_Loop
+
+WFI_Timeout:
+	MOV     AH, st_TIMEOUT
+	STC
+	RET
+
+WFI_GotIt:
+	CALL    GetStatus
+	RET
+
+WaitForInt ENDP
+
+
+; SendCommand & SendCmdPlain -----------------------------------
+
+; This sends the command byte to the drive, in addition to
+; enabling interrupts & stuff. The command byte is kept in
+; HDD_CmdByte. Calling SendCommand will adjust the LSB of
+; the command byte to 1 if no retries are required. Calling
+; SendCmdPlain won't.
+; Preserves ES, DI, BX, CX
+
+SendCommand PROC NEAR
+	TEST    HDD_CtrlByte, 0C0h
+	JZ      SendCmdPlain
+	OR      HDD_CmdByte, 1
+SendCmdPlain:
+	CLI
+	MOV     HDD_IntFlag, 0
+
+	IN      AL, IO_PIC2_Mask
+	IOWAIT
+	AND     AL, 10111111b           ; Enable IRQ 14
+	OUT     IO_PIC2_Mask, AL
+
+	IN      AL, IO_PIC1_Mask
+	IOWAIT
+	AND     AL, 11111011b
+	OUT     IO_PIC1_Mask, AL        ; Enable cascade interrupt
+
+	MOV     DX, IO_HD_Cmd
+	MOV     AL, HDD_CmdByte
+	OUT     DX, AL
+	STI
+
+	RET
+SendCommand ENDP
+
+
+; HDSimpleCmd --------------------------------------------------
+
+; Does complete command processing for a simple command. On
+; entry:
+;
+;  DH = head, DL = drive (this will be checked)
+;  AL = command for IDE drive, CH/CL = cylinder/sector numbers
+;  SI = sector count.
+;
+; On exit:
+;   Carry & AH = 0 if OK, otherwise carry set & AH = error.
+
+HDSimpleCmd PROC NEAR
+	MOV     HDD_CmdByte, AL
+
+	CALL    SetupDrive
+	JC      HDSC_Exit
+
+	CALL    SendCmdPlain
+	JC      HDSC_Exit
+	CALL    WaitForInt
+HDSC_Exit:
+	RET
+
+HDSimpleCmd ENDP
+
+
+
+; ResetInterface ---------------------------------------
+
+; Sends a 'reset' to the IDE drives.
+; Assumes DS: BIOSData, and nothing else
+; AX-DX corrupted
+
+ResetInterface PROC NEAR
+	MOV     DX, IO_HD_MiscCtrl
+	MOV     AL, 4           ; Set Reset active
+	OUT     DX, AL
+
+	MOV     CX, 2           ; Short delay
+	CALL    MSC_MidDelay
+
+	MOV     AL, 0           ; Set Reset inactive
+	OUT     DX, AL
+
+	MOV     CX, 2           ; Short delay
+	CALL    MSC_MidDelay
+	RET
+ResetInterface ENDP
+
+
+; RecalibrateDrive --------------------------------------------
+
+; Does a 'recalibrate' command on a drive. Exits with AH and
+; carry set if error, or AH=0 and carry clear if OK.
+;
+; On entry, DL = drive no (0 or 1), DS = Data Seg
+;
+;
+
+RecalibrateDrive PROC NEAR
+	; DL = drive no (0 or 1)
+	MOV     AL, 10h         ; Recalibrate drive command
+	MOV     DH, 0           ; DL = drive number
+	MOV     CX, 1		; Dummy head/sector numbers
+	MOV     SI, 1
+
+	JMP     HDSimpleCmd
+RecalibrateDrive ENDP
+
+
+; InitParms ----------------------------------------------------
+
+; This initialises the parameters for the drive given in DL.
+;
+; Assumes DS=DataSeg on entry
+;
+; On exit, AH & carry give status, only DS, BP are preserved
+
+InitParms PROC NEAR
+	CALL	GetInfoPtr	; Get ES:DI->parameters for drive
+
+	MOV     AL, ES:[DI].NSects
+	MOV     SI, AX          ; Sector count comes from table.
+
+	MOV     DH, ES:[DI].NHeads
+	DEC     DH              ; Head no = nheads-1
+
+	MOV     CX, 1           ; Cyl=0, sect=1 (not really needed)
+	MOV     AL, 91h         ; 'Specify' command
+	JMP     HDSimpleCmd     ; Do command & return status
+InitParms ENDP
+
+
+
+; IDE Initialisation ==============================================
+
+; SetupIDEdrive -------------------------------------
+
+; Resets and configures a given IDE drive.
+;
+; On entry,
+;   DX = drive number (0 or 1), and
+;   BL = address in CMOS RAM where drive parameters live.
+;   DS = Data Seg
+;
+; It will print message on screen if this fails.
+
+
+SetupIDEdrive PROC NEAR
+	; Fill in parameter information
+
+	CALL	GetInfoPtr		; ES:DI->parm table to fill in
+
+	RDCMOS  BL                      ; No. of cylinders LSB
+	MOV     AH, AL
+
+	INC     BL
+	RDCMOS  BL                      ; No. of cylinders MSB
+	XCHG    AH, AL
+	MOV     ES:[DI].NCyls, AX
+
+	INC     BL
+	RDCMOS  BL                      ; No. of heads
+	MOV     ES:[DI].NHeads, AL
+
+	AND     AL, 8                   ; Get 'Head 8 enable' bit
+	MOV     ES:[DI].CtlByte, AL
+
+	INC     BL
+	RDCMOS  BL                      ; Set no. of sectors
+	MOV     ES:[DI].NSects, AL
+
+	MOV	ES:[DI].DrvType, DRVTYPE_IDE
+
+	; Now try to send parameter info to drive
+
+	PUSH	DX
+	CALL	InitParms
+	POP	DX
+	MOV	SI, offset CS:IDEFailMsg1
+	JC	SetIDE_fail
+
+	; Try to recalibrate drive
+
+	; DL = drive no (0 or 1)
+	PUSH	DX
+	CALL	RecalibrateDrive
+	POP	DX
+	MOV	SI, offset CS:IDEFailMsg2
+	JC	SetIDE_fail
+	RET
+
+SetIDE_fail:
+	; Get here when something fails -
+	; SI = message explaining what happened
+	; DX = drive number (0 or 1)
+	; AH = error code
+
+	CALL	MSC_SendMsg		; Give error message
+
+	XCHG	AX, DX			; AX = drive number, 0 or 1
+					; DH = error code
+	CALL	MSC_SendNum		; Print drive number
+
+	MOV	SI, offset CS:IDEFailMsg3
+	CALL	MSC_SendMsg
+
+	MOV	AL, DH
+	MOV	AH, 0
+	CALL	MSC_SendHex		; Give error code in hex
+
+	MOV	SI, offset CS:IDEFailMsg4	; Print 'h' return
+	CALL	MSC_SendMsg
+	RET
+SetupIDEdrive ENDP
+
+IDEFailMsg1	DB "Unable to set parameters for IDE drive ", 0
+IDEFailMsg2	DB "Unable to recalibrate IDE drive ", 0
+IDEFailMsg3	DB ": error code ", 0
+IDEFailMsg4	DB "h", 13, 10, 0
+
+; HDD_IDE_Startup ------------------------------------------------------
+
+HDD_IDE_Startup proc near
+
+	; Called to start up IDE hard drive subsystem
+
+	; The hard disk int service routine will already have been set,
+	; and the IRQ line will be enabled each time we sent a command.
+	; No interrupt initialisation is required here.
+
+	CALL    ResetInterface			; Hard reset drives
+
+	RDCMOS  CMOS_IDETimer			; Wait for them to spin up
+	OR      AL, 1				; Ensure at least 1 tick
+	MOV     AH, 0
+	MOV     CX, AX
+	CALL    MSC_MidDelay
+
+	TEST    HDD_cfgbits, 1			; Is drive 0 IDE ?
+	JZ      HDIS_10
+
+	MOV     BL, CMOS_HD0CylsL		; Set HD0 parameters
+	MOV	DX, 0				; from CMOS RAM
+	CALL    SetupIDEdrive
+HDIS_10:
+
+
+	TEST    HDD_cfgbits, 2			; Is drive 1 IDE ?
+	JZ      HDIS_20
+
+	MOV     BL, CMOS_HD1CylsL
+	MOV	DX, 1
+	CALL    SetupIDEdrive
+HDIS_20:
+
+	RET
+
+HDD_IDE_Startup ENDP
+
+HDD_Int13 ENDP
+
+
+
+

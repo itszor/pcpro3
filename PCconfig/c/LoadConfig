@@ -1,0 +1,596 @@
+#include <stdlib.h>
+#include "stdio.h"
+#include "string.h"
+#include "kernel.h"
+#include "toolbox.h"
+#include "types.h"
+#include "vars.h"
+#include "windows.h"
+#include "wimplib.h"
+#include "file.h"
+#include "utils.h"
+#include "debugit.h"
+#include "ctype.h"
+
+#include "gadgets.h"
+
+extern small_mode_structure modes[100];
+
+static int floppysize[5]={0,360,720,1200,1440};
+
+char *conf_lines[MAX_LINES];
+
+int total_config_lines = 0;
+
+static int atoi_h(char *s)
+{
+  int v;
+
+  if (*s == '&') sscanf(s+1, "%x", &v); else v=atoi(s);
+  return(v);
+}
+
+static char *strip_header(char *option)
+{
+  /* Strip header up to and including all spaces */
+  while(*(option) != ' ' && *(option++) != '\0');
+  while(*(option++) == ' ');
+  return(--option);
+}
+
+static void set_configname(char *opt)
+{
+  opt = strip_header(opt);
+  strcpy(tmp_config.name, opt);
+  strcpy(config.name, opt);
+  raise_error(displayfield_set_value(0, main_window, MAIN_CONFIGNAME, opt));
+}
+
+static void set_pcram(char *opt)
+{
+  opt = strip_header(opt);
+  if(atoi_h(opt) >=1024)
+   tmp_config.memory.memory_allocated = config.memory.memory_allocated = atoi_h(opt) / 1024;
+  else
+   tmp_config.memory.memory_allocated = config.memory.memory_allocated = atoi_h(opt);
+}
+
+static void set_videoram(char *opt)
+{
+  opt = strip_header(opt);
+  config.memory.display_min = config.memory.display_min = atoi_h(opt);
+}
+
+static void set_includevram(char *opt)
+{
+  opt = strip_header(opt);
+  if(strncmp(opt, "on",2) == NULL)
+   tmp_config.memory.includevram = config.memory.includevram = TRUE;
+  else
+   tmp_config.memory.includevram = config.memory.includevram = FALSE;
+}
+
+static int get_number_from_specified_string(char *string, char *preceeder)
+{
+  char *x;
+  char res[10];
+  int y = 0,
+      offset =  0;
+
+  x = strstr(string, preceeder);
+
+  if(x == NULL) return(-1);
+
+  offset = x - string;
+  string += offset + 1;
+
+  while(isdigit(*(string)))
+   *(res+y++) = *(string++);
+
+  *(res+y) = '\0';
+
+  /* This is a bodge for windows colours string, check for 16M, if yes, then
+     return num+1 so I can distinguish between them */
+
+  if(*string == 'm')
+   return(atoi_h(res)+1);
+
+  return(atoi_h(res));
+}
+
+static void set_windowmode(char *opt)
+{
+  char buffer[20];
+
+  char ch;
+
+  int x = 0,
+      y = 0,
+      c = 0;
+
+  opt = strip_header(opt);
+
+  x = get_number_from_specified_string(opt, "x");
+  y = get_number_from_specified_string(opt, "y");
+  c = get_number_from_specified_string(opt, "c");
+
+  sprintf(buffer, "%d x %d\0",x,y);
+
+  tmp_config.windows.mode_number = config.windows.mode_number = get_mode_number(buffer);
+
+  switch(c)
+  {
+    case 16:
+     tmp_config.windows.colours = config.windows.colours = 0;
+     break;
+    case 256:
+     tmp_config.windows.colours = config.windows.colours = 1;
+     ch = opt[strlen(opt)-1];
+     if(ch == 'p')
+      tmp_config.windows.use_palette = config.windows.use_palette = TRUE;
+     else
+      tmp_config.windows.use_palette = config.windows.use_palette = FALSE;
+
+     break;
+    case 32:
+     tmp_config.windows.colours = config.windows.colours = 2;
+     break;
+    case 17:
+     tmp_config.windows.colours = config.windows.colours = 3;
+     break;
+  }
+
+  /* This is a bodge.
+
+     If no modes are found, the currently configured screen mode is read
+     and mode[0] is set to match it's values.
+
+     When saveconfig is called, total_modes is checked, if it's == -1 it
+     means that no modes were read so look in modes[0] for mode info
+   */
+/*
+  if(tmp_config.windows.mode_number == -1)
+  {
+    modes[0].xres = x;
+    modes[0].yres = y;
+    tmp_config.windows.mode_number = config.windows.mode_number = 0;
+  }
+  */
+
+  if(tmp_config.windows.mode_number == -1)
+   tmp_config.windows.mode_number = config.windows.mode_number = 0;
+
+  DEBUG debug_output("configs","X res = %d\n",x);
+  DEBUG debug_output("configs","Y res = %d\n",y);
+  DEBUG debug_output("configs","Colours = %d\n",c);
+
+}
+
+static void set_fastvesa(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.windows.fastvideo = config.windows.fastvideo = (!strncmp(opt, "on", 2));
+}
+
+static void set_switchlfb(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.windows.switchlfb = config.windows.switchlfb = (!strncmp(opt, "on", 2));
+}
+
+static void set_fastvesaskip(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.windows.frameskip = config.windows.frameskip = atoi_h(opt);
+}
+
+static void set_floppyboot(char *opt)
+{
+  opt = strip_header(opt);
+  if(strncmp(opt, "on",2) == NULL)
+   tmp_config.booting.boot_from_floppy = config.booting.boot_from_floppy = TRUE;
+  else
+   tmp_config.booting.boot_from_floppy = config.booting.boot_from_floppy = FALSE;
+}
+
+static void set_disablefloppies(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.booting.disable_floppies = (strncmp(opt, "on", 2) == NULL);
+  config.booting.disable_floppies = tmp_config.booting.disable_floppies;
+}
+
+static void set_directparallel(char *opt)
+{
+  opt = strip_header(opt);
+  if(strncmp(opt, "on",2) == NULL)
+   tmp_config.printing.direct_parallel = config.printing.direct_parallel  = TRUE;
+  else
+   tmp_config.printing.direct_parallel = config.printing.direct_parallel  = FALSE;
+}
+
+static void set_turbodriverbodge(char *opt)
+{
+  opt = strip_header(opt);
+  if(strncmp(opt, "on",2) == NULL)
+   tmp_config.printing.turbodriverbodge = config.printing.turbodriverbodge  = TRUE;
+  else
+   tmp_config.printing.turbodriverbodge = config.printing.turbodriverbodge  = FALSE;
+}
+
+static void set_directserial(char *opt)
+{
+  opt = strip_header(opt);
+  if(strncmp(opt, "on",2) == NULL)
+   tmp_config.serial.direct_serial = config.serial.direct_serial = TRUE;
+  else
+   tmp_config.serial.direct_serial = config.serial.direct_serial = FALSE;
+}
+
+static void set_riscosprinter(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.printing.printing_options = config.printing.printing_options = atoi_h(opt);
+}
+
+static void set_suspendoption(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.switching.switching_option = config.switching.switching_option = atoi_h(opt);
+}
+
+static void set_foregroundslice(char *opt)
+{
+  opt = strip_header(opt);
+  config.switching.foreground_slice = tmp_config.switching.foreground_slice = atoi_h(opt);
+}
+
+static void set_backgroundslice(char *opt)
+{
+  opt = strip_header(opt);
+  config.switching.background_slice = tmp_config.switching.background_slice = atoi_h(opt);
+}
+
+static void set_backgroundholdoff(char *opt)
+{
+  opt = strip_header(opt);
+  config.switching.background_holdoff = tmp_config.switching.background_holdoff = atoi_h(opt);
+}
+
+static void set_autostart(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.switching.start_up_option = config.switching.start_up_option = atoi_h(opt);
+}
+
+static void set_toolbar(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.switching.toolbar = config.switching.toolbar = (strncmp(opt, "on", 2) == NULL);
+}
+
+static void set_ne2000basic(char *opt)
+{
+/*  opt = strip_header(opt);*/
+  /*fprintf(stderr, "opt = %s\n", opt);*/
+  tmp_config.network.iso   = (strstr(opt, "-piso") != 0);
+  tmp_config.network.ipx   = (strstr(opt, "-pipx") != 0);
+  tmp_config.network.tcpip = (strstr(opt, "-ptcpip") != 0);
+  config.network = tmp_config.network;
+}
+
+static void set_harddisc_d(char *opt)
+{
+  opt = strip_header(opt);
+  strcpy(config.discs.drive_d_path_name, opt);
+  strcpy(tmp_config.discs.drive_d_path_name, opt);
+
+  tmp_config.discs.drive_d_use_partition = config.discs.drive_d_use_partition = TRUE;
+
+  tmp_config.discs.drives = config.discs.drives = 2;
+}
+
+static void set_harddisc_c(char *opt)
+{
+  opt = strip_header(opt);
+
+  strcpy(config.discs.drive_c_path_name, opt);
+  strcpy(tmp_config.discs.drive_c_path_name, opt);
+
+  tmp_config.discs.drive_c_use_partition = config.discs.drive_c_use_partition = TRUE;
+
+  if(config.discs.drives < 1)
+   tmp_config.discs.drives = config.discs.drives = 1;
+}
+
+static void set_scsi_c(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_c_direct_scsi_id = config.discs.drive_c_direct_scsi_id = atoi_h(opt);
+  tmp_config.discs.drive_c_use_partition  = config.discs.drive_c_use_partition = FALSE;
+  if(config.discs.drives < 1)
+   tmp_config.discs.drives = config.discs.drives = 1;
+}
+
+static void set_scsi_d(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_d_direct_scsi_id = config.discs.drive_d_direct_scsi_id = atoi_h(opt);
+  tmp_config.discs.drive_d_use_partition  = config.discs.drive_d_use_partition = FALSE;
+  tmp_config.discs.drives = config.discs.drives = 2;
+}
+
+static void set_scsi_c_heads(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_c_scsi_heads = config.discs.drive_c_scsi_heads = atoi_h(opt);
+}
+
+static void set_scsi_d_heads(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_d_scsi_heads = config.discs.drive_d_scsi_heads = atoi_h(opt);
+}
+
+static void set_scsi_c_sects(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_c_scsi_sectors = config.discs.drive_c_scsi_sectors = atoi_h(opt);
+}
+
+static void set_scsi_d_sects(char *opt)
+{
+  opt = strip_header(opt);
+
+  tmp_config.discs.drive_d_scsi_sectors = config.discs.drive_d_scsi_sectors = atoi_h(opt);
+}
+
+static void set_l1cache(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.l1cache = config.adv.l1cache = atoi_h(opt);
+}
+
+static void set_l2cache(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.l2cache = config.adv.l2cache = atoi_h(opt);
+}
+
+static void set_l2size(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.l2size = config.adv.l2size = atoi_h(opt);
+}
+
+static void set_asicoptions(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.asicoptions = config.adv.asicoptions = atoi_h(opt);
+}
+
+static void set_retraceemulation(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.retraceemulation = config.adv.retraceemulation = atoi_h(opt);
+}
+
+static void set_busmouse(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.busmouse = config.adv.busmouse = (strncmp(opt, "on", 2) == NULL);
+}
+
+static void set_busmouseint(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.busmouseint = config.adv.busmouseint = atoi_h(opt);
+}
+
+static void set_ne2000int(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.ne2000int = config.adv.ne2000int = atoi_h(opt);
+}
+
+static void set_ne2000advanced(char *opt)
+{
+  opt = strip_header(opt);
+  strcpy(tmp_config.adv.ne2000advanced, opt);
+  strcpy(config.adv.ne2000advanced, opt);
+}
+
+static void set_floppy(int n, char *opt)
+{
+  int s, i;
+  s = atoi(strip_header(opt));
+  for (i=0; i!=5 && floppysize[i]!=s; i++);
+  if (i == 5) i=0;
+
+  tmp_config.adv.floppy[n] = config.adv.floppy[n] = i;
+}
+
+static void set_sharedmemflags(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.sharedmemflags = config.adv.sharedmemflags = atoi_h(opt);
+}
+
+static void set_preservevidmem(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.preservevidmem = config.adv.preservevidmem = atoi_h(opt);
+}
+
+static void set_aspiignore(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.aspi.ignore = config.aspi.ignore = atoi_h(opt);
+}
+
+static void set_aspireserve(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.aspi.reserve = config.aspi.reserve = atoi_h(opt);
+}
+
+static void set_aspiforce(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.aspi.force = config.aspi.force = atoi_h(opt);
+}
+
+static void set_aspibuffer(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.aspi.aspibuffer = config.aspi.aspibuffer = atoi_h(opt);
+}
+
+static void set_config_option(char *opt)
+{
+  if(strstr(opt, "configname") != NULL)        { set_configname(opt); return;       }
+  if(strstr(opt, "pcram") != NULL)             { set_pcram(opt); return;            }
+  if(strstr(opt, "videoram") != NULL)          { set_videoram(opt); return;         }
+  if(strstr(opt, "includevram") != NULL)       { set_includevram(opt); return;      }
+  if(strstr(opt, "windrvmode") != NULL)        { set_windowmode(opt); return;       }
+  if(strstr(opt, "fastvesaskip") != NULL)      { set_fastvesaskip(opt); return;     }
+  if(strstr(opt, "fastvesa") != NULL)          { set_fastvesa(opt); return;         }
+  if(strstr(opt, "switchlfb") != NULL)         { set_switchlfb(opt); return;        }
+  if(strstr(opt, "floppyboot") != NULL)        { set_floppyboot(opt); return;       }
+  if(strstr(opt, "disablefloppies") != NULL)   { set_disablefloppies(opt); return;  }
+  if(strstr(opt, "directparallel") != NULL)    { set_directparallel(opt); return;   }
+  if(strstr(opt, "turbodriverbodge") != NULL)  { set_turbodriverbodge(opt); return; }
+  if(strstr(opt, "directserial") != NULL)      { set_directserial(opt); return;     }
+  if(strstr(opt, "riscosprinter") != NULL)     { set_riscosprinter(opt); return;    }
+  if(strstr(opt, "suspendoption") != NULL)     { set_suspendoption(opt); return;    }
+  if(strstr(opt, "foregroundslice") != NULL)   { set_foregroundslice(opt); return;  }
+  if(strstr(opt, "backgroundslice") != NULL)   { set_backgroundslice(opt); return;  }
+  if(strstr(opt, "backgroundholdoff") != NULL) { set_backgroundholdoff(opt); return;}
+  if(strstr(opt, "autostart") != NULL)         { set_autostart(opt); return;        }
+  if(strstr(opt, "toolbar") != NULL)           { set_toolbar(opt); return;          }
+  if(strstr(opt, "ne2000basic") != NULL)       { set_ne2000basic(opt); return;      }
+  if(strstr(opt, "hd1-file-name") != NULL)     { set_harddisc_d(opt); return;       }
+  if(strstr(opt, "hd0-file-name") != NULL)     { set_harddisc_c(opt); return;       }
+  if(strstr(opt, "hd0-scsi-id") != NULL)       { set_scsi_c(opt); return;           }
+  if(strstr(opt, "hd1-scsi-id") != NULL)       { set_scsi_d(opt); return;           }
+  if(strstr(opt, "hd0-scsi-heads") != NULL)    { set_scsi_c_heads(opt); return;     }
+  if(strstr(opt, "hd1-scsi-heads") != NULL)    { set_scsi_d_heads(opt); return;     }
+  if(strstr(opt, "hd0-scsi-sects") != NULL)    { set_scsi_c_sects(opt); return;     }
+  if(strstr(opt, "hd1-scsi-sects") != NULL)    { set_scsi_d_sects(opt); return;     }
+  if(strstr(opt, "aspiignore") != NULL)        { set_aspiignore(opt); return;       }
+  if(strstr(opt, "aspireserve") != NULL)       { set_aspireserve(opt); return;      }
+  if(strstr(opt, "aspiforce") != NULL)         { set_aspiforce(opt); return;        }
+  if(strstr(opt, "aspibuffer") != NULL)        { set_aspibuffer(opt); return;        }
+  if(strstr(opt, "l1cache") != NULL)           { set_l1cache(opt); return;          }
+  if(strstr(opt, "l2cache") != NULL)           { set_l2cache(opt); return;          }
+  if(strstr(opt, "l2size") != NULL)            { set_l2size(opt); return;           }
+  if(strstr(opt, "asicoptions") != NULL)       { set_asicoptions(opt); return;      }
+  if(strstr(opt, "retraceemulation") != NULL)  { set_retraceemulation(opt); return; }
+  if(strstr(opt, "busmouseint") != NULL)       { set_busmouseint(opt); return;      } // 'busmouse' is a substring of 'busmouseint' !
+  if(strstr(opt, "busmouse") != NULL)          { set_busmouse(opt); return;         }
+  if(strstr(opt, "ne2000int") != NULL)         { set_ne2000int(opt); return;        }
+  if(strstr(opt, "ne2000advanced") != NULL)    { set_ne2000advanced(opt); return;   }
+  if(strstr(opt, "floppy0") != NULL)           { set_floppy(0, opt); return;        }
+  if(strstr(opt, "floppy1") != NULL)           { set_floppy(1, opt); return;        }
+  if(strstr(opt, "sharedmemflags") != NULL)    { set_sharedmemflags(opt); return;   }
+  if(strstr(opt, "preservevidmem") != NULL)    { set_preservevidmem(opt); return;   }
+}
+
+static void parse_config_file(void)
+{
+  int x     = 0,
+      count = 0;
+
+  char ch;
+
+  while(x < total_config_lines)
+  {
+    /* Ignore comment lines (preceded with a '#' */
+    if(strncmp(conf_lines[x],"#",1) !=NULL)
+    {
+      count = 0;
+
+      /* Convert line to lower case */
+
+      while((ch = *(conf_lines[x] + count)) != '\0')
+       *(conf_lines[x] + count++) = tolower(ch);
+
+      set_config_option(conf_lines[x]);
+    }
+    x++;
+  }
+}
+
+extern BOOL load_config_file(void)
+{
+  char buffer[512];
+  int length = 0,
+      lines  = 0,
+      count  = 0,
+      x      = 0,
+      type   = 0;
+
+  char *mem_ptr;
+
+  buffer[0] = '\0';
+  read_var_val("Diva$Dir", buffer, 512);
+  if(buffer[0] == 0)
+  {
+    /*werr(0,"I dont know where your !PC application is. Please open the directory containing the PC application and re-start !PCConfig.");*/
+    werr(0,lookup_token("no_diva"));
+    return FALSE;
+  }
+
+  raise_error(file_readcat(config_path_name,&type,NULL,NULL,&length,NULL));
+
+  if(type == 0)
+  {
+    /*werr(0,"I cannot find the 'config' file, please re-install your PC Card software and try again");*/
+    werr(1,lookup_token("configrerr"));
+    return FALSE;
+    /*strcpy(config_path_name, "<PC_Config$Dir>.Resources.Default");
+    raise_error(file_readcat(config_path_name, &type,NULL,NULL,&length,NULL));
+    if(type == 0)
+    {
+      werr(0,lookup_token("configrerp"));
+      return FALSE;
+    }*/
+  }
+
+  config = def_config;
+
+  mem_ptr = malloc(length + 1);
+
+  if(mem_ptr == 0)
+    return(FALSE);
+
+  file_load(config_path_name, (int)mem_ptr);
+  *(mem_ptr + length) = '\0';
+
+  conf_lines[lines++] = mem_ptr;
+
+  while(count < length)
+  {
+    if(*(mem_ptr + count++) == '\n')
+    {
+      conf_lines[lines++] = mem_ptr + count;
+      *(mem_ptr + count -1 ) = '\0';
+    }
+  }
+
+  total_config_lines = --lines;
+
+  for(x = 0 ; x < total_config_lines ; x++)
+  {
+    DEBUG debug_output("load_config_file","(%d) %s\n",x,conf_lines[x]);
+  }
+
+  parse_config_file();
+
+  return(TRUE);
+}

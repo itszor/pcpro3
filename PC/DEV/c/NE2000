@@ -1,0 +1,781 @@
+/*
+*
+*     NET.C.NE2000 - NE2000 emulation
+*
+*
+*     26-01-93 INH    Original
+*                     1.07 Netware bugs fixed
+*                     1.09 Interrupt line is configurable
+*                     1.16 Word-wide addressing bug fix
+*     27-10-93 INH    1.22 Multicast added
+*     28-03-94        1.50 Bizarre interlocking bug
+*     07-12-94        1.67 NE2000 twice bug fix
+*     10-05-95	      1.77 New PCNE2 using callbacks
+*     02-06-95	      1.80 '0x42' in ethernet address bug
+*     01-03-96	      1.995 Clear IRQ bit for NE2000 autodetect
+*/
+#define DEBUG 0
+
+#include "kernel.h"
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "sys.h.transfer"  /* For BlockIn/Out routines */
+#include "module.h.pcne2"
+#include "dev.h.ne2000"
+/* I/O ports */
+
+#define NE2_FIRST       0x340
+#define NE2_LAST        0x35F
+
+/* Despite the letters 'DMA' occuring in many names in this module, there
+   is, of course, no actual DMA being done at all. It is merely NatSemi's
+   terminology in the DP8390 datasheet; on an NE2000 all data movement is
+   done with block INs and OUTs to a particular I/O port.
+*/
+
+
+/* Globals ======================================================== */
+
+static _kernel_swi_regs     NE2_SWIRegs;
+#define regs(x)     (NE2_SWIRegs.r[x])
+#define SWI(x) _kernel_swi(x,&NE2_SWIRegs,&NE2_SWIRegs)
+
+static void copy6 ( char *dst, char *src )
+{
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst   = *src;
+}
+
+/* NE2000 registers & structure definitions ****************************** */
+
+/* I/O Ports ------------------------------------------------- */
+
+
+#define BLOCK_DATA_PORT (NE2_FIRST+0x10)
+
+#define PROM_LEN        0x20
+#define PROM_AMASK      0x3E
+
+#define RAM_SEL_BIT     0x4000
+#define RAM_AMASK       0x3FFF
+
+#define RAM_START       0x4000
+#define RAM_LEN         0x4000
+#define RAM_LAST        (RAM_START+RAM_LEN-1)
+
+
+/* Positions of registers within NE2_NICregs array ------------*/
+
+#define  CR           0
+#define  ISR          1       /* Int status reg */
+#define  IMR          2       /* Int mask reg */
+#define  CURR         3
+#define  BNDRY        4
+#define  PSTART       5
+#define  PSTOP        6
+#define  RSR          7       /* Receive status reg */
+#define  TSR          8       /* Tx status reg */
+#define  CRDA0        9
+#define  CRDA1        10
+#define  TPSR         11
+#define  TBCR0        12
+#define  TBCR1        13
+#define  RSAR0        14   /* Remote-DMA start address */
+#define  RSAR1        15
+#define  RBCR0        16   /* Remote-DMA byte count */
+#define  RBCR1        17
+#define  RCR          18   /* Receive config reg */
+#define  TCR          19
+#define  DCR          20
+#define  PAR0         21   /* Physical addr. regs */
+#define  PAR1         22
+#define  PAR2         23
+#define  PAR3         24
+#define  PAR4         25
+#define  PAR5         26
+#define  MAR0         27   /* Multicast addr. regs */
+#define  MAR1         28
+#define  MAR2         29
+#define  MAR3         30
+#define  MAR4         31
+#define  MAR5         32
+#define  MAR6         33
+#define  MAR7         34
+#define  CLDA0        35
+#define  CLDA1        36
+#define  RNPP         37
+#define  LNPP         38
+#define  ADRC0        39
+#define  ADRC1        40
+#define  CNTR0        41
+#define  CNTR1        42
+#define  CNTR2        43
+#define  FIFO         44
+#define  NCR          45
+#define  noRd         46
+#define  noWr         47
+
+#define  ACT         128
+
+#define  REGS_MAX     48
+
+/* Command register bit definitions ---------------- */
+
+#define CR_STOP     1
+#define CR_START    2
+#define CR_TRANSMIT 4
+
+#define CR_DMAMASK  0x38
+#define CR_DMAREAD  0x8
+#define CR_DMAWRITE 0x10
+#define CR_DMASEND  0x18
+#define CR_DMAABORT 0x20
+
+
+/* RdDecodeTable & WrDecodeTable ------------------- */
+
+/* RdDecodeTable and WrDecodeTable are given an I/O offset and a page
+   number, and are used to find out which register this refers to. If the
+   table entry has the 'ACT' bit set, action must be taken (via RdRegAction
+   or WrRegAction) to read or write the data in this register.
+*/
+
+static BYTE  RdDecodeTable [16][4] =
+{
+  CR    |ACT, CR    |ACT, CR  |ACT, CR  |ACT,
+  CLDA0,      PAR0,       PSTART,   noRd,
+  CLDA1,      PAR1,       PSTOP,    noRd,
+  BNDRY,      PAR2,       RNPP,     noRd,
+  TSR   |ACT, PAR3,       TPSR,     noRd,
+  NCR,        PAR4,       LNPP,     noRd,
+  FIFO,       PAR5,       ADRC0,    noRd,
+  ISR   |ACT, CURR  |ACT, ADRC1,    noRd,
+  CRDA0 |ACT, MAR0,       noRd,     noRd,
+  CRDA1 |ACT, MAR1,       noRd,     noRd,
+  noRd,       MAR2,       noRd,     noRd,
+  noRd,       MAR3,       noRd,     noRd,
+  RSR   |ACT, MAR4,       RCR,      noRd,
+  CNTR0,      MAR5,       TCR,      noRd,
+  CNTR1,      MAR6,       DCR,      noRd,
+  CNTR2 |ACT, MAR7,       IMR,      noRd
+};
+
+static BYTE  WrDecodeTable [16][4] =
+{
+  CR    |ACT, CR    |ACT, CR  |ACT, CR  |ACT,
+  PSTART|ACT, PAR0,       CLDA0,    noWr,
+  PSTOP |ACT, PAR1,       CLDA1,    noWr,
+  BNDRY |ACT, PAR2,       RNPP,     noWr,
+  TPSR,       PAR3,       noWr,     noWr,
+  TBCR0,      PAR4,       LNPP,     noWr,
+  TBCR1,      PAR5,       ADRC0,    noWr,
+  ISR   |ACT, CURR  |ACT, ADRC1,    noWr,
+  RSAR0 |ACT, MAR0  |ACT, noWr,     noWr,
+  RSAR1 |ACT, MAR1  |ACT, noWr,     noWr,
+  RBCR0 |ACT, MAR2  |ACT, noWr,     noWr,
+  RBCR1 |ACT, MAR3  |ACT, noWr,     noWr,
+  RCR   |ACT, MAR4  |ACT, noWr,     noWr,
+  TCR,        MAR5  |ACT, noWr,     noWr,
+  DCR,        MAR6  |ACT, noWr,     noWr,
+  IMR   |ACT, MAR7  |ACT, noWr,     noWr
+};
+
+/* NE2000 board state --------------------------------------------- */
+
+static BYTE NE2_Prom   [PROM_LEN] =
+{
+  0, 0, 0, 0, 0, 0,
+  0x20, 0x00, 1, 0, 0, 0, 0, 0, 0x57, 0x57,
+  0, 0, 0, 0, 0, 0,
+  0x20, 0x00, 1, 0, 0, 0, 0, 0, 0x42, 0x42
+};
+
+static int               NE2_IntNum;
+static BYTE              NE2_Regs   [REGS_MAX];
+static int               NE2_PageNo;
+static int               NE2_DMAaddr;
+static int               NE2_DMAcount;
+static struct BufHeader *NE2_Hdr;
+static BYTE             *NE2_RAMbuf;
+static bool              NE2_Enabled;
+static bool              NE2_IntActive = false;
+
+
+/* Misc routines =============================================== */
+
+static void NE2_Enable ( bool Enable )
+{
+  regs(0) = Enable ? 1 : 0;
+  SWI ( PCNE2_Enable );
+  NE2_Enabled = Enable;
+}
+
+/* ---------------------------------------- */
+
+static void ResetNE2State ( void )
+{
+  NE2_Enable(false);
+
+  copy6 ( (char *)NE2_Prom,        NE2_Hdr->NetAddr );
+  copy6 ( (char *)NE2_Prom + 0x10, NE2_Hdr->NetAddr );
+
+  NE2_Regs[CR]   = CR_STOP | CR_DMAABORT;
+  NE2_Regs[DCR]  = 0x04;
+  NE2_Regs[IMR]  = 0;
+  NE2_Regs[TCR]  = 0;
+
+  NE2_PageNo     = 0;
+  NE2_DMAaddr    = 0;
+  NE2_DMAcount   = 0;
+
+  NE2_Regs[ISR] |= isrRESET;
+  NE2_Hdr->OvflowCount = 0;
+  NE2_IntActive  = false;
+
+}
+
+/* ---------------------------------------- */
+
+/* NetIntCheck() is called whenever something has happened which
+   might cause an interrupt. It may be called on a callback by the
+   PCNE2 module, when a packet has been received or transmitted.
+
+   As of 1/Mar/96, we allow the interrupt to be cancelled, because
+   the RM NE2000 NDIS driver uses this as a method of finding out
+   which IRQ line we're using.
+*/
+
+static void NetIntCheck ( void )
+{
+  register int t = NE2_Regs[ISR] | NE2_Hdr->TxIntStatus |
+                    NE2_Hdr->RxIntStatus;
+
+#if DEBUG
+  static int lastt=0;
+
+  if ( t != lastt )
+    SYS_trace("Status %Xh->%Xh", lastt, t);
+  lastt=t;
+#endif
+
+  if ( (t & NE2_Regs[IMR] & 0x7F) != 0 )
+  {
+     if ( !NE2_IntActive )
+     {
+#if DEBUG
+       SYS_trace("IRQ: status %X", t);
+#endif
+       NE2_IntActive=true;
+       SYS_Interrupt ( NE2_IntNum );
+     }
+  }
+  else
+  {
+    if ( NE2_IntActive )
+    {
+      NE2_IntActive=false;
+      SYS_Interrupt ( NE2_IntNum | IRQ_CLEAR_BIT );
+    }
+  }
+}
+
+/* ----------------------------------------- */
+
+static void UpdateReceiveOptions()
+{
+  BYTE *p = &NE2_Regs[MAR0];
+
+  regs(0) = NE2_Regs[RCR];   /* Receive config options */
+  regs(1) = (int) p;   /* Multicast Address filter bits */
+
+  /* Optimisation: don't do multicast if all filter bits are zero */
+
+  if (( p[0] | p[1] | p[2] | p[3] | p[4] | p[5] | p [6] | p[7] ) == 0 )
+    regs(0) &= ~RCR_MULTICAST;
+
+  SWI ( PCNE2_SetRxOptions );
+}
+
+/* Data movement routines ================================================ */
+
+/* Data movement on and off the NE2000 is done using the 'Remote DMA'
+   channel. This addresses 64K of memory space containing a 32-byte
+   PROM repeated from 0-3FFF and 8000-BFFF, and a 16K RAM buffer
+   from 4000-7FFF and C000-FFFF.  We have to be mildly cagey about
+   doing the right thing even when the DMA counters have silly values
+   in, hence the defensive programming.
+*/
+
+/* -------------------------------------------- */
+
+static void DMALengthCheck ( int len )
+{
+  /* Len should be > 0, otherwise some actions may be repeated */
+  NE2_DMAaddr  += len;
+  NE2_DMAcount -= len;
+
+  /* 8390's DMA Wraps round apparently */
+
+  if ( NE2_DMAaddr == NE2_Regs[PSTOP] << 8 )
+    NE2_DMAaddr = NE2_Regs[PSTART] << 8;
+
+  if ( NE2_DMAcount <= 0 )
+  {
+    NE2_DMAcount  &= 0xFFFF;           /* Wrap round! */
+    NE2_Regs[ISR] |= isrDMA_COMPLETE;  /* Show DMA complete */
+    NetIntCheck();                     /* Might have caused interrupt */
+  }
+}
+
+
+
+
+/* -------------------------------------------- */
+
+static void DoBlockDMA ( bool OutNotIn )
+{
+  int len, addr, pstop;
+  pstop = NE2_Regs[PSTOP] << 8;
+
+  /* This does block I/O as rapidly as possible, where it is to & from
+     NE2 RAM */
+
+  while ( NE2_DMAcount != 0 )
+  {
+    /* Can't do it if it doesn't start in RAM */
+    if ( (NE2_DMAaddr & RAM_SEL_BIT)==0)
+      break;
+
+    /* Set initial values */
+
+    addr = NE2_DMAaddr & RAM_AMASK;
+    len  = NE2_DMAcount;
+
+    /* Stop if we will hit the end of RAM */
+    if ( len + addr > RAM_LEN )
+     len = RAM_LEN-addr;
+
+    /* Stop if we will hit the PSTOP address */
+    if ( (NE2_DMAaddr+len > pstop) && (NE2_DMAaddr < pstop) )
+      len = pstop-NE2_DMAaddr;
+
+    /* Get as many data bytes as will go */
+    if ( OutNotIn )
+      len = CPU_BlockOut ( BLOCK_DATA_PORT, NE2_RAMbuf+addr, len );
+    else
+      len = CPU_BlockIn  ( BLOCK_DATA_PORT, NE2_RAMbuf+addr, len );
+
+    if ( len == 0 ) /* PC isn't playing ball */
+      break;
+
+    if ( NE2_Regs[DCR] & 1 )   /* If word DMA mode */
+      len = (len + 1) & (~1);  /* round up to next word */
+
+    DMALengthCheck(len);       /* Update pointers, wrapping, etc */
+  }
+}
+
+/* -------------------------------------------- */
+
+static void DataWrite ( int data )
+{
+  if ( NE2_Regs[DCR] & 1 )   /* If word DMA mode */
+  {
+    if ( NE2_DMAaddr & RAM_SEL_BIT )
+    {
+      NE2_RAMbuf[ NE2_DMAaddr & (RAM_AMASK-1) ] = data;
+      NE2_RAMbuf[(NE2_DMAaddr & RAM_AMASK) | 1] = data >> 8;
+    }
+    DMALengthCheck(2);
+  }
+  else
+  {
+    if ( NE2_DMAaddr & RAM_SEL_BIT )
+      NE2_RAMbuf[NE2_DMAaddr & RAM_AMASK] = data;
+
+    DMALengthCheck(1);
+  }
+}
+
+/* -------------------------------------------- */
+
+static int DataRead ( void )
+{
+  int res;
+
+  if ( NE2_Regs[DCR] & 1 )   /* If word DMA mode */
+  {
+    if ( NE2_DMAaddr & RAM_SEL_BIT )
+    {
+      res =  NE2_RAMbuf[ NE2_DMAaddr & (RAM_AMASK-1) ]
+          + (NE2_RAMbuf[(NE2_DMAaddr & RAM_AMASK) | 1] << 8);
+    }
+    else
+      res = NE2_Prom[ (NE2_DMAaddr & PROM_AMASK) >> 1 ];
+
+    DMALengthCheck(2);
+  }
+  else
+  {
+    if ( NE2_DMAaddr & RAM_SEL_BIT )
+      res = NE2_RAMbuf[NE2_DMAaddr & RAM_AMASK];
+    else
+      res = NE2_Prom[ (NE2_DMAaddr & PROM_AMASK) >> 1 ];
+
+    DMALengthCheck(1);
+  }
+  return res;
+}
+
+
+/* Write Command Reg action routine ===================================== */
+
+
+static void CommandRegAction ( int data )
+{
+  NE2_PageNo   = (data >> 6) & 3;
+  NE2_Regs[CR] =  data & (~CR_TRANSMIT);
+
+  /* Stop/start bits ================= */
+
+  if ( data & CR_STOP )
+  {
+    if ( NE2_Enabled )
+    {
+      NE2_Regs[CR] |= CR_START;     /* Strange 8390 behaviour */
+      NE2_Enable(false);
+    }
+    NE2_Regs[ISR] |= isrRESET;
+  }
+
+  else if ( data & CR_START )
+  {
+    if ( !NE2_Enabled )
+    {
+      NE2_Enable(true);
+    }
+    NE2_Regs[ISR] &= ~isrRESET;
+  }
+
+
+  /* Remote DMA actions =============== */
+
+  switch ( data & CR_DMAMASK )
+  {
+    case CR_DMAREAD:
+      DoBlockDMA ( false );
+      break;
+
+    case CR_DMAWRITE:
+      DoBlockDMA ( true );
+      break;
+
+    case CR_DMASEND:
+      SYS_trace("Unsupported: 8390 Send Command"); /* !! */
+      break;
+
+    default:
+      break;
+  }
+
+  /* Transmit start bit =============== */
+
+  if ( data & CR_TRANSMIT )
+  {
+    if ( NE2_Enabled )
+    {
+      /* Calculate address in R0 from Tx Page Start Register */
+      regs(0) =  ((NE2_Regs[TPSR] << 8) & RAM_AMASK);
+
+      /* R1 is packet length */
+      regs(1) = NE2_Regs[TBCR0] + ( NE2_Regs[TBCR1] << 8 );
+
+#if DEBUG
+      SYS_trace("Tx: page start = %X, len=%X", NE2_Regs[TPSR], regs(1) );
+      SYS_tracedata ( NE2_RAMbuf+regs(0), 16 );
+#endif
+      SWI ( PCNE2_Transmit );
+    }
+  }
+
+
+}
+
+/* Read and Write action routines ======================================= */
+
+static int RdRegAction ( int reg )
+{
+  switch ( reg )
+  {
+    case CR:
+      return NE2_Regs[CR] + (NE2_Hdr->TxInProgress ? CR_TRANSMIT : 0);
+
+    case ISR:
+      return NE2_Regs[ISR] | NE2_Hdr->TxIntStatus | NE2_Hdr->RxIntStatus;
+
+    case TSR:
+      return NE2_Hdr->TxStatus;
+
+    case RSR:
+      return NE2_Hdr->RxStatus;
+
+    case CURR:
+      return NE2_Hdr->RxCURR;
+
+    case CRDA0:
+      return (NE2_DMAaddr & 0xFF);
+
+    case CRDA1:
+      return ((NE2_DMAaddr >> 8) & 0xFF);
+
+    case CNTR2: /* Overrun counter */
+      return NE2_Hdr->OvflowCount;
+
+    default:
+      break;
+  }
+  return NE2_Regs[reg];
+}
+
+/* ---------------------------------------------------------------- */
+
+static void WrRegAction ( int reg, int data )
+{
+  switch ( reg )
+  {
+    case CR:  /* Command register */
+      CommandRegAction ( data );
+      break;
+
+    /* Writing a 1 bit to the Interrupt status register clears the
+       corresponding interrupt flag */
+
+    case ISR:
+      if ( data & (isrTX_OK | isrTX_FAIL) )
+        NE2_Hdr->TxIntStatus &= ~data;
+      if ( data & (isrRX_OK | isrRX_FAIL | isrRX_OVERRUN) )
+        NE2_Hdr->RxIntStatus &= ~data;
+      NE2_Regs[ISR] &= ~(data & 0x7F);
+
+      NetIntCheck();
+      break;
+
+    case IMR:
+      NetIntCheck();
+      break;
+
+    case CURR:
+      NE2_Hdr->RxCURR  = data;
+      break;
+
+    case BNDRY:
+#if DEBUG
+      SYS_trace("Set Bndry=%X", data);
+#endif
+      NE2_Hdr->RxBNDRY = data;
+      break;
+
+    case PSTART:
+      NE2_Hdr->RxPSTART= data;
+      break;
+
+    case PSTOP:
+      NE2_Hdr->RxPSTOP = data;
+      break;
+
+    case RSAR0:
+      NE2_DMAaddr = (NE2_DMAaddr & 0xFF00) | data;
+      break;
+
+    case RSAR1:
+      NE2_DMAaddr = (NE2_DMAaddr & 0xFF) | (data << 8);
+      break;
+
+    case RBCR0:
+      NE2_DMAcount = (NE2_DMAcount & 0xFF00) | data;
+      break;
+
+    case RBCR1:
+      NE2_DMAcount = (NE2_DMAcount & 0xFF) | (data << 8);
+      break;
+
+    case RCR:
+    case MAR0:   case MAR1:   case MAR2:   case MAR3:
+    case MAR4:   case MAR5:   case MAR6:   case MAR7:
+      UpdateReceiveOptions();
+      break;
+
+    default:
+      break;
+  }
+}
+
+
+/* I/O Handlers ========================================================= */
+
+static void NE2_Out8 ( int addr, int data )
+{
+  switch ( addr & 0x18 )
+  {
+    case 0x10:  /* Offset 10-17h: Data port */
+      DataWrite(data);
+      return;
+
+    case 0x0:   /* Offset 00-0Fh: Register write */
+    case 0x8:
+      {
+        int reg = WrDecodeTable[addr & 0xF][NE2_PageNo];
+
+        NE2_Regs[ reg & 0x3F ] = data;
+        if ( reg & ACT )
+          WrRegAction ( reg & 0x3F, data );
+      }
+      return;
+
+   case 0x18:
+      ResetNE2State();
+      return;
+  }
+}
+
+/* ---------------------------------------- */
+
+static void NE2_Out16 ( int addr, int data )
+{
+  if ( (addr & 0x18) == 0x10 )
+    DataWrite(data);
+  else
+  {
+    NE2_Out8 ( addr,   data & 0xFF );
+    NE2_Out8 ( addr+1, data >> 8   );
+  }
+}
+
+/* ---------------------------------------- */
+
+static int  NE2_In8 ( int addr )
+{
+  int tmp;
+
+  switch ( addr & 0x18 )
+  {
+    case 0x10:  /* Offset 10-17h: Data port */
+      return DataRead();
+
+    case 0x0:   /* Offset 00-0Fh: Register Read */
+    case 0x8:
+      tmp = RdDecodeTable[addr & 0xF][NE2_PageNo];
+
+      if ( tmp & ACT )
+        return RdRegAction ( tmp & 0x3F );
+
+      return NE2_Regs[ tmp & 0x3F ];
+
+   case 0x18:
+      ResetNE2State();
+      break;
+  }
+  return 0;
+}
+
+/* ---------------------------------------- */
+
+static int  NE2_In16 ( int addr )
+{
+  if ( (addr & 0x18) == 0x10 )
+    return DataRead();
+  else
+  {
+    register int tmp=NE2_In8 (addr);
+    return tmp + (NE2_In8(addr+1) << 8 );
+  }
+}
+
+/* ---------------------------------------- */
+
+static bool NE2_Poll ( void )
+{
+  /* This is put in in case the module is, for whatever reason,
+     unable to call us back */
+  NetIntCheck();
+  return false;
+}
+
+/* ---------------------------------------- */
+
+static bool NE2_Shutdown ( void )
+{
+  NE2_Enable(false);
+  return false;
+}
+
+/* ---------------------------------------- */
+
+static bool NE2_SetConfig ( void )
+{
+  char *p;
+
+  NE2_IntNum = CFG.NE2000Int;
+
+  if ( !SYS_IntAvailable (NE2_IntNum) )
+    SYS_error ( true, "cene2int", NE2_IntNum );
+
+  p = NE2_Hdr->NetAddr;
+  SYS_trace("NE2000 present on Port %X Int %d", NE2_FIRST, NE2_IntNum );
+  SYS_trace("Net address: %02X:%02X:%02X:%02X:%02X:%02X",
+              p[0], p[1], p[2], p[3], p[4], p[5] );
+
+  if ( p[3] == 0x42 || p[4] == 0x42 || p[5] == 0x42 )
+    SYS_trace("Ethernet addr may give WfWG problems");
+
+  SYS_registerEvent ( SYS_PollChain, NE2_Poll, 0 );
+  return false;
+}
+
+
+/* ---------------------------------------- */
+
+extern bool NE2_Init ( void )
+{
+
+  /* Look for PCNE2 module ******** */
+
+  regs(0) = 0;
+  regs(1) = (int) NetIntCheck;
+  regs(3) = 0;
+  SWI ( PCNE2_Initialise );
+  if ( regs(0) != 0x8390 )
+    return true;
+
+  if ( regs(3) != 177 )     /* R3 returns version number */
+    SYS_error( true, "sene2ver", "v1.77");
+
+  /* Get BufHeader & RAM buffer pointers  */
+
+  NE2_Hdr   = (struct BufHeader *) regs(1);
+  NE2_RAMbuf = (BYTE *) regs(2);
+
+  /* Set up I/O handlers ********** */
+
+  SYS_registerEvent ( SYS_SetConfig, NE2_SetConfig, 0 );
+
+  SYS_registerIO ( NE2_FIRST, NE2_LAST,
+                     NE2_In8, NE2_In16, NE2_Out8, NE2_Out16, 0 );
+  SYS_registerEvent ( SYS_Shutdown, NE2_Shutdown, 0 );
+
+  ResetNE2State();
+
+  /* Set normal receive support */
+
+  regs(0) = RCR_BROADCAST;
+  SWI ( PCNE2_SetRxOptions );
+
+  return true;
+}
+

@@ -1,0 +1,24 @@
+Set NewSystem$Dir <Obey$Dir>
+
+| Drop new !Run / !Boot files in if necessary and create new structure
+|
+IfThere System:SysPaths Then Set NewSysNeeded 0 Else Set NewSysNeeded 1
+If "<NewSysNeeded>"="1" Then Copy <NewSystem$Dir>.NewSystem <System$Dir> ~A~C~DF~L~N~P~Q~R~S~T~V
+If "<NewSysNeeded>"="1" Then CDir System:310
+If "<NewSysNeeded>"="1" Then CDir System:350
+If "<NewSysNeeded>"="1" Then CDir System:360
+If "<NewSysNeeded>"="1" Then CDir System:370
+If "<NewSysNeeded>"="1" Then CDir System:310.Modules
+If "<NewSysNeeded>"="1" Then CDir System:350.Modules
+If "<NewSysNeeded>"="1" Then CDir System:360.Modules
+If "<NewSysNeeded>"="1" Then CDir System:370.Modules
+If "<NewSysNeeded>"="1" Then Filer_Run System:!Run
+Unset NewSysNeeded
+
+| Tidy up wrongly-installed Toolbox modules
+|
+IfThere System:350.Modules.Toolbox Then Copy System:350.Modules.Toolbox System:310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+IfThere System:360.Modules.Toolbox Then Copy System:360.Modules.Toolbox System:310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+IfThere System:370.Modules.Toolbox Then Copy System:370.Modules.Toolbox System:310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+
+Error 0 Your !System structure is now guaranteed to be up-to-date and free of badly-installed Toolbox modules.

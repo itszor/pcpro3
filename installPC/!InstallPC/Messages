@@ -1,0 +1,52 @@
+# Messages file for !InstallPC
+# (c) Aleph One, September 1997
+
+_TaskName:InstallPC
+no_archives:InstallPC could not find any relevant installation archives!
+new_pc_no_room:This disc does not have enough space to store !PC and its associated resources.  Please free up some space or choose another disc before continuing.
+pc_no_room:The disc which your PC software resides on has very little space left (less than a megabyte); I'm not happy about installing upgrades until there is at least 1024K free.
+installed_too_old:Your installed version of !PC is too old to be upgraded; you should either obtain a full copy of the installer from Aleph One, or drag a newer version of !PC to this window.
+partition_no_room:Your primary DOS partition is nearly full; I need at least 512K before I can install the relevant drivers.
+scrap_no_room:The disc with your !Scrap folder on has very little room left; if this is the drive you intend to install PC on, you will need to clear a lot more space.
+drag_to:»»» Drag it to this window «««
+invalid_serial:This is not a valid PCPro serial number
+invalid_security:Security checks failed; please try entering the code again, checking it thoroughly, before contacting Aleph One support for advice.
+old_pc_present:There is already an old !PC application present in the PC folder; please move or delete old!PC / old!PCConf before continuing.
+starting_install:Starting install...
+really_quit:Really quit?
+premature_exit:If you quit the installer now, your copy of PC will probably not work until it is re-installed.  Are you sure you want to?
+noyes:No,Yes
+stupid_place:I can't install it there!
+pc_there:There's already something there called 'PC'.  If you want to install afresh in the same folder, you'll need to delete whatever is already there first.
+not_windows:This folder doesn't seem to contain a valid Windows installation (can't find WIN.COM).
+prog_new_folder:Creating PC folder
+prog_sizing:Sizing up archives
+prog_install_pc:Unpacking !PC and !PCConfig
+prog_install_boot:Updating !Boot
+prog_install_netboot:Updating network drivers
+prog_dos_sysfiles:Updating AUTOEXEC.BAT / CONFIG.SYS
+prog_config_err:Couldn't update CONFIG.SYS; your DOS drivers may not be fully installed.
+prog_autoexec_err:Couldn't update AUTOEXEC.BAT; your DOS drivers may not be fully installed.
+prog_install_netlinks:Installing NetLinks
+prog_install_netdocs:Installing NetLinks docs
+prog_preserve_pcconfig:Rewriting !PC.Config file
+prog_preserve_run:Preserving Net Links support
+prog_preserve_run_problem_1:Couldn't open the necessary files for preserving your NetLinks settings.
+prog_preserve_run_problem_2:I was confused by your old !PC.!Run file; NetLinks support may not have been preserved properly.
+prog_install_done:Finishing up
+prog_install_drivers:Unpacking drivers
+taskwin_bomb:One of the Unzip tasks has unexpectedly died; please contact Aleph One support for advice!
+wrong_partition:No version of DOS or Windows seems to be present on this partition; either you've not installed one (i.e. quit now and do so!) or this isn't your boot partition.
+cdir_prob:Couldn't create a folder in which to preserve your old !PC / !PCConfig; is the directory full?
+preserve_prob:I couldn't preserve your old !PC / !PCConfig; are they in the same folder?  Have you left old!PC folders around from previous installations?
+bootinf0:Acorn's latest ToolBox modules, needed for running all parts of PCPro.
+bootinf1:A patch to fix various bugs in CDFS.
+bootinf2:A patch to allow RISC OS (and !PC) to recognise the extra 'Windows' keys found on modern keyboards.
+bootinf3:Upgrade so that RISC OS 3.5 users can access DOS partitions bigger than 32MB from RISC OS.
+bootinf4:Utility which puts the PC Card into a power-saving mode when the RISC PC starts up.
+bootinf5:A script to ensure most common extensions on DOS files (DOC, TXT etc.) are shown as the appropriate filetypes RISC OS.
+bootinf6:A utility to stop you accidentally deleting your DOS partitions.
+bootinf7:A patch to stop the Filer from chickening out when it comes to sorting large directories.
+whatsthis:What's this
+pcsmsg:Message from InstallPC
+no_new_netlinks:Cannot find NetLinks archive to upgrade from; send your PCPro 3 + old NetLinks disc to obtain a suitable (free) upgrade.  Until you do, you will not be able to use the NetLinks software.

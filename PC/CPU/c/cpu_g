@@ -1,0 +1,1119 @@
+/*
+ *   DIVAPC ARM C source
+ *
+ *   CPU.C.CPU_g - Gemini CPU interface routines
+ *
+ *  Versions
+ *   1.64  23-11-94  INH  Original, v1.64 or thereabouts
+ *   1.75                 DMA support/callbacks revamp
+ *   1.88		  Power save on sleep mode
+ *   1.89		  Cache autodetect
+ *   2.00  14-11-95       Now uses HPC
+ *   2.12 1997.09.29 W    Trace for IO accesses added
+ *   2.15 1997.10.14 RW   CPUs speedups
+ *   2.17 1997.12.03 W    Suspend requests removed - fixes win95
+                            'hang till CTL-ALT-DEL'
+ *        1998.03.11 MB   VESA 2.0 nearing completion: video RAM now reports
+ *                          from SCAMP register 0x41, also supports new
+ *                          PCMem to allocate VRAM as part of Gemini's memory
+ *                          allocation, and RAM isn't zeroed to start with.
+ *  2.21a 1998.03.23      Pays attention to CFG.IncludeVRAM properly
+ */
+
+#include "kernel.h"
+#include "swis.h"
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.hrdstate"
+#include "sys.h.config"
+
+#include "cpu.h.gemini"
+#include "cpu.h.cpus_g"
+#include "cpu.h.hpc"
+#include "cpu.h.cpu"
+#include "cpu.h.dma"
+#include "sys.h.cpu"
+#include "sys.h.rom"
+#include "sys.h.transfer"
+
+#include "vid.h.vids"
+#include "vid.h.modes"
+
+#include "dev.h.ideem"
+
+#include "module.h.pcsupport"
+#include "module.h.pcmemswis"
+
+
+static char demotimeout[12]={0xb2,0x40,0x8c,0xff,0x02,0x54,
+                             0xbd,0x6e,0x32,0x83,0xe7,0x5f};
+
+#define DEMOTIMEOUT \
+    { \
+      int i; \
+      for (i=0, srand('Diva'); i!=12; i++) \
+        demotimeout[i] = demotimeout[i] ^ rand()%0xff; \
+      SYS_error( true, demotimeout ); \
+      exit(1); \
+    }
+
+
+/* Globals **************************************************** */
+
+static int   CPU_MemSize, CPU_VRAMSize;
+
+BYTE *CPU_MemoryBase=NULL;  /* Beginning of logical CPU area map */
+int  *CPU_pTimerWord;  /* Timer word in support module */
+
+static bool  CPU_ResetInProgress;   /* True if reset in progress */
+
+static int   CPU_HWType;      /* Card type */
+
+/* PC addresses of available block of shared memory */
+static uint  CPU_SharedMemStart; /* First byte */
+static uint  CPU_SharedMemEnd;   /* Last byte PLUS ONE for convenience */
+
+#define HW_GEMINI1 0
+#define HW_GEMINI2 1
+
+
+/* test routines ******************************************************* */
+/* this routine allows IO traps to generate trace info
+   Called from IOread/write functions of CPUs_g with
+   R0= addres of trap
+   R1= value written
+   R2= access type (read/write 8/16 bit. IO is assumed */
+/* mode values taken to match handler struct offsets in CPUs_g */
+#define h_read8 0-16
+#define h_read16 4-16
+#define h_write8 8-16
+#define h_write16 12-16
+
+#pragma -s1
+void CPU_TraceIO (int addr, int value, int mode)
+{
+  switch (mode)
+  {
+    case h_read8:
+      SYS_trace ("read8 from IOaddr:%x",addr);
+      break;
+
+    case h_write8:
+      SYS_trace ("write8 to IOaddr:%x, data:%x",addr,value);
+      break;
+
+    case h_read16:
+      SYS_trace ("read16 from IOaddr:%x",addr);
+      break;
+
+    case h_write16:
+      SYS_trace ("write16 to IOaddr:%x, data:%x",addr,value);
+      break;
+  }
+}
+#pragma -s0
+
+
+/* Hardware routines *************************************************** */
+
+static void delay( int nticks )
+{
+  int start = SYS_GetTime();
+  while ( (SYS_GetTime() - start) < nticks ) ;
+}
+
+/* --------------------------------- */
+
+#define INT_AVAIL_MASK 0xDFFA /* All except 0, 2 and 13 */
+
+static int PICR_value = 0;
+static int IRQbits [16] =
+{
+  0,          PICR_IRQ1, 0,          PICR_IRQ3,
+  PICR_IRQ4,  PICR_IRQ5, PICR_IRQ6,  PICR_IRQ7,
+  PICR_IRQ8,  PICR_IRQ8, PICR_IRQ10, PICR_IRQ11,
+  PICR_IRQ12, 0,         PICR_IRQ14, PICR_IRQ15
+};
+
+/* --------------------------------- */
+
+void CPUS_CauseInt ( int IRQno )
+{
+  int b;
+
+  //if (IRQno == 14)
+  /*{
+    IDEEm_IRQ14();*/
+    //SYS_trace("IRQ14 delivered");
+  /*}*/
+
+  b = IRQno & 0xFFFF; /* Assume IRQ_CLEAR_BIT is 0x10000 ! */
+  if ( b > 15 )
+    return;
+
+  b = IRQbits[b];
+
+  /* Ensure bit is clear */
+  PICR_value &= ~b;
+  CPUS_Write ( PICR, PICR_value );
+  if ( IRQno & IRQ_CLEAR_BIT )
+    return;
+
+  CPUS_Write ( PICR, PICR_value ); /* Short delay */
+  PICR_value |= b;
+  CPUS_Write ( PICR, PICR_value );
+}
+
+/* ------------------------------------------ */
+
+struct two_int
+{
+  int val;
+  int tag;
+};
+
+#define MEG 1024*1024
+
+#define RAMSIZE_COUNT 16
+static struct two_int ramsizes[RAMSIZE_COUNT] =
+{
+  { 32*MEG, CFGR_MEM_32M },
+  { 28*MEG, CFGR_MEM_28M },
+  { 24*MEG, CFGR_MEM_24M },
+  { 20*MEG, CFGR_MEM_20M },
+  { 16*MEG, CFGR_MEM_16M },
+  { 14*MEG, CFGR_MEM_14M },
+  { 12*MEG, CFGR_MEM_12M },
+  { 10*MEG, CFGR_MEM_10M },
+  { 8*MEG, CFGR_MEM_8M },
+  { 7*MEG, CFGR_MEM_7M },
+  { 6*MEG, CFGR_MEM_6M },
+  { 5*MEG, CFGR_MEM_5M },
+  { 4*MEG, CFGR_MEM_4M },
+  { 3*MEG, CFGR_MEM_3M },
+  { 2*MEG, CFGR_MEM_2M },
+  { 1*MEG, CFGR_MEM_1M }
+};
+
+/* ------------------------------- */
+
+static int RoundSize ( int ramsize )
+{
+  int i;
+  for ( i=0; i < RAMSIZE_COUNT; i++ )
+  {
+    if ( ramsize >= ramsizes[i].val )
+      return i;
+  }
+  return RAMSIZE_COUNT-1;
+}
+
+/* ------------------------------- */
+
+static int MISCR_val;
+static int CFGR_val;
+static int REV2R_val;
+
+/* ------------------------------- */
+
+static void SetHold(bool OnNotOff)
+{
+  int i;
+
+  if ( OnNotOff )
+  {
+    MISCR_val |= MISCRwr_BREQ;
+    CPUS_Write ( MISCR, MISCR_val );
+
+    for ( i=0; i < 200; i++ )
+    {
+      if ( CPUS_Read(MISCR) & MISCRrd_HLDA )
+        return;
+    }
+
+    SYS_trace("HLDA didn't enable");
+  }
+  else
+  {
+    MISCR_val &= ~MISCRwr_BREQ;
+    CPUS_Write ( MISCR, MISCR_val );
+
+    for ( i=0; i < 200; i++ )
+    {
+      if ( (CPUS_Read(MISCR) & MISCRrd_HLDA) == 0 )
+        return;
+    }
+
+    SYS_trace("HLDA didn't disable");
+  }
+}
+
+
+/* ------------------------------- */
+
+struct adrblk
+{
+  int armbase;
+  int blksize;
+};
+
+/* -------------------------------- */
+
+extern void CPU_FrameVideoAccess ( bool copy_on_switch )
+{
+  if (copy_on_switch)
+    CPUS_Write ( MMCR, MMCR_A0xxx(mRAM) | /* video memory */
+                       MMCR_A8xxx(mRAM) | /* video memory */
+                       MMCR_B0xxx(mMBOX) |
+                       MMCR_B8xxx(mMBOX) |
+                       MMCR_C0xxx(mMBOX) | /* mach32 ROM emulation */
+                       MMCR_C8xxx(mMBOX) |
+                       MMCR_D0xxx(mMBOX) |
+                       MMCR_D8xxx(mMBOX) |
+                       MMCR_E0xxx(mRAM) |   /* Shared memory region */
+                       MMCR_E8xxx(mRAM) |
+                       MMCR_F0xxx(mRDONLY) |
+                       MMCR_F8xxx(mRDONLY) |
+                       MMCR_HighROM(mRDONLY) );
+  else
+    CPUS_Write ( MMCR, MMCR_A0xxx(mMBOX) |
+                       MMCR_A8xxx(mMBOX) |
+                       MMCR_B0xxx(mMBOX) |
+                       MMCR_B8xxx(mMBOX) |
+                       MMCR_C0xxx(mMBOX) | /* mach32 ROM emulation */
+                       MMCR_C8xxx(mMBOX) |
+                       MMCR_D0xxx(mMBOX) |
+                       MMCR_D8xxx(mMBOX) |
+                       MMCR_E0xxx(mRAM) |   /* Shared memory region */
+                       MMCR_E8xxx(mRAM) |
+                       MMCR_F0xxx(mRDONLY) |
+                       MMCR_F8xxx(mRDONLY) |
+                       MMCR_HighROM(mRDONLY) );
+}
+
+static bool HardwareInit ( int RAMsize )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  struct adrblk blocks[MBCR_regs];
+  int i, s, ctlword, pcaddr, ramsize_index;
+  #define SADataCacheOff "cache iw"
+  #define SADataCacheOn  "cache idw"
+
+  /* Hardware type determination */
+
+  REV2R_val = 0;
+
+  CPUS_Write ( REV2R, REV2R_REV2 );  /* Set type-detect bit */
+
+  if ( (CPUS_Read (MASR) & MASR_REV2MASK) == MASR_REV2MASK )
+  {
+    SYS_trace("Revision 2 ASIC");
+    CPU_HWType = HW_GEMINI2;
+
+    if ( CFG.ASICOptions & AO_NO_WRFIFO16 )
+      REV2R_val = REV2R_ENCLKO;
+    else
+      REV2R_val = REV2R_ENCLKO | REV2R_FIFO16 | REV2R_FAEN;
+
+    if ( CFG.L1Cache == L1C_WRBACK )
+      REV2R_val |= REV2R_WBCPU;
+  }
+  else
+    CPU_HWType = HW_GEMINI1;
+
+  CPUS_Write ( REV2R, REV2R_val );
+
+  /* Start out with A20GATE enabled for Intel processors */
+
+  MISCR_val = MISCRwr_A20GATE
+    | ((CFG.ASICOptions & AO_NO_WRFIFO) ? 0 : MISCRwr_ENWRFIFO );
+
+  CPUS_Write ( XREG, 1 );           /* In case it's a new card */
+  CPUS_Write ( MISCR, MISCR_val );  /* Put CPU in reset */
+
+  /* Send all accesses to mailbox, except ROM area which is shadowed */
+
+  CPUS_Write ( MMCR, MMCR_A0xxx(mMBOX) |
+                     MMCR_A8xxx(mMBOX) |
+                     MMCR_B0xxx(mMBOX) |
+                     MMCR_B8xxx(mMBOX) |
+                     MMCR_C0xxx(mMBOX) |
+                     MMCR_C8xxx(mMBOX) |
+                     MMCR_D0xxx(mMBOX) |
+                     MMCR_D8xxx(mMBOX) |
+                     MMCR_E0xxx(mRAM) |   /* Shared memory region */
+                     MMCR_E8xxx(mRAM) |
+                     MMCR_F0xxx(mRDONLY) |
+                     MMCR_F8xxx(mRDONLY) |
+                     MMCR_HighROM(mRDONLY) );
+
+  CPU_SharedMemStart = 0xE0000;  /* Set appropriate addresses */
+  CPU_SharedMemEnd   = 0xF0000;
+
+  CPUS_Write ( IOMCR, IOMCR_DMA_mbox |   /* For emulated DMA */
+                      IOMCR_HDD_mbox |
+                      IOMCR_Page1_mbox |
+                      IOMCR_COM2_mbox |
+                      IOMCR_Page2_mbox |
+                      IOMCR_Page3_mbox |
+                      IOMCR_340h_mbox |
+                      IOMCR_LPT2_mbox |
+                      IOMCR_LPT1_mbox |
+                      IOMCR_FDD_mbox |
+                      IOMCR_COM1_mbox |
+                      IOMCR_8259_real |
+                      IOMCR_8254_real );
+
+  PICR_value = 0;
+  CPUS_Write ( PICR, 0 );
+
+  for ( i=0; i<GPIO_regs; i++)
+    CPUS_Write ( GPIO(i), 0 );     /* Disable GPIO decodes */
+
+  CPUS_Write ( FDCTRL, 0 );
+
+  CPUS_Write ( TESTR, TESTR_ENDMA ); /* Perversely, disables DMA! */
+
+  /* Now sort out RAM size; if < 1M, use 1M */
+
+  ramsize_index = RoundSize ( RAMsize );
+
+  /* Attempt to allocate this much RAM ---------- */
+  /* We need to turn off the SA data cache whilst doing this to work round an
+     interrupt hole in RISCOS/SA */
+
+  if (SApresent) OScommand (SADataCacheOff);
+
+  R.r[0] = ramsizes[ramsize_index].val;
+  R.r[1] = 0;
+  if (CFG.IncludeVRAM)
+    R.r[1] = 1; /* 'include VRAM in this size' flag */
+  err = _kernel_swi ( PCMem_SetMem, &R, &R );
+  if ( err != NULL )
+  {
+    SYS_trace("Error from SetMem SWI: %s", err->errmess );
+    if (SApresent) OScommand (SADataCacheOn); /* turn cache back on before failing */
+    return false;
+  }
+  CPU_VRAMSize = 0;
+  if (CFG.IncludeVRAM)
+    CPU_VRAMSize = R.r[0];
+
+  if (SApresent) OScommand (SADataCacheOn);
+
+  /* Now read what memory we have actually got ------ */
+
+  R.r[0] = (int) blocks;
+  err = _kernel_swi ( PCMem_GetMemTbl, &R, &R );
+  if ( err != NULL )
+  {
+    SYS_trace("Error from GetMemTbl SWI: %s", err->errmess );
+    return false;
+  }
+
+  CPU_MemoryBase = (BYTE *)R.r[1];  /* Logical addr of memory */
+  RAMsize = R.r[2];
+
+  if ( RAMsize < 1 * MEG )
+  {
+    SYS_trace("Allocated only %d bytes", RAMsize );
+    return false;
+  }
+
+  /* Set config register ------------------------ */
+
+  ramsize_index = RoundSize ( RAMsize + (2*MEG) );
+
+  CFGR_val = ramsizes[ramsize_index].tag |
+             CFGR_RAM_CACHED | CFGR_RDONLY_CACHED;
+  /* Leave CFGR_UMB_CACHED off, for shared memory */
+
+  if ( CFG.L2Size == 128 ) /* This works, but is very slack! any other value
+gives either 32K (gemini i) OR 512k (GEMINI II)*/
+    CFGR_val |= CFGR_CACHE_128K;
+
+  CPUS_Write ( CFGR, CFGR_val );
+
+  CPU_MemSize = ramsizes[ramsize_index].val;
+
+  /* Set memory map control registers */
+
+  pcaddr = ctlword = 0;
+
+  for ( i=0; i < MBCR_regs; i++ )
+  {
+    s = blocks[i].blksize;
+
+    if ( s != 0 )
+    {
+      switch ( s )
+      {
+        case 256*1024:  ctlword = MBCR_256K;  break;
+        case 512*1024:  ctlword = MBCR_512K;  break;
+        case 1*MEG:     ctlword = MBCR_1M;    break;
+        case 2*MEG:     ctlword = MBCR_2M;    break;
+        case 4*MEG:     ctlword = MBCR_4M;    break;
+        case 8*MEG:     ctlword = MBCR_8M;    break;
+
+        default:
+          SYS_trace("EEK! Bad block size %X\n", s );
+          return false;
+      }
+
+      /* Set control word */
+
+      ctlword |= MBCR_PCADDR ( pcaddr ) |
+                 MBCR_ARMADDR ( blocks[i].armbase );
+    SYS_trace("MCBR(%d):ARMBase:%x = PCaddr:%x, size:%x",i,blocks[i].armbase,pcaddr,s);
+
+      pcaddr += s;
+    }
+
+    CPUS_Write ( MBCR(i), ctlword );
+  }
+
+
+  return true;
+}
+
+/* ------------------------------------ */
+
+extern bool CPU_L2Cache( bool on )
+{
+  if (on)
+    CPUS_Write( REV2R, REV2R_val );
+  else
+    CPUS_Write( REV2R, REV2R_val&(0xffffffff^(REV2R_WBMODE|REV2R_INVONHIT)));
+}
+
+static bool CPU_Reset( void )
+{
+  int i, x;
+
+  CPU_ResetInProgress = true;
+
+  /* Remove powergood signal */
+
+  MISCR_val &= ~MISCRwr_PWRGOOD;
+  CPUS_Write ( MISCR, MISCR_val );
+
+
+  /* Initialise level 2 cache & clear RAM, if necessary */
+
+   /* (i) Get 486 in hold state */
+
+  SetHold ( true );
+
+   /* Clear Memory, avoiding ROM area */
+
+  memset ( CPU_MemoryBase, 0, ROM_First );
+
+  /* Don't zero the RAM because we'll stomp on the VRAM */
+
+  /*if ( CPU_MemSize > ROM_First+ROM_Length )
+    memset ( CPU_MemoryBase + (ROM_First+ROM_Length), 0,
+             CPU_MemSize - (ROM_First+ROM_Length) );
+  SYS_trace("if ( CPU_MemSize > ROM_First+ROM_Length )");*/
+
+  /* Allow L2 cache to invalidate anything pointing at ROM */
+
+  memcpy ( CPU_MemoryBase + ROM_First, CPU_MemoryBase + ROM_First,
+            ROM_Length );
+
+  /* Deassert BREQ */
+
+  SetHold ( false );
+
+  /* Enable cache */
+
+  if ( CFG.L2Cache != L2C_NONE )
+    MISCR_val |= MISCRwr_ENCACHE;
+
+  CPUS_Write ( MISCR, MISCR_val );
+
+  /* Reset interrupt generation */
+
+  PICR_value = 0;
+  CPUS_Write ( PICR, 0 );
+
+  delay(50);
+
+  /* Clear mailbox */
+
+  for ( i=0; i < 100; i++ )
+  {
+    x = CPUS_Read ( MASR );
+    if ( (x & MASR_ACCESS) == 0 )
+      break;
+
+    if ( x & MASR_WRITE )
+      CPUS_Read ( MDR );
+    else
+      CPUS_Write ( MDR, 0 );
+  }
+
+  /* Set powergood */
+
+  MISCR_val |= MISCRwr_PWRGOOD;
+  CPUS_Write ( MISCR, MISCR_val );
+  delay(20);
+
+  /* Turn Level-2 writeback cache on if needed */
+  if ( CPU_HWType == HW_GEMINI2 &&
+       (CFG.L2Cache == L2C_WRBACK || CFG.L2Cache == L2C_AUTO) )
+  {
+    REV2R_val |= REV2R_WBMODE | REV2R_INVONHIT;
+    CPUS_Write ( REV2R, REV2R_val );
+  }
+
+  return false;
+}
+
+
+/* ROM_load------------------------- */
+
+/* This *must* be called after the shared memory has been allocated
+   and CPU_MemoryBase is set properly!
+*/
+
+static bool ROM_load( char * filename, int PCaddr, int maxsize )
+{ int size;
+  FILE *infile;
+  char *s;
+
+  infile = fopen (filename, "rb");
+
+  if ( infile == NULL )
+  {
+    SYS_error( true, "feromfile", filename);
+    return false;
+  }
+
+  SetHold ( true );
+  size=fread( CPU_MemoryBase+PCaddr, 1, maxsize, infile );
+  SetHold ( false );
+
+  fclose(infile);
+
+  if ( size != maxsize )
+  {
+    SYS_error( true, "feromlen", filename, maxsize, size );
+    return false;
+  }
+
+  return true;
+}
+
+static void LoadExt(void)
+{
+  FILE *infile;
+
+  infile = fopen ("<Diva$Dir>.Ext", "rb");
+  if ( infile == NULL/* || s==(char*)CPU_MemoryBase+PCaddr+maxsize*/)
+  {
+    SYS_error( true, "extprob");
+    return;
+  }
+  fread( CPU_MemoryBase+(256<<10)+4, 1, 64, infile );
+  *(int*)(CPU_MemoryBase+(256<<10)) = 0x56E423FC;
+  fclose(infile);
+}
+
+/* A20Gate routines ******************************************** */
+
+/* First version of Gemini hardware used the A20Gate built into
+   the ASIC. Unfortunately this isn't quite correct for CPUs with
+   writeback caches
+*/
+
+static void CPU_SetA20_Rev1 ( int OnNotOff )
+{
+   if ( OnNotOff )
+     MISCR_val |= MISCRwr_A20GATE;
+   else
+     MISCR_val &= ~MISCRwr_A20GATE;
+
+   CPUS_Write ( MISCR, MISCR_val );
+}
+
+/* Later boards have an external latch which does A20Gate correctly;
+   this is wired to bit 0 of the external register XREG. The on-chip
+   A20Gate must be set 'on' all the time for this to work.
+*/
+
+static void CPU_SetA20_Rev2 ( int OnNotOff )
+{
+   if ( OnNotOff )
+     CPUS_Write ( XREG, 1 );
+   else
+     CPUS_Write ( XREG, 0 );
+}
+
+/* CPU_SetConfig() ====================================== */
+
+static unsigned int mark=0x646D7450;
+static time_t inst_time;
+
+static bool CPU_SetConfig(void)
+{
+
+  /* Quick check to see if hardware is there */
+
+  SYS_BannerText("Hardware check");
+  CPUS_Write ( REV2R, 0 ); /* Only needed for Gemini-2's */
+  if ( (CPUS_Read(MASR) & MASR_REV2MASK) != 0 )
+    SYS_error ( true, "henotfound" );
+  SYS_BannerText("");
+
+  /* Now try to initialise hardware & allocate memory */
+
+  SYS_BannerText("Allocating RAM");
+  if ( !HardwareInit ( CFG.PCRAM << 20 ) )
+    SYS_error ( true, "sepcram" );
+  SYS_BannerText("");
+
+  SYS_BannerText("Loading BIOS");
+  ROM_load("<Diva$Dir>.ROM", ROM_First, ROM_Length);
+#ifdef PC_DEMO
+  /* Times out two weeks after installation */
+  if ( difftime(time(NULL), inst_time) > (14*24*60*60) )
+    DEMOTIMEOUT;
+#endif
+  /*SYS_BannerText("Loading ATIem ROM");
+  ROM_load("<Diva$Dir>.ATIem", 0xC0000, 58);*/
+  SYS_BannerText("");
+
+  /* New A20 Gate option */
+
+  SYS_State.SetA20gate = CPU_SetA20_Rev1;
+
+  if ( (CPU_HWType == HW_GEMINI1 && CFG.L1Cache == L1C_WRBACK) ||
+       (CFG.ASICOptions & AO_NEWA20)  )
+  {
+    SYS_trace("Gemini-1 A20 mod");
+    SYS_State.SetA20gate = CPU_SetA20_Rev2;
+  }
+
+  return false;
+}
+
+
+/* CPU_Run and related routines ************************************* */
+
+static void trace_cb_list( Callback** _cb )
+{
+  Callback *cb = *_cb;
+
+  while (cb != NULL)
+  {
+    SYS_trace("callback @ %08x; call %08x r0=%08x", cb, cb->fn, cb->R0val);
+    cb = cb->next;
+  }
+}
+
+static int xy=0;
+
+static void CPU_TimedRun ( int timeout_cs )
+{
+  //_kernel_swi_regs R;
+  //char iof[32]="<Diva$Dir>.IO_H";
+  //char memf[32]="<Diva$Dir>.Mem_H";
+
+  *CPUS_pStopFlag = 0;
+  *CPU_pTimerWord = timeout_cs;
+
+  do
+  {
+#ifdef PC_DEMO
+    if (xy==0) xy=*((int*)0x10C)+71999; /* ~12 minutes*/
+    if ( *((int*)0x10C) > xy )
+      DEMOTIMEOUT;
+#endif
+    /*R.r[0] = 10; R.r[1] = (int) iof; R.r[2] = 0xffd;
+    R.r[4] = (int) &SYS_State.IOhandlers; R.r[5] = R.r[4] + (sizeof(Handler)*256);
+    _kernel_swi( OS_File, &R, &R );
+    R.r[0] = 10; R.r[1] = (int) memf; R.r[2] = 0xffd;
+    R.r[4] = (int) &SYS_State.Memhandlers; R.r[5] = R.r[4] + (sizeof(Handler)*24);
+    _kernel_swi( OS_File, &R, &R );*/
+    CPUS_Run();
+    //_kernel_swi( PCSupport_GetInternalAddr, &R, &R );
+    //trace_cb_list( (Callback**) (R.r[3]-8) );
+    SYS_DoCallbacks();
+    *CPUS_pStopFlag = 0;
+  }
+    while ( *CPU_pTimerWord > 0 );
+}
+
+/* ----------------------- */
+
+void CPU_StopRun ( void )
+{
+  *CPU_pTimerWord = 0;
+  *CPUS_pStopFlag = 1;
+}
+
+/* ----------------------- */
+
+void CPU_ResetOK ( void ) /* Called to say reset succeeded */
+{
+  CPU_ResetInProgress = false;
+  CPU_StopRun();
+}
+
+/* ----------------------- */
+
+static void EnsureReset( void )
+{
+  int i;
+
+  for (i=0; i<5; i++)
+  {
+    CPU_TimedRun(100);
+    if ( !CPU_ResetInProgress )
+      return;
+
+    SYS_trace ("Hard Reset");
+    CPU_Reset();
+  }
+
+  SYS_error ( true, "henoreset");
+}
+
+/* ----------------------- */
+
+void CPU_Run( bool suspend )
+{
+  suspend = suspend; /*not used*/
+
+  if ( CPU_ResetInProgress )
+    EnsureReset();
+
+  HPC_Unsuspend();
+
+  CPU_TimedRun ( 2 );  /* Run for 10-20ms */
+
+#if 0     /* remove suspend calls, as not needed for gemini*/
+  if ( suspend )
+  {
+    HPC_Suspend();
+    CPU_TimedRun (20); /* !!.2 second 'suspend' timeout */
+    if ( !HPC_Suspended )
+      SYS_trace("Suspend failed - ignored");
+  }
+#endif
+}
+
+/* Control routines ************************************** */
+
+/* These put some 8-bit I/O ports in the same place as SCAMP
+   registers used to be. This lets us emulate bits of SCAMP
+   if necessary.
+*/
+
+
+static int Ctrl_Index=0;
+
+static int ExtWord=0, ewp=0;
+
+static int Ctrl_Rd8 ( int addr )
+{
+  if ( addr == 0xED )
+  {
+    switch ( Ctrl_Index )
+    {
+      case 0x40:  /* Mem size in Mb */
+        return (CPU_MemSize >> 20) - (CPU_VRAMSize >> 20);
+
+      case 0x41: /* VRAM size in Mb
+                    (NOT part of SCAMP, but it's not as if we're
+                    short of registers ;-)
+                 */
+        return (CPU_VRAMSize >> 20);
+
+      case 0x42: /* Emulated display size in Kb (shifted down 5 places) */
+                 /* undynamic: return (CFG.VideoRAM >> 5);*/
+        return ( VIDS_FreeMemory(VID_MemorySize) >> 15 );
+
+#if 0
+      case 0xF0:
+        LoadExt();
+        ewp = 0;
+        break;
+#endif
+
+      default:
+        break;
+    }
+    return 0;
+  }
+  else if ( addr == 0xEC )
+    return Ctrl_Index;
+
+  return 0xFF;
+}
+
+/* -------------- */
+
+static void Ctrl_Wr8 ( int addr, int data )
+{
+  if ( addr == 0xEC )
+    Ctrl_Index = data;
+  else if ( addr == 0xED )
+  {
+    switch ( Ctrl_Index )
+    {
+      case 0x40: /* Misc control register */
+        if ( data & 1 ) /* Cyrix/IBM DX2 CPU detected */
+        {
+          if ( CPU_HWType == HW_GEMINI1 )
+          {
+            SYS_trace("Auto detect A20 mod");
+            MISCR_val |= MISCRwr_A20GATE;  /* Enable internal A20gate */
+            CPUS_Write(MISCR, MISCR_val);
+            SYS_State.SetA20gate = CPU_SetA20_Rev2;
+          }
+          else if ( CPU_HWType == HW_GEMINI2 )
+          {
+            SYS_trace("Auto detect G2 wrback CPU");
+            REV2R_val |= REV2R_WBCPU;
+            CPUS_Write(REV2R, REV2R_val);
+          }
+        }
+        break;
+
+#if 0
+      case 0xF0:
+        ExtWord |= data<<((ewp++%4)<<3);
+        /*SYS_trace("ExtWord = %08x (%d)", ExtWord, ewp);*/
+        if (ewp%4) break;
+        switch (ExtWord)
+        {
+#define MOVS_PC_R14 0xE1B0F00E
+          case 0x28167E26 : /* VESA speedups disable hack; gross or what? */
+            *(int*)(&VID_SwitchPageCopying)=MOVS_PC_R14;
+            *(int*)(&CPU_FrameVideoAccess)=MOVS_PC_R14;
+            break;
+        }
+        ExtWord = 0;
+#endif
+
+        break;
+
+      default:
+        break;
+    }
+  }
+}
+
+/* DMA / Memory mapping routines ****************************** */
+
+static Callback BREQ_CB;
+
+static void DoBusReq ( int flags )
+{
+  int Tstart;
+  NotUsed(flags);
+
+  MISCR_val |= MISCRwr_BREQ;
+  CPUS_Write ( MISCR, MISCR_val );
+
+  Tstart = SYS_GetTime();
+
+  do
+  {
+    *CPUS_pStopFlag = 1;
+    CPUS_Run();   /* This runs once, even though stopflag is 1 */
+
+    /* We don't CPU_pTimerWord as a timer; PCCOMM may call CPU_StopRun,
+       which will cause premature timeouts */
+
+    if ( (SYS_GetTime() - Tstart) > 500 ) /* 5-sec timer */
+    {
+      SYS_trace("Bus Request failed");
+      SYS_error(true, "hecrashed");
+    }
+  }
+    while ( (CPUS_Read(MISCR) & MISCRrd_HLDA) == 0 );
+
+  DMA_BusAck();   /* Do the DMA thang */
+
+  /* Reset bus request bit */
+  MISCR_val &= ~MISCRwr_BREQ;
+  CPUS_Write ( MISCR, MISCR_val );
+
+  /* Exit: note that this is done on a callback; any other things which
+      might have set a callback in the meantime will be processed next.
+      This is one point where multiple CPUS_Run's may happen between
+      a callback being set and it actually being executed. */
+
+}
+
+/* ------------------------ */
+
+void CPU_BusRequest ( int mode, uint first, uint last )
+{
+  NotUsed(first);
+  NotUsed(last);
+  NotUsed(mode);
+
+  SYS_SetCallback ( &BREQ_CB, DoBusReq, 0 );
+}
+
+/* ----------------------- */
+
+/* takes start address and length: checks length of mappable
+ * memory above PCaddr, returning this
+ * length, up to max of the length requested */
+
+int CPU_PCtoARMcheck ( uint PCaddr, int len )
+{
+  uint limit = 0;
+
+  if ( len >= 0 )  /* Normal case: limit = number of bytes
+                      mappable after PCaddr */
+  {
+    if ( PCaddr < 0xA0000 )
+      limit = 0xA0000-PCaddr;
+    else if ( PCaddr >= 0x100000 && PCaddr < CPU_MemSize)
+      limit = CPU_MemSize - PCaddr;
+  }
+  else /* Limit = no. of bytes before PCaddr */
+  {
+    len = -len;
+
+    if ( PCaddr < 0xA0000 )
+      limit = PCaddr + 1;
+    else if ( PCaddr >= 0x100000 && PCaddr < CPU_MemSize)
+      limit = PCaddr - 0x100000 + 1;
+  }
+
+  if ( limit == 0 ) SYS_trace("Unmapped address xlate!");
+
+  return ((uint)len < limit) ? len : limit;
+}
+
+/* ---------------- */
+
+BYTE * CPU_PCtoARMaddr ( uint PCaddr )
+{
+  return CPU_MemoryBase+PCaddr;
+}
+
+/* Shared memory allocator ****************************** */
+
+bool CPU_AllocSharedMem ( struct SharedMem *pSM )
+{
+  /* Allocate from top of shared memory chunk (SharedMemEnd is the last
+     byte plus one. Should only be called after hardware has been
+     initialised */
+
+  if ( CPU_MemoryBase == NULL ||
+       CPU_SharedMemEnd - CPU_SharedMemStart < pSM->length )
+  {
+    return false;
+  }
+
+  CPU_SharedMemEnd -= pSM->length;
+  pSM->ARMaddr = CPU_MemoryBase + CPU_SharedMemEnd;
+  pSM->PCaddr  = CPU_SharedMemEnd;
+  return true;
+}
+
+/* Null handlers ***************************************** */
+
+static int Null_Rd ( int addr )
+{
+  NotUsed(addr);
+  return 0xFFFF;
+}
+
+static void Null_Wr ( int addr, int data )
+{
+  NotUsed(addr);
+  NotUsed(data);
+}
+
+/* Init/shutdown ****************************************** */
+
+static bool CPU_Shutdown (void)
+{
+  _kernel_swi_regs R;
+
+  /* 17/08/95
+     We used to put it into bus hold state; we don't now because it
+     causes Cyrix DX2's to use loads of power.
+
+     CPUS_Write ( MISCR, MISCRwr_A20GATE | MISCRwr_BREQ | MISCRwr_PWRGOOD );
+
+  */
+
+  /* Turn off clock if we can */
+
+  if ( CPU_HWType == HW_GEMINI2 )
+    CPUS_Write ( REV2R, 0 );
+
+  /* Deallocate RAM */
+
+  R.r[0] = 0;
+  R.r[1] = 0;
+  _kernel_swi ( PCMem_SetMem, &R, &R );
+
+  return false;
+}
+
+/* ************************************ */
+
+bool CPU_Init(void)
+{
+  _kernel_swi_regs R;
+
+  SYS_registerEvent ( SYS_SetConfig, CPU_SetConfig, 0 );
+  SYS_registerEvent ( SYS_HardReset, CPU_Reset, 0 );
+  SYS_registerEvent ( SYS_Shutdown,  CPU_Shutdown, 0 );
+
+  SYS_registerMem (0xA0000, 0xFFFFF, Null_Rd, Null_Rd, Null_Wr, Null_Wr, 0);
+  SYS_registerIO  (0, 0x3FF, Null_Rd, Null_Rd, Null_Wr, Null_Wr, 0);
+
+  SYS_State.NullHandlers.Read8  = Null_Rd;
+  SYS_State.NullHandlers.Read16 = Null_Rd;
+  SYS_State.NullHandlers.Write8 = Null_Wr;
+  SYS_State.NullHandlers.Write16= Null_Wr;
+
+  SYS_State.CPU_Interrupt = CPUS_CauseInt;
+  SYS_State.IntsAvailable = INT_AVAIL_MASK;
+  SYS_State.SetA20gate    = CPU_SetA20_Rev1;
+
+  CPUS_IOArray  = &(SYS_State.IOhandlers[0]);
+  CPUS_MemArray = &(SYS_State.Memhandlers[0]);
+
+  HPC_Init();
+  DMA_Init();
+
+  HPC_NoSuspendForCmd = true;
+
+  /* Set up callbacks / timer */
+
+  R.r[0] = (int) SYS_State.CPU_Interrupt;
+  R.r[1] = (int) SYS_State.DMA_Request;
+
+  if ( _kernel_swi ( PCSupport_CallbackSetup, &R, &R ) != NULL )
+    return false;
+  SYS_InitDoCallbacks();
+
+  CPUS_pStopFlag = (int *) (R.r[0]);
+  CPU_pTimerWord = (int *) (R.r[1]);
+
+
+  SYS_registerIO ( 0xEC, 0xEF, Ctrl_Rd8, Null_Rd, Ctrl_Wr8, Null_Wr, 0 );
+
+  return true;
+}
+
+
+

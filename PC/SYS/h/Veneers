@@ -1,0 +1,271 @@
+/*
+*
+*     SYS.h.veneers - functions to help divorce !PC from RISC_OSLib, mostly
+*                     nicked from the ROLib source code and made to fit in
+*                     with Acorn C version 5.
+*
+*      1998.07.19  MB  Original
+*/
+
+#ifndef __SYS__H_VENEERS
+#define __SYS__H_VENEERS
+
+#include "kernel.h"
+#include "toolbox.h"
+
+extern MessagesFD msg_block;
+
+extern void get_screen_size(int *x, int *y);
+extern int  confirm_reset(void);
+extern int  get_mode_num(void);
+extern _kernel_oserror *colourtran_select_table (int  source_mode,
+                                                void *source_palette,
+                                                 int  dest_mode,
+                                                void *dest_palette,
+                                                void *buffer);
+extern _kernel_oserror* wimpt_complain( _kernel_oserror *e );
+extern char *msgs_lookup(char *token);
+
+/* from os.h */
+
+typedef struct {
+        int action;             /* specifies action of osgbpb */
+        int file_handle;        /* file handle, but may be used as a char *
+                                 * pointing to wildcarded dir-name */
+        void *data_addr;        /* memory address of data */
+        int number, seq_point, buf_len;
+        char *wild_fld;         /* points to wildcarded filename to match */
+        int reserved[3];        /* space to allow treatment as reg_block */
+} os_gbpbstr;
+
+typedef struct {
+        int action;             /* action or object type if output data */
+        char * name;            /* pointer to filename or pathname */
+        int loadaddr, execaddr; /* load, exec addresses */
+        int start, end;         /* start address/length, end add./attributes */
+        int reserved[4];        /* space to allow treatment as reg_block */
+} os_filestr;
+
+/* extracted from RISC_OSLib's sprite.h */
+
+/******** Simple operations, use no sprite area, no name/sprite pointer ***/
+
+typedef enum
+{
+  sprite_nopalette  = 0,
+  sprite_haspalette = 1
+} sprite_palflag;
+
+typedef struct
+{
+  int xmag,ymag,xdiv,ydiv;
+} sprite_factors;
+
+typedef char sprite_pixtrans;
+
+
+/* ----------------------------- sprite_screensave -------------------------
+ * Save the current graphics window as a sprite file, with optional palette.
+ * Equivalent to *ScreenSave.
+ *
+ */
+extern _kernel_oserror * sprite_screensave(const char *filename, sprite_palflag);
+
+/* ---------------------------- sprite_screenload --------------------------
+ * Load a sprite file onto the screen. Equivalent to *ScreenLoad.
+ *
+ */
+extern _kernel_oserror * sprite_screenload(const char *filename);
+
+
+
+/****** Operations on either system/user area, no name/sprite pointer *****/
+
+typedef struct /* Format of a sprite area control block */
+{
+  int size;
+  int number;
+  int sproff;
+  int freeoff;
+} sprite_area;
+
+typedef struct /* Format of a sprite header */
+{
+  int  next;      /*  Offset to next sprite                */
+  char name[12];  /*  Sprite name                          */
+  int  width;     /*  Width in words-1      (0..639)       */
+  int  height;    /*  Height in scanlines-1 (0..255/511)   */
+  int  lbit;      /*  First bit used (left end of row)     */
+  int  rbit;      /*  Last bit used (right end of row)     */
+  int  image;     /*  Offset to sprite image               */
+  int  mask;      /*  Offset to transparency mask          */
+  int  mode;      /*  Mode sprite was defined in           */
+                  /*  Palette data optionally follows here */
+                  /*  in memory                            */
+} sprite_header;
+
+#define sprite_mainarea ((sprite_area *) 0)
+
+typedef void * sprite_ptr;
+
+
+/* ------------------------ sprite_area_initialise -------------------------
+ * Initialise an area of memory as a sprite area
+ *
+ */
+void sprite_area_initialise(sprite_area *, int size);
+
+/* ----------------------- sprite_area_readinfo ----------------------------
+ * Read information from a sprite area control block
+ *
+ */
+extern _kernel_oserror * sprite_area_readinfo(sprite_area *, sprite_area *resultarea);
+
+/* --------------------------- sprite_area_reinit --------------------------
+ * Reinitialise a sprite area.
+ * If system area, then equivalent to *SNew
+ *
+ */
+extern _kernel_oserror * sprite_area_reinit(sprite_area *);
+
+/* --------------------------- sprite_area_load ----------------------------
+ * Load a sprite file into a sprite area.
+ * If system area, then equivalent to *SLoad
+ *
+ */
+extern _kernel_oserror * sprite_area_load(sprite_area *, const char *filename);
+
+/* ---------------------------- sprite_area_merge --------------------------
+ * Merge a sprite file with a sprite area.
+ * If system area, then equivalent to *SMerge
+ *
+ */
+extern _kernel_oserror * sprite_area_merge(sprite_area *, const char *filename);
+
+/* ---------------------------- sprite_area_save ---------------------------
+ * Saves a sprite area as a sprite file.
+ * If system area, then equivalent to *SSave
+ *
+ */
+extern _kernel_oserror * sprite_area_save(sprite_area *, const char *filename);
+
+/* ---------------------------- sprite_getname -----------------------------
+ * Return the name and length of name of the n'th sprite in a sprite area into
+ * a buffer.
+ *
+ */
+extern _kernel_oserror * sprite_getname(sprite_area *, void *buffer, int *length, int index);
+
+/* ---------------------------- sprite_get ---------------------------------
+ * Copy a rectangle of screen delimited by the last pair of graphics cursor
+ * positions as a named sprite in a sprite area, optionally storing the
+ * palette with the sprite.
+ *
+ */
+extern _kernel_oserror * sprite_get(sprite_area *, char *name, sprite_palflag);
+
+/* ---------------------------- sprite_get_rp ------------------------------
+ * Copy a rectangle of screen delimited by the last pair of graphics cursor
+ * positions as a named sprite in a sprite area, optionally storing the
+ * palette with the sprite. Address of sprite returned in resultaddress.
+ *
+ */
+extern _kernel_oserror * sprite_get_rp(sprite_area *, char *name, sprite_palflag,
+                         sprite_ptr *resultaddress);
+
+/* ---------------------------- sprite_get_given ---------------------------
+ * Copy a rectangle of screen delimited by the given pair of graphics
+ * coordinates as a named sprite in a sprite area, optionally storing the
+ * palette with the sprite.
+ *
+ */
+extern _kernel_oserror * sprite_get_given(sprite_area *, char *name, sprite_palflag,
+                            int x0, int y0, int x1, int y1);
+
+/* --------------------------- sprite_get_given_rp -------------------------
+ * Copy a rectangle of screen delimited by the given pair of graphics
+ * coordinates as a named sprite in a sprite area, optionally storing the
+ * palette with the sprite. Address of sprite returned in resultaddress.
+ *
+ */
+extern _kernel_oserror * sprite_get_given_rp(sprite_area *, char *name, sprite_palflag,
+                               int x0, int y0, int x1, int y1,
+                               sprite_ptr *resultaddress);
+
+/* ------------------------------ sprite_create ----------------------------
+ * Create a named sprite in a sprite area of specified size and screen mode,
+ * optionally reserving space for palette data with the sprite.
+ *
+ */
+extern _kernel_oserror * sprite_create(sprite_area *, char *name, sprite_palflag,
+                         int width, int height, int mode);
+
+/* ------------------------------ sprite_create_rp -------------------------
+ * Create a named sprite in a sprite area of specified size and screen mode,
+ * optionally reserving space for palette data with the sprite.Address of
+ * sprite returned in resultaddress.
+ *
+ */
+extern _kernel_oserror * sprite_create_rp(sprite_area *, char *name, sprite_palflag,
+                            int width, int height, int mode,
+                            sprite_ptr *resultaddress);
+
+
+/*********** Operations on system/user area, name/sprite pointer **********/
+
+typedef enum
+{
+  sprite_id_name = 0,
+  sprite_id_addr = 0x74527053 /* 'Magic' number ("SpRt") to test against */
+} sprite_type;
+
+typedef struct
+{
+  union
+  {
+    char *     name; /* Can use either name of sprite or address (faster) */
+    sprite_ptr addr;
+  } s;
+  sprite_type tag;   /* User must tag the use of this structure manually */
+} sprite_id;
+
+/* --------------------------- sprite_put_scaled ---------------------------
+ * Plot the specified sprite at (x,y) using the given GCOL action, and scaled
+ * using the given scale factors.
+ *
+ */
+extern _kernel_oserror * sprite_put_scaled(sprite_area *, sprite_id *, int gcol,
+                            int x, int y,
+                            sprite_factors *factors,
+                            sprite_pixtrans pixtrans[]);
+
+/* ------------------------ sprite_removewastage ---------------------------
+ * Removes left hand wastage from a sprite
+ *
+ */
+extern _kernel_oserror *sprite_removewastage(sprite_area *area, sprite_id *id);
+
+/* ------------------------ sprite_area_initialise -------------------------
+ * Initialise an area of memory as a sprite area
+ *
+ */
+void sprite_area_initialise(sprite_area *, int size);
+
+/* ------------------------------ sprite_create_rp -------------------------
+ * Create a named sprite in a sprite area of specified size and screen mode,
+ * optionally reserving space for palette data with the sprite.Address of
+ * sprite returned in resultaddress.
+ *
+ */
+extern _kernel_oserror * sprite_create_rp(sprite_area *,
+                            char *name, sprite_palflag,
+                            int width, int height, int mode,
+                            sprite_ptr *resultaddress);
+
+/* Typedefs and functions for rotating sprites. */
+
+typedef struct {int p0 [2], p1 [2], p2 [2], p3 [2];} sprite_pgm;
+typedef int sprite_transmat [6];
+typedef struct {int x0, y0, x1, y1;} sprite_box;
+
+#endif

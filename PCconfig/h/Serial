@@ -1,0 +1,16 @@
+/*
+ * Name   : serial.h
+ * Desc   : Handlers for serial component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 1-Jun-1995
+ */
+
+#ifndef __serial_h
+#define __serial_h
+
+extern void do_serial_initialise(void);
+extern void setup_serial_window(void);
+extern void update_serial_window(void);
+extern int  serial_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

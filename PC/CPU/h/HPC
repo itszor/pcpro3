@@ -1,0 +1,24 @@
+/*
+*   DIVAPC Project ARM C source
+*
+*   CPU.H.PCCOMM Header for Proc module comms routines
+*
+*   Versions
+*
+*   0.1     16-09-91  INH  Original
+*   2.00    13-05-95  INH  Original
+*/
+
+extern void HPC_Suspend(void);
+extern void HPC_Unsuspend(void);
+
+extern bool HPC_Suspended;
+extern bool HPC_NoSuspendForCmd;
+
+/* Init routine
+
+   Registers callback handlers for the comms ports
+*/
+
+extern bool HPC_Init ( void );
+

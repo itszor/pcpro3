@@ -1,0 +1,37 @@
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "utils.h"
+#include "vars.h"
+#include "serial.h"
+
+void do_serial_initialise(void)
+{
+  raise_error(event_register_toolbox_handler(serial_window,ActionButton_Selected,serial_window_click_handler,0));
+  /*config.serial.direct_serial = TRUE;*/
+}
+
+void setup_serial_window(void)
+{
+  update_serial_window();
+  raise_error(toolbox_show_object(0,serial_window,0,0,0,0));
+}
+
+void update_serial_window(void)
+{
+  if(config.serial.direct_serial)
+   raise_error(optionbutton_set_state(0,serial_window,SERIAL_DIRECT_SERIAL,1));
+  else
+   raise_error(optionbutton_set_state(0,serial_window,SERIAL_DIRECT_SERIAL,0));
+}
+
+int serial_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  if(id_block->self_component == SERIAL_OK)
+  {
+    optionbutton_get_state(0,serial_window,SERIAL_DIRECT_SERIAL,&tmp_config.serial.direct_serial);
+    check_for_modified_data((int)&config.serial, (int)&tmp_config.serial, sizeof(config.serial));
+    config.serial.direct_serial = tmp_config.serial.direct_serial;
+  }
+  return(1);
+}

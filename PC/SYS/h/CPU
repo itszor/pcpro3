@@ -1,0 +1,27 @@
+/*
+*
+*     SYS.H.CPU - CPU functions used by front end
+*
+*     20-12-91 INH Original
+*     04-06-92     'suspend' logic changed
+*     24-11-92     Block In/Out routines added
+*     15-03-93     Hardware ID
+*
+*/
+
+/* Initialise the CPU state; return 'true' for OK / 'false' for fail */
+
+extern bool CPU_Init(void);
+
+/* CPU_Run will run the processor for a bit, doing
+   all the necessary calls to handlers. If 'suspend' is true, it
+   should suspend the 386 before it exits.
+*/
+
+extern void CPU_Run(bool suspend);
+
+/* Hardware identification - some text for prog info box */
+/* This is actually defined in CPU.S.CPUS */
+
+extern char * CPU_HardwareID;
+

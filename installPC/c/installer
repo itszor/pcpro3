@@ -1,0 +1,292 @@
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
+
+#include "wimplib.h"
+
+#include "init.h"
+#include "InstallPC.h"
+#include "misc.h"
+#include "messages.h"
+#include "installer.h"
+
+extern char pc_location[128] = "\0";
+extern char new_install_location[128] = "\0";
+extern char boot_disc_location[32] = "\0";
+extern int copied_files = 0, files_to_copy = 0;
+extern int no_fresh_install = 0, no_registration_code = 1;
+extern int num_configs = 0, netlinks_driver_chosen = 0, no_sysfiles = 0;
+extern int install_netlinks = 0;
+extern int regcode = 0;
+extern char regstring[16]="\0";
+
+/*extern FILE *log;*/
+
+extern char installed_pc_version[8]="?.??";
+extern char this_pc_version[8]="?.??";
+extern char update_pc_version[8]="?.??";
+
+extern int boot_flags[BOOT_OPTS]={0,0,0,0,0,0};
+
+int tasks_started = 0, boot_item = 0;
+
+static char no_dot_buffer[16];
+
+extern char *no_dot(char *v)
+{
+  char *b = v, *out = no_dot_buffer;
+
+  while (*b >= 32)
+    if (*b != '.')
+      *(out++) = *(b++);
+    else
+      b++;
+
+  if (out == no_dot_buffer+3)
+    *(out++) = '-';
+
+  *out = 0;
+
+  return(no_dot_buffer);
+}
+
+static void do_registration_code(void)
+{
+  FILE    *fh, *fh_out;
+  char    b[16];
+  int     v;
+
+  /* Nearly forgot this... */
+  system("Set Diva$Dir <Diva$Folder>.!PC");
+
+  if (!file_exists("InstallPCRes:Software")) return;
+
+  fh = fopen("<Diva$Dir>.!Runimage", "rb");
+  fh_out = fopen("<Diva$Dir>.!RunIm2", "wb");
+
+  while (!feof(fh))
+  {
+    int s;
+
+    s = fread(&v, 4, 1, fh);
+    if (v == 'DvSr') {
+      unsigned int r;
+
+      srand(*((int*)0x10c)); r=rand();
+      fread(&v, 4, 1, fh);
+      fread(&v, 4, 1, fh);
+      v = 'DvSr' ^ r;
+      //fprintf(stderr, "%08x ", v);
+      fwrite(&v, 4, 1, fh_out);
+
+      v = (regcode ^ r)^('DvSr' ^ r);
+      //fprintf(stderr, "%08x %08x (%08x)\n", v, r, regcode);
+      fwrite(&v, 4, 1, fh_out);
+      fwrite(&r, 4, 1, fh_out);
+    } else if (v == 'xxxx') {
+      fwrite(&v, 4, 1, fh_out);
+      fseek(fh, 16, SEEK_CUR);
+      fwrite(regstring, 1, 16, fh_out);
+    } else if (v == 0x646D7450) {
+      time_t install_time = time(NULL);
+
+      fwrite(&v, 4, 1, fh_out);
+      fseek(fh, sizeof(time_t), SEEK_CUR);
+      fwrite(&install_time, sizeof(time_t), 1, fh_out);
+    } else if (s == 1)
+      fwrite(&v, 4, 1, fh_out);
+  }
+  fclose(fh); fclose(fh_out);
+
+  FERR(wimp_start_task("SetType <Diva$Dir>.!RunIm2 FF8", &v));
+  FERR(wimp_start_task("Copy <Diva$Dir>.!RunIm2 <Diva$dir>.!Runimage A~CDF~L~N~P~Q~R~S~T~V", &v));
+}
+
+static char boot_path[BOOT_OPTS][52]={
+  "Resources/!System/* Choices/Boot/PreDesk/UnplugTBox",
+  "Choices/Boot/PreDesk/!CDFix/*",
+  "Choices/Boot/PreDesk/!WinKbdPat/*",
+  "Choices/Boot/PreDesk/DOSFS/*",
+  "Choices/Boot/PreDesk/PCSleep/*",
+  "Choices/Boot/Tasks/DOSMap",
+  "Choices/Boot/PreDesk/!GuardDD/*",
+  "Choices/Boot/PreDesk/!FilerPtch/*"
+};
+
+extern void do_update_boot(int item, int taskwin)
+{
+  char cmd[256];
+
+  if (!file_exists("InstallPCRes:Boot")) return;
+
+  if (file_exists("<Boot$Dir>.Choices.Boot.PreDesk.PCsleep") && !file_exists("<Boot$Dir>.Choices.Boot.PreDesk.PCsleep.PCsleep") && item == BOOT_OPT_PCSL)
+    FERR(wimp_start_task("Delete <Boot$Dir>.Choices.Boot.PreDesk.PCsleep", &child_task_handle));
+
+  if (taskwin)
+    sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -C -u -n InstallPCRes:Boot %s -d <Boot$Dir>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", boot_path[item], task_handle, task_handle);
+  else
+    sprintf(cmd, "InstallPCApp:_uz -C -u -n InstallPCRes:Boot %s -d <Boot$Dir> ><Wimp$Scrap>", boot_path[item]);
+  FERR(wimp_start_task(cmd, &child_task_handle));
+}
+
+/*static void do_update_boot2(void)
+{
+  char    cmd[256];
+
+  if (!file_exists("InstallPCRes:Boot"))
+    return;
+
+  if (file_exists("<Boot$Dir>.Choices.Boot.PreDesk.PCsleep") && !file_exists("<Boot$Dir>.Choices.Boot.PreDesk.PCsleep.PCsleep"))
+    FERR(wimp_start_task("Delete <Boot$Dir>.Choices.Boot.PreDesk.PCsleep", &child_task_handle));
+  sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -n InstallPCRes:Boot -d <Boot$Dir>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+  FERR(wimp_start_task(cmd, &child_task_handle));
+}*/
+
+static void do_copy_netlinks(void)
+{
+  char cmd[256];
+
+  sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -o -C InstallPCRes:NetLinks -d <Diva$Dir>.PCBits\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+  /*fprintf(stderr, "%s\n", cmd);*/
+  FERR(wimp_start_task(cmd, &child_task_handle));
+  return;
+}
+
+static void do_copy_netboot(void)
+{
+  char cmd[256];
+
+  sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -n InstallPCRes:NetBoot -d <Boot$Dir>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+  FERR(wimp_start_task(cmd, &child_task_handle));
+}
+
+static void do_copy_netdocs(void)
+{
+  char cmd[256];
+
+  sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u InstallPCRes:NetDocs -d <Diva$Dir>.^\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+  FERR(wimp_start_task(cmd, &child_task_handle));
+  return;
+}
+
+/* This function vastly simplified 20/10/1998 */
+extern void do_copy_files(void)
+{
+  FILE    *fh, *fh_out, *fh_out2;
+  char    *old_config;
+  char    cmd[256], line[256], new_line[256]/*, section[256]*/;
+  int     x, altered, old_config_len, dci_version;
+
+  switch(tasks_started)
+  {
+    case 0 :
+      if (new_install_location[0] != 0)
+      {
+        sprintf(cmd, "Set Diva$Folder %s", new_install_location);
+        system(cmd);
+        system("Unset Diva$Dir");
+        sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -n InstallPCRes:Software -d %s\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", new_install_location, task_handle, task_handle);
+        tasks_started++;
+    /*    fprintf(stderr, "%s\n", cmd);*/
+        installer_progress(msg_lookup("prog_install_pc"));
+        FERR(wimp_start_task(cmd, &child_task_handle));
+        boot_item = 0;
+        return;
+      }
+      else
+      {
+        FERR(wimp_start_task("Set Diva$Folder <Diva$Dir>.^", &child_task_handle));
+        sprintf(cmd, "Set OldDiva$Folder <Diva$Dir>.^.old_v%s", no_dot(installed_pc_version));
+        system(cmd);
+        FERR(wimp_start_task("CDir <OldDiva$Folder>", &x));
+        //whinge(msg_lookup("cdir_prob")), quit = 1;
+
+        if (file_exists("InstallPCRes:Software") && compare_versions(this_pc_version, installed_pc_version) == 1 && !no_fresh_install)
+        {
+          FERR(wimp_start_task("Rename <Diva$Dir>.^.!PCConfig <OldDiva$Folder>.!PCConfig", &x));
+          FERR(wimp_start_task("Rename <Diva$Dir> <OldDiva$Folder>.!PC", &x));
+            //whinge(msg_lookup("preserve_prob")), quit = 1;
+        }
+        else
+        {
+          FERR(wimp_start_task("Copy <Diva$Dir>.^.!PCConfig <OldDiva$Folder>.!PCConfig A~C~DF~L~N~P~Q~R~S~T~V { > null:$ }", &x));
+          FERR(wimp_start_task("Copy <Diva$Dir> <OldDiva$Folder>.!PC A~C~DF~L~N~P~Q~R~S~T~V { > null:$ }", &x));
+            //whinge(msg_lookup("preserve_prob")), quit = 1;
+        }
+
+        sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -n InstallPCRes:Software -d <Diva$Folder>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+        tasks_started++;
+    /*    fprintf(stderr, "%s\n", cmd);*/
+        if (file_exists("InstallPCRes:Software") && compare_versions(this_pc_version, installed_pc_version) == 1)
+        {
+          FERR(wimp_start_task(cmd, &child_task_handle));
+          installer_progress(msg_lookup("prog_install_pc"));
+          boot_item = 0;
+          return;
+        }
+      }
+      break;
+    case 1 :
+      if (file_exists("InstallPCRes:Boot"))
+      {
+        installer_progress(msg_lookup("prog_install_boot"));
+        while (boot_flags[boot_item] == 0 && boot_item != BOOT_OPTS)
+          boot_item++;
+        if (boot_item == BOOT_OPTS)
+          tasks_started++;
+        else
+        {
+          if (boot_flags[boot_item])
+            do_update_boot(boot_item++, 1);
+          return;
+        }
+      }
+      else
+        tasks_started++;
+    case 2 :
+      sprintf(cmd, "Obey <Diva$Folder>.!PC.!Boot", new_install_location);
+      FERR(wimp_start_task(cmd, &x));
+      if (file_exists("InstallPCRes:NetLinks") && install_netlinks)
+      {
+        installer_progress(msg_lookup("prog_install_netlinks"));
+        do_copy_netlinks();
+        tasks_started++;
+        return;
+      }
+      else
+        tasks_started++;
+    case 3 :
+      if (file_exists("InstallPCRes:NetBoot"))
+      {
+        installer_progress(msg_lookup("prog_install_netboot"));
+        do_copy_netboot();
+        tasks_started++;
+        return;
+      }
+      else
+        tasks_started++;
+    case 4 :
+      if (file_exists("InstallPCRes:NetDocs"))
+      {
+        installer_progress(msg_lookup("prog_install_netdocs"));
+        do_copy_netdocs();
+        tasks_started++;
+        return;
+      }
+      else
+        tasks_started++;
+    case 5 :
+      installer_progress(msg_lookup("prog_install_done"));
+      do_registration_code();
+      copied_files = files_to_copy;
+      if (update_pc_version[0] != '?' && new_install_location[0] != 0)
+      {
+        sprintf(line, "Run <Diva$Dir>.^.!Upd%s", no_dot(update_pc_version));
+        FERR(wimp_start_task(line, &child_task_handle));
+        sprintf(line, "Delete <Diva$Dir>.^.!Upd%s", no_dot(update_pc_version));
+        FERR(wimp_start_task(line, &child_task_handle));
+      }
+      return;
+  }
+}

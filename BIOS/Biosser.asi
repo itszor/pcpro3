@@ -1,0 +1,247 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSSER.ASI	BIOS Serial Services
+;
+; Versions
+; 0.1	13-08-91 INH	Original
+;	26-03-93	(1.09+) SER_timetbl is byte array
+; 1.11	01-04-93	Checks for serial ports
+; *****************************************************************
+
+SER_Timeout_Err	EQU	080H
+
+SER_Init PROC NEAR
+	CLI
+
+	; Set up port addresses according to CMOS RAM configuration
+	AND	[SYS_equipmt], 0F1FFH		; Adjust equipment word
+						; start with 0 COM ports
+	MOV	word ptr [SER_timetbl], 0303h	; Set timeout value
+	MOV	word ptr [SER_timetbl+2], 0303h	; for all comms ports
+
+	MOV	SI, IO_COM1_Base		; 1st port base into SI
+	MOV	DI, IO_COM2_Base		; 2nd port base into DI
+
+	RDCMOS	CMOS_iocfg
+
+	TEST	AL, 20h				; Are ports reversed?
+	JZ	SER_I1
+	XCHG	SI, DI				; Swap ports if so
+SER_I1:
+
+
+	MOV	BX, offset SER_porttbl
+
+	MOV	DX, SI				; Is this a COM port?
+	CALL	TestCOMport
+	JC	SER_NoCOM1			; If not don't use it
+
+	ADD	[SYS_equipmt], 0200H		; One COM port
+	MOV	[BX], SI			; Remember 1st address
+	ADD	BX, 2
+
+SER_NoCOM1:
+	MOV	DX, DI
+	CALL	TestCOMport
+	JC	SER_NoCOM2
+
+	ADD	[SYS_equipmt], 00200H		; to indicate one COM port
+	MOV	[BX], DI			; Set up 1st address
+
+SER_NoCOM2:
+	STI
+
+	MOV	AX, 0E3H			; Set COM1 to be
+	MOV	DX, 0				; 9600-N-8-1
+	INT	014H
+
+
+	MOV	AX, 0E3H			; Same for COM2
+	MOV	DX, 1
+	INT	014H
+
+	RET	
+
+SER_Init ENDP
+
+; TestCOMport -----------------------------------------------
+
+TestCOMport PROC NEAR		; Quick 'n' dirty check to see if a COM
+				; port is there: DX = port base
+	ADD	DX, COM_ScratchReg
+	MOV	AL, 055h
+	OUT	DX, AL
+	IOWAIT
+	IN	AL, DX
+	CMP	AL, 055h
+	JNE	TCP_Not
+	CLC
+	RET
+
+TCP_Not:
+	STC
+	RET
+
+TestCOMport ENDP
+	
+; INT 14H interrupt ************************************************
+
+SER_Int	PROC FAR
+	STI
+	PUSH	DS
+	PUSH	BX
+	PUSH	CX
+	PUSH	DX
+
+	MOV	DS, CS:DataSeg@
+
+	CMP	DX,3			; Up to 4 ports in porttbl[]
+	JA	ser_exit
+
+	MOV	BX, DX			; CL holds timeout value
+	MOV	CL, SER_timetbl[BX]
+	ADD	BX, DX			; BX holds port address
+	MOV	BX, SER_porttbl[BX]
+	CMP	BX, 0
+	JE	ser_exit		; If no adapter, give error
+	
+	CMP	AH,0
+	JE	ser_reset		; AH = 0 - serial reset
+	CMP	AH,1
+	JE	ser_write		; AH = 1 - send character
+	CMP	AH,2
+	JE	ser_read		; AH = 2 - read char
+	CMP	AH,3
+	JA	ser_exit		; AH > 3 - no action
+					; else - get status
+ser_status:
+	MOV	AH, 0
+ser_stat1:
+	INBX	 COM_LineStat
+	IOWAIT
+	AND	AL, 07FH		; MSB is for timeout only
+	OR	AH, AL
+	INC	DX			; Next port is COM_ModemStat
+	IN	AL, DX
+
+ser_exit:
+	POP	DX
+	POP	CX
+	POP	BX
+	POP	DS
+	IRET
+
+ser_timeout:
+	MOV	AH, 080H
+	JMP	ser_stat1
+
+; Write Char to comms *******************************************
+
+ser_write:
+
+	MOV	CH, AL		; Save char in CH
+
+	MOV	AL, 03H		; Set DTR and RTS
+	OUTBX	COM_ModemCtrl
+
+	MOV	AL, CH
+
+	MOV	DX, BX		; Handshaking ....
+	ADD	DX, COM_ModemStat
+	MOV	CH, 030H	; Wait for CTS and DSR active
+	CALL	Port_Wait	
+	JNZ	ser_timeout
+
+	DEC	DX		; Set DX to line status register
+	MOV	CX, 02001H	; Check for Tx empty bit, short timeout
+	CALL	Port_Wait
+	JNZ	ser_timeout
+
+	OUTBX	COM_Data	; Send char to transmitter
+	JMP	ser_status
+
+; Read char from comms ******************************************
+
+ser_read:
+	MOV	AL, 1		; Set DTR active
+	OUTBX	COM_ModemCtrl
+
+	INC	DX		; Set DX = Line status register
+	MOV	CH, 1		; Test bit 1 = Rx Data ready
+
+	CALL	Port_Wait
+	JNZ	ser_timeout
+
+	INBX	COM_Data	; Get char & save in AH
+	MOV	AH, AL
+
+	INBX	COM_LineStat	; Get status
+	AND	AL, 01EH	; mask off non-error bits
+	XCHG	AL, AH
+	JMP	ser_exit
+
+; Initialise comms **********************************************
+
+ser_reset:
+
+	MOV	CH, AL		; Save parms
+
+	MOV	AL, 0		; Reset DLAB
+	OUTBX	COM_LineCtrl
+	IOWAIT
+
+	MOV	AL, 0		; Disable interrupts
+	OUTBX	COM_IntEnable
+	IOWAIT
+
+	MOV	AL, 0		; Reset modem control
+	OUTBX	COM_ModemCtrl
+	IOWAIT
+
+	INBX	COM_ModemStat	; Clear any modem statuses
+	IOWAIT
+
+	INBX	COM_Data	; Clear receive buffer
+	IOWAIT
+	IN	AL, DX
+	IOWAIT
+
+
+	MOV	AL, 80H		; Set DLAB to access baud gen
+	OUTBX	COM_LineCtrl
+	IOWAIT
+
+	MOV	DX, BX
+
+	MOV	BL, CH		; Get baud rate bits
+	AND	BX, 0E0H
+	SHR	BX, 4		; Convert to array index
+	MOV	AX, CS:ser_baudtbl[BX]
+
+	MOV	BX, DX
+
+	OUTBX	COM_BaudGenLo
+	IOWAIT
+	MOV	AL, AH
+	OUTBX	COM_BaudGenHi
+	IOWAIT
+
+	MOV	AL, CH		; Get control bits
+	AND	AL, 01FH
+	OUTBX	COM_LineCtrl	; Send them & reset DLAB
+
+	JMP	ser_status
+
+; Constant Data *************************************************
+
+ser_baudtbl	DW	1047, 768, 384, 192	;Lookup table for baud rate
+		DW	96, 48, 24, 12		;generator in order 110 to
+						;9600 baud
+
+
+
+
+SER_Int	ENDP
+

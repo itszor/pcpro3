@@ -1,0 +1,783 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.C.IDEEm -- Emulation of IDE hard drive / CD-ROM controller
+*
+*   08-02-1998  MB    Started
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.StdTypes"
+#include "sys.h.Sys"
+#include "sys.h.hrdstate"
+#include "sys.h.transfer"
+#include "sys.h.festate"
+
+#include "dev.h.IDEEm"
+#include "dev.h.HPC_HD"
+#include "dev.h.HPC_CD"
+
+#include "cpu.h.cpu"
+
+#include "module.h.PCSupport"
+/*#include "cpu.h.cpus_g"*/
+
+static struct ide_controller	  controller[2];
+static struct ide_controller_info info[2];
+static int			  ct_num, ct_reg;
+static int			  drive_address_reg;
+
+/*static HD_HPC_IN_OUT		    *buffer[2], *cu_buffer;
+static char			  *fill[2], *cu_fill;*/
+
+static char wrreg[][10] = {
+  "data     ",
+  "features ",
+  "sec_count",
+  "sec_num  ",
+  "cyl_lsb  ",
+  "cyl_msb  ",
+  "drivehead",
+  "command  ",
+  "d_output ", /*3f6*/
+  "address?W"
+};
+
+static char rdreg[][10] = {
+  "data     ",
+  "error    ",
+  "sec_count",
+  "sec_num  ",
+  "cyl_lsb  ",
+  "cyl_msb  ",
+  "drivehead",
+  "status   ",
+  "status2  ", /*3f6*/
+  "address  "
+};
+
+static Callback IRQ_callback;
+
+// some macros for laziness' sake
+
+// the IDE controller structure currently being talked to
+#define CTC  controller[ct_num]
+#define CTCI info[ct_num]
+
+// ...and the current device being talked to (0 or 1)
+#define CTD ((CTC.drivehead>>4)&1)
+
+#define DO_IRQ if (CTC.use_irq) SYS_SetCallback(&IRQ_callback, SYS_Interrupt, CTC.irq_number), SYS_trace("IRQ%d scheduled @ line %d with status = %s", CTC.irq_number, __LINE__, status_str(CTC.status))
+
+// comment out when not debugging
+#define DO_FREEZE //CPU_StopRun(); SYS_FEState.FreezeRequest = 1
+
+#define IDEEM_DUMP_CTB(reason) SYS_trace("IDEEm CTB: %s\nerror=%X status=%s\nsec_count=%X sec_num=%X cylinder=%X drivehead=%X\nncyls[0]=%X nsecs[0]=%X nheads[0]=%X ncyls[1]=%X nsecs[1]=%X nheads[1]=%X\ncommand_last=%X buffer_next=%X\n", reason, CTC.error, status_str(CTC.status), CTC.sec_count, CTC.sec_num, CTC.cylinder, CTC.drivehead, CTCI.ncyls[0], CTCI.nsecs[0], CTCI.nheads[0], CTCI.ncyls[1], CTCI.nsecs[1], CTCI.nheads[1], CTC.command_last, CTC.buffer_next)
+
+static char idest[36];
+static char *status_str(int val)
+{
+  sprintf(idest, "(%02x) ", val);
+  if (val & STATUS_BSY) strcat(idest, "BSY ");
+  if (val & STATUS_RDY) strcat(idest, "RDY ");
+  if (val & STATUS_WFT) strcat(idest, "WFT ");
+  if (val & STATUS_SKC) strcat(idest, "SKC ");
+  if (val & STATUS_DRQ) strcat(idest, "DRQ ");
+  if (val & STATUS_COR) strcat(idest, "COR ");
+  if (val & STATUS_IDX) strcat(idest, "IDX ");
+  if (val & STATUS_ERR) strcat(idest, "ERR ");
+
+  return(idest);
+}
+
+static void SetCU(int addr)
+/* sets globals used by various IDEEm routines:
+**
+*/
+{
+  if (addr >= 0x1F0 && addr <= 0x1F7)
+    ct_num = 0, ct_reg = addr - 0x1F0;
+  else
+    ct_num = 1, ct_reg = addr - 0x170;
+}
+
+static void strcpy_wiggle(char *d, char *s)
+{
+  int b=-1;
+
+  while (s[++b] >= 32)
+    if (b%2)
+      d[b-1] = s[b];
+    else
+      d[b+1] = s[b];
+}
+
+/* Fills the sector buffer with a suitable identify block */
+static void IDEEm_IdentifyHD(void)
+{
+  struct ide_identify_block *b =
+    (struct ide_identify_block*) CTC.buffer;
+
+  /* don't know what half of these mean, or whether any
+  ** operating systems are diligent enough to care
+  */
+  SYS_trace("b4 memset");
+  memset(b, 0, sizeof(struct ide_identify_block));
+
+  b->configuration = (IDECFG_REMOVABLE | IDECFG_ATA);
+  b->log_cylinders = b->cylinders = CTCI.ncyls[CTD];
+  b->log_sectors   = b->sectors   = CTCI.nsecs[CTD];
+  b->log_heads     = b->heads	= CTCI.nheads[CTD];
+  b->m_sectors_between_interrupts = 0 | (0x80<<8);
+  b->capabilities1 = (1<<8)|(1<<9);
+  b->lba_sectors   = b->sectors * b->cylinders;
+
+  b->atapi_major = 31; // we support ATA/ATAPI-4 and below ??
+  b->atapi_minor = 17; // standard no. we used
+
+  /* 16-bit words are the wrong way around! */
+  SYS_trace("b4 wiggles");
+  strcpy_wiggle(b->serial_number, "00000000000000000000");
+  strcpy_wiggle(b->firmware, "2.30    ");
+  strcpy_wiggle(b->model, "PCPro emulated hard drive              ");
+  *((int*)&b->sector_capacity_hi)   = 1000;
+  SYS_trace("end");
+
+  CTC.status	  = (STATUS_RDY | STATUS_DRQ | STATUS_SKC);
+  CTC.buffer_next = 0;
+  CTC.buffer_limit = 512;
+}
+
+static void IDEEm_IdentifyCDROM(void)
+{
+  struct ide_identify_pkt_block *b =
+    (struct ide_identify_pkt_block*) CTC.buffer;
+
+  memset(b, 0, sizeof(struct ide_identify_pkt_block));
+  // 12 byte packets, 50us response, removable media, CDROM, PACKET supported
+  b->configuration = (2<<5) | (1<<7) | (5<<8) | (1<<15);
+  strcpy_wiggle(b->serial_number, "00000000000000000000");
+  strcpy_wiggle(b->firmware, "2.30    ");
+  strcpy_wiggle(b->model, "PCPro emulated CD-ROM drive            ");
+  b->capabilities = (1<<9); // LBA supported (but no DMA etc.)
+  b->atapi_major = 31; // we support ATA/ATAPI-4 and below ??
+  b->atapi_minor = 17; // standard no. we used
+  b->cmdsets_supported1 = (1<<4)|(1<<9); // PACKET and DEVICE RESET supported
+  b->cmdsets_enabled1 = (1<<4)|(1<<9); // PACKET and DEVICE RESET supported
+  b->removable_notification = 1; // we support RMSNfs (see 8.12.52 p91)
+
+  CTC.status	  = (STATUS_RDY | STATUS_DRQ | STATUS_SKC);
+  CTC.buffer_next = 0;
+  CTC.buffer_limit = 512;
+}
+
+static void IDEEm_FillReadBuffer(void)
+{
+  struct HD_READWRITE_PARAMS  pIn;
+  struct HD_READWRITE_RESULT *pOut =
+         (void*)(CTC.buffer-sizeof(struct HD_READWRITE_RESULT)+4);
+
+  IDEEM_DUMP_CTB("before FillReadBuffer");
+  pIn.hpc_id = HPC_HD_ID; pIn.reason = HPC_HD_READ; pIn.drvnum = CTCI.drive[CTD];
+  pIn.sect_count = 1;
+  pIn.readahead  = 0;
+  pIn.sect_start = (CTC.cylinder * CTCI.nheads[CTD] * CTCI.nsecs[CTD]) +
+                   ((CTC.drivehead&0xf) * CTCI.nsecs[CTD]) +
+                   (CTC.sec_num-1);
+  SYS_trace("HD_Read C%d H%d S%d (abs. S%d)...", CTC.cylinder, CTC.drivehead&0xf, CTC.sec_num, pIn.sect_start);
+  HD_Read(&pIn, pOut);
+  CTC.status = (STATUS_RDY | STATUS_DRQ | STATUS_SKC);
+  CTC.buffer_next = 0;
+  CTC.buffer_limit = 512;
+  if (--CTC.sec_count == 0)
+    CTC.command_last = 0, SYS_trace("just read the last sector");
+
+  /* Increment sector, head, cylinder */
+  if (++CTC.sec_num == (CTCI.nsecs[CTD]-1))
+  {
+    CTC.sec_num = 1;
+    if ( (CTC.drivehead = (CTC.drivehead&0xf0)|((CTC.drivehead&0xf)+1)) == CTCI.nheads[CTD]) // FIXME
+    {
+      CTC.drivehead = CTC.drivehead&0xf0;
+      if (++CTC.cylinder == CTCI.ncyls[CTD]) CTC.cylinder = 0; // wrap?
+    }
+  }
+  IDEEM_DUMP_CTB("after FillReadBuffer");
+}
+
+// called when an ATAPI packet is fully received
+//
+static void IDEEm_ATAPIPacket(void)
+{
+  SYS_tracedata((BYTE*)CTC.buffer, CTC.buffer_next);
+}
+
+static void IDEEm_Reset(int c /* Controller number */)
+{
+  memset(&controller[c], 0, sizeof(struct ide_controller));
+
+  controller[c].status	  = STATUS_RDY;
+  controller[c].sec_num   = controller[c].sec_count = 1;
+  controller[c].drivehead = 0;
+  controller[c].use_irq   = 1;
+  controller[c].irq_number = 14+c;
+
+  // PACKET signature
+  /*controller[c].sec_count = controller[c].sec_num = 1;
+  controller[c].cylinder = 0xeb14;
+  controller[c].drivehead = 0x10h;*/
+}
+
+// The ATAPI spec requires that certain ATA commands should abort with
+// a particular 'signature' in the registers if the device is a PACKET-
+// supporting beasty.  That's what this does:
+//
+static void IDEEm_PacketSig(void)
+{
+  CTC.sec_count = CTC.sec_num = 1;
+  CTC.cylinder = 0xEB14;
+  CTC.drivehead = 0;
+}
+
+static int IDEEm_FillTOC(void)
+{
+  struct CD_TRACKINFO_PARAMS in;
+  struct CD_TRACKINFO_RESULT out;
+  struct toc_data *toc = (struct toc_data*) CTC.buffer;
+  unsigned int msf, start, no_leadout, alloc, i;
+
+  msf = CTC.buffer[1] & 1;
+  start = CTC.buffer[6];
+  alloc = CTC.buffer[7]<<8 | CTC.buffer[8];
+  no_leadout = CTC.buffer[9] & 0x40;
+
+  memset(toc, 0, sizeof(struct toc_data));
+
+  in.drvnum = CTCI.drive[CTD];
+  in.trknum = TRKNUM_WHOLE_CD;
+  CD_TrackInfo(&in, &out);
+  if (out.status != CDERR_OK)
+  {
+    CTC.sec_count = SCP_COMMAND_FINISHED;
+    CTC.status = STATUS_ERR;
+    CTC.error = ERROR_ABT;
+    CTC.command_last = 0;
+    SYS_trace("CDERR %d", out.status);
+    return(1);
+  }
+  toc->data_length = 2;
+  toc->first = out.firsttrk;
+  toc->last  = out.lasttrk;
+  SYS_trace("CD info: tracks %d-%d, start %d", out.firsttrk, out.lasttrk, start);
+
+  if (start > toc->first); // error!
+
+  if (start == 0)
+    start = toc->first;
+  for (i=0; i!=(toc->last-start); i++)
+  {
+    CD_TrackInfo(&in, &out);
+    if (out.status != CDERR_OK)
+    {
+      CTC.sec_count = SCP_COMMAND_FINISHED;
+      CTC.status = STATUS_ERR;
+      CTC.error = ERROR_ABT;
+      CTC.command_last = 0;
+      SYS_trace("CDERR %d", out.status);
+      return(1);
+    }
+    toc->track[i].number = start+i;
+    toc->track[i].adr_control = 0x10; // wot?
+    if (out.trkflags & TRKFLAGS_DATA) toc->track[i].adr_control |= 1<<2;
+    if (out.trkflags & TRKFLAGS_4CH)  toc->track[i].adr_control |= 1<<3;
+    if (msf)
+      toc->track[i].address = INV4(CD_LogicalToMMSSFF(out.trkstart));
+    else
+      toc->track[i].address = INV4(out.trkstart);
+    toc->data_length += sizeof(struct toc_track);
+    SYS_trace("CD info: track %d start %08x", start+i, toc->track[i].address);
+  }
+  if (!no_leadout)
+  {
+    struct CD_DISKINFO_PARAMS Din;
+    struct CD_DISKINFO_RESULT Dout;
+
+    Din.drvnum = CTCI.drive[CTD];
+    CD_DiskInfo(&Din, &Dout);
+
+    toc->track[i].adr_control = 0x10;
+    toc->track[i].number = 0xAA;
+    toc->track[i].address = Dout.disksize;
+    toc->data_length += sizeof(struct toc_track);
+    SYS_trace("CD info: track %d start %08x", start+i, toc->track[i].address);
+  }
+  CTC.cylinder = CTC.buffer_limit = toc->data_length + 2;
+  toc->data_length = INV2(toc->data_length);
+  CTC.buffer_next  = 0;
+  SYS_trace("TOC follows:");
+  SYS_tracedata((BYTE*)CTC.buffer, CTC.buffer_limit);
+  CTC.sec_count = SCP_COMMAND_FINISHED;
+  CTC.status = STATUS_RDY;
+  CTC.command_last = 0;
+  return(0);
+}
+
+static int IDEEm_ModeSense()
+{
+  int  page, dbd, tlen, pcf;
+  char *p;
+
+  struct scsi_10_mode_parameter_header *mph;
+  struct scsi_block_descriptor         *bd;
+
+  // command parameters we've been passed (Schmidt, p.151)
+  page =  CTC.buffer[2] & 0x3F;
+  pcf  = (CTC.buffer[2] & 0xC0)>>6;
+  dbd  =  CTC.buffer[1] & (1<<3);
+  tlen = (CTC.buffer[7]<<8) | CTC.buffer[8];
+
+  memset(p = CTC.buffer, 0, 1024);
+
+  mph = (void*) p; p+=sizeof(struct scsi_10_mode_parameter_header);
+  mph->medium = CD_MEDIUM_DATA;
+  if (!dbd)
+  {
+    // block descriptor defines all of medium to have block length of 2048
+    bd = (void*) p; p+=sizeof(struct scsi_block_descriptor);
+    bd->block_len_mid = 0x8; // block length of 2048
+    mph->bd_length    = INV2(8);
+  }
+
+  switch (page)
+  {
+    case SCSI_PAGENUM_CDROM_AUDIO :
+      memcpy(p, &CTCI.page[CTD].cdrom_audio[pcf],
+             sizeof(struct scsi_page_cdrom_audio));
+      p+=sizeof(struct scsi_page_cdrom_audio);
+      break;
+    default :
+      break;
+  }
+  mph->total_length = /*CTC.cylinder = */(p-CTC.buffer)-2;
+  CTC.cylinder = CTC.buffer_limit = tlen;
+  mph->total_length = INV2(mph->total_length);
+  CTC.buffer_next = 0;
+  CTC.sec_count = SCP_DATA_FROM_DEVICE;
+  CTC.status = STATUS_DRQ | STATUS_RDY;
+  return(0);
+}
+
+static int  IDEEm_Read8(int addr)
+{
+  SetCU(addr);
+  /*if (DEBUG)
+  SYS_trace("IDEEm Read8:   %s ---> %Xh", rdreg[ct_reg], cu->byte[ct_reg]);*/
+
+  switch(ct_reg)
+  {
+    case IDE_REG_DATA :
+      if (CTC.buffer_next == 0 || CTC.buffer_next == (CTC.buffer_limit-1) )
+        SYS_trace("IDEEm %d read8 data %X (buffer %d)", ct_num, CTC.buffer[CTC.buffer_next], CTC.buffer_next);
+      if (CTC.buffer_next == 1)
+        SYS_trace("...");
+      if (CTC.command_last == IDE_CMD_ATAPIPKT) CTC.cylinder--;
+      if (CTC.buffer_next == (CTC.buffer_limit-1)) /* last byte */
+      {
+        SYS_tracedata((BYTE*)&CTC.buffer, CTC.buffer_limit);
+	CTC.status = (STATUS_RDY | STATUS_SKC);
+        if (CTC.command_last == IDE_CMD_READSECTOR)
+          IDEEm_FillReadBuffer();
+        if (CTC.command_last == IDE_CMD_ATAPIPKT)
+          CTC.sec_count = SCP_COMMAND_FINISHED,
+          CTC.command_last = 0;
+        DO_IRQ;
+        DO_FREEZE;
+      }
+      /*if (!(CTC.buffer_next & 1))
+        return(CTC.buffer[++CTC.buffer_next]);
+      else
+        return(CTC.buffer[(CTC.buffer_next++)-1]);*/
+      return(CTC.buffer[CTC.buffer_next++]);
+    case IDE_REG_ERROR :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.error);
+      DO_FREEZE;
+      return(CTC.error);
+    case IDE_REG_SECNUM :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.sec_num);
+      DO_FREEZE;
+      return(CTC.sec_num);
+    case IDE_REG_SECCOUNT :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.sec_count);
+      DO_FREEZE;
+      return(CTC.sec_count);
+    case IDE_REG_CYLINDERLSB :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.cylinder&0xff);
+      DO_FREEZE;
+      return(CTC.cylinder & 0xff);
+    case IDE_REG_CYLINDERMSB :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.cylinder>>8);
+      DO_FREEZE;
+      return(CTC.cylinder >> 8);
+    case IDE_REG_DRIVEHEAD :
+      SYS_trace("IDEEm %d read8 %s %X", ct_num, rdreg[ct_reg], CTC.drivehead);
+      DO_FREEZE;
+      return(CTC.drivehead);
+    case IDE_REG_STATUS :
+      SYS_trace("IDEEm %d read8 %s %s", ct_num, rdreg[ct_reg], status_str(CTC.status));
+      DO_FREEZE;
+      return(CTC.status);
+  }
+
+  SYS_trace("IDEEm %d read8 ??", ct_num);
+  return(0);
+}
+
+static int  IDEEm_Read16(int addr)
+{
+  SetCU(addr);
+  /*if (DEBUG)
+    SYS_trace("IDEEm Read16:  %s ---> %Xh", rdreg[ct_reg], *cu_data);*/
+
+  /*SYS_trace("IDEEm %d read16...", ct_num);*/
+  if (ct_reg == IDE_REG_DATA)
+    return(IDEEm_Read8(addr) | (IDEEm_Read8(addr)<<8));
+  else
+    return(IDEEm_Read8(addr) | (IDEEm_Read8(addr+1)<<8) );
+}
+
+static void IDEEm_Write8(int addr, int data)
+{
+  int z;
+
+  SetCU(addr);
+  SYS_trace("IDEEm %d write8 %s <--- %Xh", ct_num, wrreg[ct_reg], data);
+
+  switch(ct_reg)
+  {
+    case IDE_REG_DATA        :
+      CTC.buffer[CTC.buffer_next++] = data;
+      if (CTC.command_last != IDE_CMD_ATAPIPKT)
+      {
+        z = --CTC.sec_count;
+        SYS_trace("z=%d", z);
+        CTC.status = STATUS_RDY;
+        switch (CTC.command_last)
+        {
+          case IDE_CMD_WRITESECTOR :
+            break;
+        }
+        CTC.command_last = 0;
+      }
+      else
+      {
+        if (CTC.buffer_next != CTC.buffer_limit) return;
+        switch (CTC.sec_count)
+        {
+          case SCP_COMMAND_TO_DEVICE :
+            switch (CTC.buffer[0]) // SCSI command byte
+            {
+              case SCSI_TEST_UNIT_READY :
+              case SCSI_PREVENTALLOW    :
+                CTC.status = STATUS_RDY;
+                CTC.command_last = 0;
+                DO_IRQ;
+                break;
+              case SCSI_READ_TOC        :
+                IDEEm_FillTOC();
+                DO_IRQ;
+                break;
+              case SCSI_MODE_SENSE :
+                IDEEm_ModeSense();
+                DO_IRQ;
+                break;
+              default : // unimplemented or unrecognised command
+                SYS_trace("Eeek!  Unrecognised ATAPI cmd %02x", CTC.buffer[0]);
+                CTC.sec_count = SCP_COMMAND_FINISHED;
+                CTC.status = STATUS_ERR;
+                CTC.error = ERROR_ABT;
+                CTC.command_last = 0;
+                DO_IRQ;
+                break;
+            }
+            break;
+          case SCP_DATA_TO_DEVICE :
+            switch (CTC.command_last_sub)
+            {
+              default :
+                SYS_trace("Eeek!  SCP_DATA_TO_DEVICE phase with no previous command!");
+                break;
+            }
+            break;
+        }
+      }
+      break;
+    case IDE_REG_SECNUM	     :
+      CTC.sec_num = data;
+      return;
+    case IDE_REG_SECCOUNT    :
+      if (data == 0) data = 256;
+      CTC.sec_count = data;
+      return;
+    case IDE_REG_CYLINDERLSB :
+      CTC.cylinder &= 0xff00;
+      CTC.cylinder |= data;
+      return;
+    case IDE_REG_CYLINDERMSB :
+      CTC.cylinder &= 0xff;
+      CTC.cylinder |= data<<8;
+    case IDE_REG_DRIVEHEAD   :
+      CTC.drivehead = data;
+      return;
+    case IDE_REG_COMMAND     :
+    {
+      CTC.status &= ~!STATUS_ERR;
+      CTC.buffer_next = CTC.command_last = 0;
+      SYS_trace("CTCI.em[%d] = %d", CTD, CTCI.em[CTD]);
+      switch (CTCI.em[CTD])
+      {
+        case EM_NULL :
+          return;
+        case EM_HD :
+          switch (data)
+          {
+            case IDE_CMD_CALIBRATE :
+  	      SYS_trace("IDEEm Calibrate command");
+  	      CTC.cylinder = 0;
+  	      CTC.status = (STATUS_RDY | STATUS_SKC);
+  	      DO_IRQ;
+  	      break;
+            case IDE_CMD_READSECTOR :
+  	      SYS_trace("IDEEm ReadSector command");
+  	      CTC.command_last = IDE_CMD_READSECTOR;
+  	      IDEEm_FillReadBuffer();
+  	      DO_IRQ;
+  	      break;
+  	    case IDE_CMD_IDENTIFY :
+  	      SYS_trace("IDEEm Identify command (HD)");
+  	      IDEEm_IdentifyHD();
+  	      DO_IRQ;
+  	      break;
+  	    case IDE_CMD_DRIVEPARAMS :
+  	      SYS_trace("IDEEm Set drive parameters command");
+  	      /*CTC.lba_sectors = CTC.sec_count;*/
+  	      CTC.status = (STATUS_RDY | STATUS_SKC);
+  	      DO_IRQ;
+  	      break;
+  	    case IDE_CMD_ATAPIRESET :
+  	      /*CTC.status |= STATUS_BSY;*/
+  	      CTC.status = STATUS_ERR | STATUS_RDY;
+  	      CTC.error = ERROR_ABT;
+  	      DO_IRQ;
+  	      break;
+  	    default : // unknown command
+  	      SYS_trace("IDEEm unrecognised command (%X)", data);
+  	      CTC.error  = 255;/*(cu->r.error  | ERROR_ABT);*/
+  	      CTC.status |= (STATUS_ERR | STATUS_IDX );
+  	      DO_IRQ;
+  	      return;
+          }
+          break;
+        case EM_CDROM :
+          switch (data)
+          {
+            case IDE_CMD_CALIBRATE   :
+            case IDE_CMD_READSECTOR  :
+  	    case IDE_CMD_IDENTIFY    :
+  	    case IDE_CMD_DRIVEPARAMS :
+              CTC.status = STATUS_ERR;
+              CTC.error  = ERROR_ABT;
+  	    case IDE_CMD_ATAPIRESET  :
+              SYS_trace("IDEEm abort with PACKET signature");
+              IDEEm_PacketSig();
+              DO_IRQ;
+              return;
+            case IDE_CMD_ATAPIPKT    :
+              SYS_trace("IDEEm ATAPI packet");
+              CTC.status = STATUS_DRQ;
+              CTC.command_last = IDE_CMD_ATAPIPKT;
+              CTC.command_last_sub = -1;
+              CTC.buffer_next = 0;
+              CTC.buffer_limit = 12;
+              CTC.sec_count = SCP_COMMAND_TO_DEVICE;
+              DO_IRQ;
+              return;
+            case IDE_CMD_ATAPIID     :
+              SYS_trace("IDEEm ATAPI ID command");
+              IDEEm_IdentifyCDROM();
+  	      DO_IRQ;
+              return;
+          }
+          break;
+      }
+    }
+  }
+  DO_FREEZE;
+
+  /*cu->byte[ct_reg] = data;*/
+}
+
+static void IDEEm_Write16(int addr, int data)
+{
+  SetCU(addr);
+  /*if (DEBUG)
+    SYS_trace("IDEEm Write16: %s <--- %Xh", wrreg[ct_reg], data);*/
+  SYS_trace("IDEEm %d write16...", ct_num);
+
+  IDEEm_Write8(addr, data&0xff);
+
+  if (ct_reg == IDE_REG_DATA)
+    IDEEm_Write8(addr, data>>8);
+  else
+    IDEEm_Write8(addr+1, data>>8);
+
+  return;
+}
+
+static int IDEEm_HiRead8(int addr)
+{
+  int v;
+
+  if (addr == IDE_REG_ADDRESS)
+  {
+    SYS_trace("IDEEm   read8 addressreg---> %Xh", drive_address_reg);
+    return(drive_address_reg);
+  }
+  if (addr == IDE_REG_STATUS2)
+  {
+    v = CTC.status;
+    SYS_trace("IDEEm   read8 status2   ---> %s", status_str(CTC.status));
+    CTC.status &= ~STATUS_BSY;
+    return(v);
+  }
+  return(0);
+}
+
+static void IDEEm_HiWrite8(int addr, int data)
+{
+  if (addr == IDE_REG_OUTPUT)
+  {
+    if ( (data & 4) == 4)
+      IDEEm_Reset(0), IDEEm_Reset(1), SYS_trace("IDEEm reset");
+    CTC.use_irq = !((data>>1) & 1);
+    SYS_trace("IDEEm CTC.use_irq = %d", CTC.use_irq);
+    return;
+  }
+  if (addr == IDE_REG_ADDRESS) /* READ ONLY! */
+  {
+    SYS_trace("IDEEm HiWrite8:  driveaddr <--- %Xh (!!!)", data);
+    drive_address_reg = data;
+    CTC.status = 0xff;
+  }
+}
+
+static int IDEEm_HiRead16(int addr)
+{
+  return(IDEEm_HiRead8(addr) | (IDEEm_HiRead8(addr+1)<<8));
+}
+
+static void IDEEm_HiWrite16(int addr, int data)
+{
+  IDEEm_HiWrite8(addr, data);
+  IDEEm_HiWrite8(addr, data>>8);
+}
+
+static bool IDEEm_SetDefaultPages(void)
+{
+  // page 0x0E : CD-ROM audio
+  memset(CTCI.page[CTD].cdrom_audio, 0,
+         sizeof(struct scsi_page_cdrom_audio)*4);
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].page_id  = 0xE;
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].page_len = 0xE;
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].flags    = 1<<2; // IMMED bit
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].lbas_per_sec = INV2(0x4B);
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].out0_sel = 1;
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].out1_sel = 2;
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].port0_vol =
+  CTCI.page[CTD].cdrom_audio[PAGE_CURRENT].port1_vol = 0x68;
+  memcpy(&CTCI.page[CTD].cdrom_audio[PAGE_SAVED],
+         &CTCI.page[CTD].cdrom_audio[PAGE_CURRENT],
+         sizeof(struct scsi_page_cdrom_audio));
+  memcpy(&CTCI.page[CTD].cdrom_audio[PAGE_DEFAULT],
+         &CTCI.page[CTD].cdrom_audio[PAGE_CURRENT],
+         sizeof(struct scsi_page_cdrom_audio));
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].page_id   = 0xE;
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].page_len  = 0xE;
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].out0_sel  =
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].out1_sel  = 3;
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].port0_vol =
+  CTCI.page[CTD].cdrom_audio[PAGE_MASK].port1_vol = 0xff;
+}
+
+// Needs to be called after the HPC HD stuff has set up
+//
+static bool IDEEm_SetConfig(void)
+{
+  struct CD_INIT_PARAMS CDInit_in;
+  struct CD_INIT_RESULT CDInit_out;
+  struct HD_INFO_PARAMS HDInfo_in;
+  struct HD_INFO_RESULT HDInfo_out;
+
+  SetCU(0x1F0); // select first IDE controller
+  CTCI.drive[0] = 0; CTCI.drive[1] = 1; // hardwire for now
+
+  // read HD0 information
+  HDInfo_in.hpc_id = HPC_HD_ID;
+  HDInfo_in.reason = HPC_HD_INFO;
+  HDInfo_in.drvnum = 0;
+  HD_GetInfo(&HDInfo_in, &HDInfo_out);
+  CTCI.nsecs[0] = HDInfo_out.nsects;
+  CTCI.nheads[0] = HDInfo_out.nheads;
+  CTCI.ncyls[0] = HDInfo_out.ncyls;
+  if (CTCI.ncyls[0] == 0) CTCI.em[0] = EM_NULL; else CTCI.em[0] = EM_HD;
+
+  // read HD1 information
+  HDInfo_in.hpc_id = HPC_HD_ID;
+  HDInfo_in.reason = HPC_HD_INFO;
+  HDInfo_in.drvnum = 1;
+  HD_GetInfo(&HDInfo_in, &HDInfo_out);
+  CTCI.nsecs[1] = HDInfo_out.nsects;
+  CTCI.nheads[1] = HDInfo_out.nheads;
+  CTCI.ncyls[1] = HDInfo_out.ncyls;
+  if (CTCI.ncyls[1] == 0) CTCI.em[1] = EM_NULL; else CTCI.em[1] = EM_HD;
+
+  SetCU(0x170); // select second IDE controller
+  CTCI.drive[0] = 0; CTCI.drive[1] = 1;
+
+  // read CD-ROM information (max. 2 emulated at this level)
+  CDInit_in.hpc_id = HPC_CD_ID;
+  CDInit_in.reason = HPC_CD_INIT;
+  CD_Init(&CDInit_in, &CDInit_out);
+  if (CDInit_out.ndrives > 0)
+    CTCI.em[0] = EM_CDROM; else CTCI.em[0] = EM_NULL;
+  if (CDInit_out.ndrives > 1)
+    CTCI.em[1] = EM_CDROM; else CTCI.em[1] = EM_NULL;
+  CTC.drivehead = 0xA0; IDEEm_SetDefaultPages();
+  CTC.drivehead = 0xB0; IDEEm_SetDefaultPages();
+
+  IDEEm_Reset(0);
+  IDEEm_Reset(1);
+
+  // primary IDE controller for HD emulation
+  SYS_registerIO(0x1F0, 0x1F7, IDEEm_Read8, IDEEm_Read16, IDEEm_Write8, IDEEm_Write16, NULL);
+
+  // don't bother registering second IDE controller if no CD-ROMs attached
+  if (CDInit_out.ndrives > 0)
+    SYS_registerIO(0x170, 0x177, IDEEm_Read8, IDEEm_Read16, IDEEm_Write8, IDEEm_Write16, NULL);
+
+  // alternative status register / drive control
+  SYS_registerIO(0x3F6, 0x3F7, IDEEm_HiRead8, IDEEm_HiRead16, IDEEm_HiWrite8, IDEEm_HiWrite16, NULL);
+}
+
+extern bool IDEEm_Init(void)
+{
+  SYS_registerEvent( SYS_HDDStarted, IDEEm_SetConfig, 0 );
+
+  return(true);
+}
+

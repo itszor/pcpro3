@@ -1,0 +1,1270 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.C.FDDBIOS - BIOS-level functions for floppy disk
+*
+*   16-01-92 INH   Format code added
+*                  Unhandled drive numbers bug fixed.
+*   15-03-92       Uses Sys.h.rom for table address
+*   18-03-92       Code for high-density disks
+*   15-07-92       Took out 'Activity'
+*   11-01-93       Uses QuadFS if present
+*   09-02-93       Allow 5.25" drives with QuadFS
+*   07-05-95       Rewritten, for HPC
+*   97-03-03 W     Disablefloppies added
+*/
+#define DEBUG 0
+
+#define NOBBLE_FDDIMAGE_CODE
+
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "kernel.h"
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+
+#include "dev.h.hpc_fd"
+
+#if DEBUG
+#define debug(a) SYS_trace a
+#else
+#define debug(a)
+#endif
+
+/* Definitions **************************************************** */
+
+#define MaxDrives      4
+
+/* *** SWI numbers */
+
+#define SWI_Xbit             0x20000
+#define ADFS_MiscOp         (0x4024C | SWI_Xbit)
+#define ADFS_DiskOp         (0x40240 | SWI_Xbit)
+#define ADFS_ControllerType (0x40248 | SWI_Xbit)
+#define ADFS_Drives         (0x40242 | SWI_Xbit)
+#define ADFS_Retries        (0x40244 | SWI_Xbit)
+#define OS_Byte              0x06
+
+#define QuadFS_DiskOp       (0x44600 | SWI_Xbit)
+#define QuadFS_Status       (0x44601 | SWI_Xbit)
+#define QuadFS_Drives       (0x44602 | SWI_Xbit)
+
+
+/* *** SWI reason codes */
+
+#define DiskOp_Verify      0
+#define DiskOp_Read        1
+#define DiskOp_Write       2
+#define DiskOp_WriteTrack  4
+
+#define MiscOp_PollChanged 1
+
+/* *** Flag returns from MiscOp PollChanged */
+
+#define MiscOp_NotChanged    0x1
+#define MiscOp_MaybeChanged  0x2
+#define MiscOp_Changed       0x4
+#define MiscOp_Empty         0x8
+
+#define MiscOp_EmptyWorks    0x40
+#define MiscOp_DetectsChange 0x80
+
+/* *** Error returns from DiskOp */
+
+#define DiskOp_ErrMask       0xF00FF
+#define DiskOp_Escape        0x10011
+#define DiskOp_WriteProt     0x100C9
+#define DiskOp_DriveEmpty    0x100D3
+#define DiskOp_BadDrive      0x100AC
+#define DiskOp_BadParms      0x100A1
+#define DiskOp_SectNotFnd    0x100C7
+
+/* Types ********************************************************* */
+
+/* ADFS Disk record *** */
+
+struct DiskRecord
+{
+  BYTE sect_shift;   /* Log2 of sector size; 9=>512 bytes */
+  BYTE nsects;       /* = maximum sector number+1 */
+  BYTE nheads;       /* = maximum head number+1 */
+  BYTE density;      /* 1=single, 2=double, 3=high density */
+  BYTE beardy1;      /* "length of id of map fragment in bits */
+  BYTE beardy2;      /* "log2 of bytes for each map bit" */
+  BYTE sect_skew;
+  BYTE boot_opt;     /* Boot option */
+  BYTE firstsect;    /* First sector on disk, 0 or 1 */
+  BYTE beardy3[3];   /* "number of zones in the map" */
+  LONG rootdiraddr;  /* Disk address of root directory */
+  LONG size;         /* Number of bytes in disk */
+  BYTE disk_id[2];
+  BYTE disk_name[10];
+  BYTE resrvd2[32];
+};
+
+/* RISCOS 3.00 'Write Track' format structure *************************** */
+
+struct SectFormat
+{
+   BYTE track;
+   BYTE head;
+   BYTE sect;
+   BYTE sizecode;     /* 0=128, 1=256, 2=512 byte sectors, etc */
+};
+
+struct FormatSpec
+{
+  int  sect_size;
+  int  gap1;
+  int  resrvd1;
+  int  gap3;
+  BYTE nsectors;
+  BYTE density;
+  BYTE options;
+  BYTE sectdata;
+  int  ntracks;
+  int  resrvd2, resrvd3, resrvd4;
+
+  struct SectFormat format[1];
+};
+
+
+/* Our drive information ***************************** */
+
+/* Drive flags bits */
+
+#define DF_STARTSECT1 0x100 /* Set if sectors can start at 1 numbering */
+#define DF_USENEWFMT  0x200 /* Use if RISCOS3-style formatting call is */
+                            /* to be used. It seems STARTSECT1 must */
+                            /* be set if this is set */
+#define DF_USEQUADFS  0x400 /* True if it uses QuadFS */
+
+
+typedef struct DriveInfo
+{
+  /* General information */
+  const int sizecode;        /* DS_xxxx. 0 means no drive */
+  const int flags;           /* DF_xxxx series */
+  const int def_density;     /* DD_xxxx - default density mode for format */
+
+  int cur_density;           /* Current mode: DD_xxxx series */
+
+  /* DOS information */
+
+  const int ntracks;       /* Values to return, describe drive */
+  const int nheads;        /* at max capacity */
+  const int nsects;
+
+  /* ADFS information */
+  int PollChanged_SeqNo; /* Sequence number for PollChanged call */
+  int lcldriveID;    /* Drive ID for RISCOS or QuadFS */
+} DRIVE;
+
+
+/* Defaults ********************************************** */
+
+static DRIVE NoDrive =
+{
+  DS_NONE,  0,
+  DD_NONE, DD_NONE,
+
+  0, 0, 0,
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE Default_RISCOS2Drive =
+{
+  DS_720K, 0,
+  DD_DOUBLE, DD_DOUBLE,
+
+  80, 2, 9,     /* 80tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* ADFS under RISCOS 3 -------------- */
+
+static DRIVE ADFS_360KDrive =
+{
+  DS_360K, 0,
+  DD_DOUBLE, DD_DOUBLE,
+
+  40, 2, 9,     /* 40tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE ADFS_1200KDrive =
+{
+  DS_1200K, DF_STARTSECT1 | DF_USENEWFMT | DF_MULTIRATE | DF_CHANGEDETECT,
+  DD_QUAD, DD_QUAD,
+
+  80, 2, 15,     /* 80tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE ADFS_720KDrive =
+{
+  DS_720K, 0,
+  DD_DOUBLE, DD_DOUBLE,
+  80, 2, 9,     /* 80tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE ADFS_1440KDrive =
+{
+  DS_1440K, DF_STARTSECT1 | DF_USENEWFMT | DF_MULTIRATE | DF_CHANGEDETECT,
+  DD_QUAD, DD_QUAD,
+
+  80, 2, 18,     /* 80tracks, 2sides, 18sectors */
+
+  0, 0
+};
+
+/* QuadFS -------------- */
+
+static DRIVE QuadFS_360KDrive =
+{
+  DS_360K, DF_STARTSECT1 | DF_USENEWFMT | DF_USEQUADFS,
+  DD_DOUBLE, DD_DOUBLE,
+
+  40, 2, 9,     /* 40tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+
+/* -------------- */
+
+static DRIVE QuadFS_720KDrive =
+{
+  DS_720K, DF_STARTSECT1 | DF_USENEWFMT | DF_USEQUADFS,
+  DD_DOUBLE, DD_DOUBLE,
+
+  80, 2, 9,     /* 80tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE QuadFS_1200KDrive =
+{
+  DS_1200K, DF_STARTSECT1 | DF_USENEWFMT | DF_USEQUADFS | DF_MULTIRATE,
+  DD_QUAD, DD_QUAD,
+
+  80, 2, 15,     /* 80tracks, 2sides, 9sectors */
+
+  0, 0
+};
+
+/* -------------- */
+
+static DRIVE QuadFS_1440KDrive =
+{
+  DS_1440K, DF_STARTSECT1 | DF_USENEWFMT | DF_USEQUADFS | DF_MULTIRATE,
+  DD_QUAD, DD_QUAD,
+
+  80, 2, 18,     /* 80tracks, 2sides, 18sectors */
+
+  0, 0
+};
+
+
+/* External variables ************************************************** */
+
+extern int RISCOSlevel;
+
+/* Global variables ************************************************** */
+
+static int  FD_NDrives;    /* No. of drives to report to DOS */
+
+static DRIVE  FDDrives[ MaxDrives ];
+
+static struct DiskRecord DiskRec; /* All fields initialise to zero */
+
+/* Init & Config Routines ********************************************* */
+
+static int FDD_GetNoOfADFSDrives ()
+{
+  _kernel_swi_regs regs;
+  _kernel_oserror  *err;
+
+  err = _kernel_swi(ADFS_Drives, &regs, &regs);
+
+  if ( err != NULL )
+  {
+    SYS_error(false, "iwadfsswi", err->errnum );
+    return 0;
+  }
+
+  return regs.r[1];
+}
+
+/* ************************************** */
+
+static int FDD_GetNoOfQuadFSDrives ()
+{
+  _kernel_swi_regs regs;
+  _kernel_oserror  *err;
+
+  err = _kernel_swi(QuadFS_Drives, &regs, &regs);
+
+  if ( err != NULL )
+    return 0;
+
+  return regs.r[1];
+}
+
+/* ************************************** */
+
+static void FDD_SetADFSRetries( int n )
+{
+  _kernel_swi_regs regs;
+  _kernel_oserror  *err;
+
+  regs.r[0] = 0x0000FF00;  /* Bit mask - change FD sector retry count */
+  regs.r[1] = n << 8;      /* New value */
+  _kernel_swi ( ADFS_Retries, &regs, &regs );
+
+  err = _kernel_swi(ADFS_Retries, &regs, &regs);
+
+}
+
+/* ************************************************************* */
+
+/* These are subroutines for FDD_InitDriveInfo(); it is give a QuadFS or ADFS
+   physical drive number, & returns true or false according to whether that
+   drive is usable or not. If it is, the appropriate info is copied into
+   the given drive info structure.
+*/
+
+static bool  FDD_SetQuadFSDriveInfo( int physdrive, struct DriveInfo *pDI )
+{
+  _kernel_swi_regs regs;
+  _kernel_oserror  *err;
+
+  err = _kernel_swi(QuadFS_Status, &regs, &regs);
+
+  if ( err != NULL )
+  {
+    /* SWI error! Probably no QuadFS available */
+    return false;
+  }
+
+  switch ( (regs.r[0] >> ( physdrive*2 )) & 3)
+  {
+    case 0 : /* Drive not present: return */
+             return false;
+
+    case 1 : /* 3.5" drive */
+             *pDI = QuadFS_1440KDrive;
+             break;
+
+    case 2 : /* 5.25" drive */
+             *pDI = QuadFS_1200KDrive;
+             break;
+
+    default: /* Unknown drive type! */
+             return false;
+  }
+
+  /* Get here if a valid drive has been found */
+  debug(("QuadFS drive %d, size code %d", physdrive, pDI->sizecode));
+
+  pDI->lcldriveID = physdrive;
+  return true;
+}
+
+/* ******************************** */
+
+static bool  FDD_SetADFSDriveInfo( int physdrive, struct DriveInfo *pDI )
+{
+
+  _kernel_swi_regs regs;
+
+  regs.r[0] = physdrive;
+
+  if ( RISCOSlevel < 3 )
+  {
+    *pDI = Default_RISCOS2Drive;
+  }
+  else
+  {
+    if ( _kernel_swi(ADFS_ControllerType, &regs, &regs) != NULL )
+      return false; /* SWI error! */
+
+    switch ( regs.r[0] )
+    {
+      case 0 : /* Drive not present: Exit and return */
+               return false;
+
+      case 1 : /* 1772 type */
+               *pDI = ADFS_720KDrive;
+               break;
+
+      case 2 : /* Hidensity type */
+               *pDI = ADFS_1440KDrive;
+               break;
+
+      default: /* Unknown drive type! */
+               return false;
+    }
+  }
+
+  /* Get here if a valid drive has been found */
+
+  debug(("ADFS drive %d, size code %d", physdrive, pDI->sizecode));
+
+  pDI->lcldriveID = physdrive;
+  return true;
+
+}
+
+/* --------------------------- */
+
+static void OverrideSettings ( struct DriveInfo *pDst,
+              struct DriveInfo *pADFSdrv, struct DriveInfo *pQuadFSdrv )
+{
+  int lcl_ID = pDst->lcldriveID;
+
+
+  if ( pDst->flags & DF_USEQUADFS )
+    *pDst = *pQuadFSdrv;
+  else
+    *pDst = *pADFSdrv;
+
+  pDst->lcldriveID = lcl_ID;
+}
+
+/* ************************** */
+
+static void  FDD_InitDriveInfo()
+{
+  int i, nADFS, nQuadFS;
+
+  /* To start with, no drives at all */
+
+  for (i=0; i<MaxDrives; i++)
+    FDDrives[i] = NoDrive;
+
+  FD_NDrives = 0;
+
+  if (CFG.DisableFloppies) return; /* skip out if floppies disabled */
+
+  /* Sort out how many of each */
+
+  nADFS   = FDD_GetNoOfADFSDrives();
+  nQuadFS = FDD_GetNoOfQuadFSDrives();
+
+  /* Do QuadFS drives */
+
+  for ( i=0; i<nQuadFS && FD_NDrives < MaxDrives; i++ )
+  {
+    if ( FDD_SetQuadFSDriveInfo ( i, &FDDrives[FD_NDrives] ) )
+      FD_NDrives ++;
+  }
+
+  /* Then do ADFS drives */
+
+  for ( i=0; i<nADFS && FD_NDrives < MaxDrives; i++ )
+  {
+    if ( FDD_SetADFSDriveInfo ( i, &FDDrives[FD_NDrives] ) )
+      FD_NDrives ++;
+  }
+
+  /* Override with settings in config */
+
+  for ( i=0; i<FD_NDrives; i++ )
+  {
+    switch ( CFG.FloppySize[i] )
+    {
+      case 360:
+        OverrideSettings ( &FDDrives[i],
+                              &ADFS_360KDrive, &QuadFS_360KDrive);
+        break;
+
+      case 720:
+        OverrideSettings ( &FDDrives[i],
+                              &ADFS_720KDrive, &QuadFS_720KDrive);
+        break;
+      case 1200:
+        OverrideSettings ( &FDDrives[i],
+                              &ADFS_1200KDrive, &QuadFS_1200KDrive);
+        break;
+      case 1440:
+        OverrideSettings ( &FDDrives[i],
+                              &ADFS_1440KDrive, &QuadFS_1440KDrive);
+        break;
+    }
+  }
+
+}
+
+
+
+/* Operating Routines **************************************************** */
+
+
+/* Subroutines -------------------------- */
+
+static void SetDiskRecord ( struct DriveInfo *pDI,
+       int lastsect, int lg2sectsize )
+{
+  /* Sets the disk record to enable us to access a given
+     sector on the specified drive. 'lastsect' is the
+     last sector number to be accessed, and 'lg2sectsize'
+     is log2 of the sector size.
+
+     This improved version allows us to read a variety of
+     weirdo disk formats */
+
+  DiskRec.sect_shift = lg2sectsize;
+
+  if ( pDI->cur_density == DD_QUAD )
+    DiskRec.density = 4;
+  else
+    DiskRec.density = 2;
+
+  DiskRec.firstsect  = ( pDI->flags & DF_STARTSECT1 ) ? 1 : 0;
+
+  DiskRec.nsects     = lastsect - DiskRec.firstsect + 1;
+  DiskRec.nheads     = pDI->nheads;
+  DiskRec.size       = (pDI->ntracks * DiskRec.nsects
+                        * DiskRec.nheads) << DiskRec.sect_shift;
+}
+
+/* **************************** */
+
+static WORD TranslateError ( _kernel_oserror *err )
+{
+  if (!err)
+    return FDERR_OK;
+
+  debug(("Floppy error %Xh: %s", err->errnum, err->errmess));
+
+  switch ( err->errnum & DiskOp_ErrMask )
+  {
+    case DiskOp_Escape:
+      return  FDERR_NOTREADY;
+
+    case DiskOp_WriteProt:
+      return  FDERR_WRPROTECT;
+
+    case DiskOp_DriveEmpty:
+      return  FDERR_NOTREADY;
+
+    case DiskOp_BadDrive:
+      return  FDERR_PARAMS;
+
+    case DiskOp_SectNotFnd:
+      return  FDERR_SECTORNF;
+
+    case DiskOp_BadParms:
+      return  FDERR_PARAMS;
+
+    default:
+      break;
+
+  }
+
+  return  FDERR_UNKNOWN;
+}
+
+/* ************************** */
+
+static uint  GetDiskAddress( struct DriveInfo *pDI,
+                           int sect, int track, int head )
+{
+  /* Should be called only when the disk record has been set */
+
+  uint psect = (sect-DiskRec.firstsect) +
+         head * DiskRec.nsects +
+         track * DiskRec.nsects * DiskRec.nheads;
+
+  return ( psect << DiskRec.sect_shift ) + (pDI->lcldriveID << 29 );
+
+}
+
+/* ------------------------ */
+
+static DRIVE *GetValidDrive ( WORD drive )
+{
+  if ( drive < MaxDrives && FDDrives[drive].sizecode != DS_NONE )
+    return &FDDrives[drive];
+
+  return NULL;
+}
+
+/* ------------------------ */
+
+/* For drives which support multiple formats, this cycles us
+   round the available modes for that drive. Leaves it
+   unchanged if there are no alternatives
+*/
+
+static void GetNextDensityMode ( DRIVE *pDrv )
+{
+  int size = pDrv->sizecode;
+
+  if (! (pDrv->flags & DF_MULTIRATE) )
+    return;
+
+  switch ( pDrv->cur_density )
+  {
+    case DD_DOUBLE:
+      if ( size == DS_1440K )
+        pDrv->cur_density = DD_QUAD;
+      break;
+
+    case DD_DOUBLEDS:
+      if ( size == DS_1200K )
+        pDrv->cur_density = DD_QUAD;
+      break;
+
+    case DD_QUAD:
+      if ( size == DS_1440K )
+        pDrv->cur_density = DD_DOUBLE;
+      else if ( size == DS_1200K )
+        pDrv->cur_density = DD_DOUBLEDS;
+      break;
+  }
+}
+/* ----------------------- */
+
+#define bit(a) (1 << (a))
+
+static bool LegalDensity ( int sizecode, int density )
+{
+  if (density==DD_DOUBLE)
+    return bit(sizecode) & ( bit(DS_360K) | bit(DS_720K) | bit(DS_1440K) );
+
+  if (density==DD_DOUBLEDS)
+    return bit(sizecode) & ( bit(DS_1200K) );
+
+  if (density==DD_QUAD)
+    return bit(sizecode) & ( bit(DS_1200K) | bit(DS_1440K) );
+
+  return false;
+}
+
+/* ----------------------- */
+
+/* CheckDriveStatus checks the current status of the media in
+   a given drive. It will return FDERR_OK,
+   FDERR_CHANGED or FDERR_NOTREADY depending on whether there is
+   the same disk, a different disk, or no disk in the drive.
+*/
+
+static WORD CheckDriveStatus ( struct DriveInfo *pDI )
+{
+  _kernel_swi_regs regs;
+
+  regs.r[0] = 1;
+  regs.r[1] = pDI->lcldriveID;
+  regs.r[2] = pDI->PollChanged_SeqNo;
+
+  /* Note! QuadFS has no change detect! */
+
+  if ( _kernel_swi(ADFS_MiscOp, &regs, &regs) != NULL )
+    return FDERR_UNKNOWN;
+
+  pDI->PollChanged_SeqNo = regs.r[2];
+
+  if ( regs.r[3] & MiscOp_DetectsChange )
+  {
+     if ( regs.r[3] & (MiscOp_MaybeChanged | MiscOp_Changed ) )
+     {
+       debug(("Disk changed"));
+       return FDERR_CHANGED;
+     }
+  }
+
+  if ( regs.r[3] & MiscOp_EmptyWorks )
+  {
+     if ( regs.r[3] & MiscOp_Empty )
+     {
+       debug(("Drive empty"));
+       return FDERR_NOTREADY;
+     }
+  }
+
+  return FDERR_OK;
+}
+
+/* Format subroutines:
+
+   There are two ways of formatting a track under RISCOS. The old
+   RISCOS-2 method involves preparing a buffer full of the entire
+   sequence of data to be written to the track. This is done by
+   MakeTrackImage.
+
+   The more modern & recommended method is to use a 'format spec'
+   structure similar to that used by the BIOS. This is done by
+   MakeFormatSpec. Use of one or the other is controlled by the
+   DF_USENEWFMT flag bit.
+*/
+
+/* MakeTrackImage ----------------------
+
+   This is passed:
+
+   'buffer', a pointer to the track buffer to use.
+   'buflen', the length of said buffer.
+   'nsects', the number of sectors on this track
+   'formattbl', a table of formatting information. This consists of
+      a number of 4-byte entries, (one per sector), as follows:
+
+      entry[0] = track #
+      entry[1] = side #
+      entry[2] = sector #
+      entry[3] = sector size ( 0=128, 1=256, 2=512, etc )
+*/
+
+static BYTE *format_ptr;
+static int   format_bytesleft; /* Left as -1 if we've run out! */
+
+static void fill ( int len, int data )
+{
+  if ( len > format_bytesleft || len < 0 )
+  {
+    format_bytesleft = -1;
+  }
+  else
+  {
+    format_bytesleft -= len;
+    while ( len-- > 0 )
+      *format_ptr++ = data;
+  }
+}
+
+/* ------------------------ */
+
+static bool MakeTrackImage (
+         BYTE *buffer,
+         int   buflen,
+         int   nsects,
+         BYTE *formattbl )
+{
+  int sectlen;
+  int gaplen=0x50;
+  int datachar=0xE5;
+
+  format_ptr       = buffer;
+  format_bytesleft = buflen;
+
+  /* Index address field */
+
+  fill ( 80, 0x4E );    /* Gap */
+  fill ( 12, 0x00 );    /* Sync */
+  fill (  3, 0xF6 );    /* Index address mark */
+  fill (  1, 0xFC );    /*   "      "      "  */
+
+  fill ( 50, 0x4E );    /* Gap 1*/
+
+
+  /* Sectors */
+
+  while ( nsects-- > 0 )
+  {
+     /* Address field */
+
+     fill ( 12, 0x00 );    /* Sync field */
+     fill (  3, 0xF5 );    /* Address mark */
+     fill (  1, 0xFE );    /*     "     "  */
+
+     fill (  1, formattbl[0] );   /* Track */
+     fill (  1, formattbl[1] );   /* Side  */
+     fill (  1, formattbl[2] );   /* Sector */
+     fill (  1, formattbl[3] );   /* Sector size */
+
+     fill (  1, 0xF7 );           /* CRC request */
+
+     fill ( 22, 0x4E );           /* Gap 2*/
+
+     /* Check sector lengths */
+
+     sectlen = 128 << formattbl[3];
+     if ( sectlen <= 0 )
+       return false;
+
+     /* Data field */
+
+     fill ( 12, 0x00 );    /* Sync field */
+     fill (  3, 0xF5 );    /* Data Address mark */
+     fill (  1, 0xFB );    /*   "      "     "  */
+
+     fill ( sectlen, datachar );  /* Sector data */
+
+     fill (  1, 0xF7 );    /* CRC request */
+
+     fill ( gaplen, 0x4E );  /* Gap 3 */
+
+     formattbl += 4;
+
+     if ( format_bytesleft < 0 )
+       return false;
+  }
+
+  /* Fill in rest of buffer gap */
+
+  fill ( format_bytesleft, 0x4E );
+
+  return true;
+}
+
+/* MakeFormatSpec() ********************************* */
+
+/* RISCOS 3 provides an alternative way to format disks,
+   by giving a 'Format Spec' structure instead of a
+   track to write. This is also needed for QuadFS
+*/
+
+static bool MakeFormatSpec ( struct FormatSpec *res,
+          struct DriveInfo *pDI, int nsects, BYTE *formattbl )
+{
+  int i;
+
+  res->sect_size = 512; /* !!! */
+  res->gap1      = 50;
+  res->resrvd1   = 50;
+  res->gap3      = 80;
+
+  res->nsectors  = nsects;
+
+  if ( pDI->cur_density == DD_QUAD )
+    res->density = 4;
+  else
+    res->density = 2;
+
+  res->options   = 1; /* Index mark required */
+  res->sectdata  = 0xE5;
+
+  res->ntracks   = pDI->ntracks;
+  res->resrvd2   = 0;
+  res->resrvd3   = 0;
+  res->resrvd4   = 0;
+
+  for ( i=0; i<nsects; i++ )
+  {
+     res->format[i].track    = formattbl[0];
+     res->format[i].head     = formattbl[1];
+     res->format[i].sect     = formattbl[2];
+     res->format[i].sizecode = formattbl[3];
+     formattbl += 4;
+  }
+
+  return true;
+}
+
+/* Main routines ===================================== */
+
+static void FDD_GetInfo (   struct FD_INFO_PARAMS *pIn,
+                            struct FD_INFO_RESULT *pOut )
+{
+  DRIVE *pDI;
+
+  pDI = GetValidDrive ( pIn->drvnum );
+
+  debug(("Query drive %d:", pIn->drvnum));
+
+  pOut->status  = FDERR_OK;
+  pOut->ndrives = FD_NDrives;
+
+  if ( pDI == NULL )
+  {
+    pOut->sizecode = DS_NONE;
+    pOut->flags    = 0;
+    pOut->nheads   = 0;
+    pOut->nsects   = 0;
+    pOut->ntracks  = 0;
+    debug(("No drive"));
+  }
+  else
+  {
+    pOut->sizecode = pDI->sizecode;
+    pOut->flags    = pDI->flags & (DF_MULTIRATE | DF_CHANGEDETECT);
+    pOut->nheads   = pDI->nheads;
+    pOut->nsects   = pDI->nsects;
+    pOut->ntracks  = pDI->ntracks;
+    debug(("Sizecode %d, flags %Xh, %d heads, %d sects, %d tracks",
+           pOut->sizecode, pOut->flags, pOut->nheads,
+           pOut->nsects, pOut->ntracks));
+
+  }
+}
+
+/* ------------------ */
+
+static void FDD_CheckStatus ( struct FD_STATUS_PARAMS *pIn,
+                              struct FD_STATUS_RESULT *pOut )
+{
+  DRIVE *pDrv = GetValidDrive(pIn->drvnum);
+
+  if ( pDrv == NULL )
+    pOut->status = FDERR_PARAMS;
+
+  else if ( pDrv->flags & DF_CHANGEDETECT )
+    pOut->status = CheckDriveStatus ( pDrv );
+
+  else  /* If drive can't tell, be pessimistic */
+    pOut->status = FDERR_CHANGED;
+}
+
+
+/* *************************************************************** */
+
+/* FDD_DiskOp gets called for read, write and verify functions
+   For 'write', it gets the data to be written from the PC beforehand.
+   For 'read', it puts the data back afterwards. For 'verify', it does
+   neither.
+*/
+
+static void FDD_DiskOp ( struct FD_RWV_PARAMS *pIn,
+                         struct FD_RWV_RESULT *pOut )
+{
+   _kernel_swi_regs SWIregs, tSWIregs;
+   struct FD_RWV_PARAMS In;
+
+   DRIVE *pDI;
+   uint len;
+   int start_dens, xfer_addr, adfs_code;
+   long int image_len;
+   FILE *image_fh;
+
+   In = *pIn;  /* Copy parameters; we may overwrite buffer in failed
+                  read attempts! */
+
+   /* Check parameters */
+
+   pDI = GetValidDrive ( In.drvnum );
+   len = In.nsects << In.sectsize;
+
+   if ( pDI == NULL                ||
+        In.head >= pDI->nheads     ||
+        In.track >= pDI->ntracks   ||
+        len == 0                   ||
+        len > FD_MAX_RDWR_LEN )
+   {
+     pOut->status = FDERR_PARAMS;
+     goto error_exit;
+   }
+
+   switch ( In.reason )
+   {
+     case HPC_FD_READ:
+       xfer_addr = (int) pOut->read_data;
+       adfs_code = DiskOp_Read;
+       break;
+
+     case HPC_FD_WRITE:
+       xfer_addr = (int) pIn->write_data;
+       adfs_code = DiskOp_Write;
+       break;
+
+     case HPC_FD_VERIFY:
+     default:
+       xfer_addr = 0;
+       adfs_code = DiskOp_Verify;
+       break;
+   }
+
+   /* Check disk hasn't changed */
+
+   if ( pDI->flags & DF_CHANGEDETECT )
+   {
+     pOut->status = CheckDriveStatus(pDI);
+     if ( pOut->status != FDERR_OK )
+       goto error_exit;
+   }
+
+   /* If the drive is multi-format, we will try the operation
+        again with different density settings if it fails */
+
+   start_dens = pDI->cur_density;
+
+   do
+   {
+     SetDiskRecord ( pDI, In.sect+In.nsects-1, /* Last sector no */
+                          In.sectsize);
+
+     SWIregs.r[0] = 0;
+     SWIregs.r[1] = adfs_code; + ( (int) &DiskRec << 6);
+     SWIregs.r[2] = GetDiskAddress ( pDI,
+                         In.sect, In.track, In.head );
+     SWIregs.r[3] = xfer_addr;
+     SWIregs.r[4] = len;
+
+     debug(("Diskop trk%d hd%d sct%d, lg2size %d, density %d",
+               In.track, In.head, In.sect, In.sectsize,
+                      DiskRec.density));
+     debug(("DiskOp_Read offset %d length %d -> 0x%X", SWIregs.r[2], len, SWIregs.r[3]));
+
+#ifndef NOBBLE_FDDIMAGE_CODE
+     image_fh = fopen(getenv("Diva$FloppyImage"), "rb");
+     debug(("image_fh = %d", image_fh));
+
+     if (image_fh == NULL)
+     {
+#endif
+       pOut->status = TranslateError( _kernel_swi(
+           (pDI->flags & DF_USEQUADFS) ? QuadFS_DiskOp : ADFS_DiskOp,
+             &SWIregs, &SWIregs  ) );
+#ifndef NOBBLE_FDDIMAGE_CODE
+     }
+     else
+     {
+       fseek(image_fh, 0, SEEK_END);
+       image_len = ftell(image_fh);
+       debug(("image_len = %d\n", image_len));
+       switch(adfs_code & 0xF)
+       {
+         case DiskOp_Verify :
+           debug(("DiskOp_Verify"));
+           if (image_len != 0 && image_len < (xfer_addr + len))
+             pOut->status = FDERR_OK;
+           else
+             pOut->status = FDERR_DATAERR;
+           break;
+         case DiskOp_Read :
+           debug(("DiskOp_Read"));
+           if (image_len == 0)
+             { pOut->status = FDERR_NOTREADY; break; }
+           In.nsects = 0x12;
+           fseek(image_fh, SEEK_SET, GetDiskAddress(pDI, In.sect, In.track, In.head));
+           In.nsects = 2;
+           if (fread((void*)xfer_addr, 1, len, image_fh) != len)
+             { pOut->status = FDERR_DATAERR; debug(("FD read error!")); }
+           else
+             pOut->status = FDERR_OK;
+           SYS_tracedata((BYTE*)xfer_addr, len);
+#if 1
+             debug(("compare with..."));
+             tSWIregs.r[0] = SWIregs.r[3]; tSWIregs.r[1] = SWIregs.r[4];
+       pOut->status = TranslateError( _kernel_swi(
+           (pDI->flags & DF_USEQUADFS) ? QuadFS_DiskOp : ADFS_DiskOp,
+             &SWIregs, &SWIregs  ) );
+           SYS_tracedata((BYTE*)tSWIregs.r[0], tSWIregs.r[1]);
+             debug(("this being the disc record..."));
+           SYS_tracedata((BYTE*)&DiskRec, sizeof(struct DiskRecord));
+#endif
+           break;
+#if 0
+         case DiskOp_Write :
+           debug(("DiskOp_Write"));
+           if (image_len == 0)
+             { pOut->status = FDERR_NOTREADY; break; }
+           tSWIregs.r[0] = 1; tSWIregs.r[1] = image_fh;
+           tSWIregs.r[2] = SWIregs.r[3]; tSWIregs.r[3] = SWIregs.r[4];
+           tSWIregs.r[4] = SWIregs.r[2];
+           if (_kernel_swi(0x0c/*OS_GBPB*/, &tSWIregs, &tSWIregs) != NULL)
+             pOut->status = FDERR_DATAERR;
+           else
+             pOut->status = FDERR_OK;
+           break;
+#endif
+         case DiskOp_WriteTrack :
+           pOut->status = FDERR_NOTREADY; break;
+           /*if (image_len == 0)
+             { pOut->status = FDERR_NOTREADY; break; }
+           fseek(image_fh, SWIregs.r[2], SEEK_SET);
+           if (fwrite((void*) SWIregs.r[4], 1, len, image_fh) != len)
+             pOut->status = FDERR_DATAERR;
+           else
+             pOut->status = FDERR_OK;
+           break;*/
+       }
+       fclose(image_fh);
+     }
+#endif
+
+     if ( pOut->status == FDERR_OK )
+     {
+       pOut->sect_count= In.nsects;
+       pOut->density   = pDI->cur_density;
+       return;
+     }
+
+     if ( pOut->status != FDERR_SECTORNF )
+       goto error_exit;
+
+     /* If sector not found, maybe a change of density setting will
+         do the trick. Keep doing this until we're back where
+         we started */
+
+     GetNextDensityMode ( pDI );
+   }
+     while ( pDI->cur_density != start_dens );
+
+   /* Get here if sector not found & no more density options */
+   /* Reset it in case it went amok */
+   pDI->cur_density = pDI->def_density;
+
+error_exit:
+   debug(("FD R/W/V op error %d", pOut->status));
+   pOut->sect_count = 0;
+   pOut->density    = DD_NONE;
+}
+
+/* FDD_Format *************************************** */
+
+static void FDD_Format (  struct FD_FORMAT_PARAMS *pIn,
+                          struct FD_FORMAT_RESULT *pOut )
+{
+   _kernel_swi_regs SWIregs;
+
+   DRIVE *pDI;
+
+   /* Start out: check parameters */
+
+   debug (("Format trk %d head %d", pIn->head, pIn->track));
+
+   pDI = GetValidDrive ( pIn->drvnum );
+
+   if ( pDI == NULL                ||
+        pIn->head >= pDI->nheads   ||
+        pIn->track >= pDI->ntracks )
+   {
+     pOut->status = FDERR_PARAMS;
+     return;
+   }
+
+   /* Set density code */
+
+   if ( pIn->density == DD_NONE )
+     pDI->cur_density = pDI->def_density;
+
+   else if ( LegalDensity ( pDI->sizecode, pIn->density ) )
+     pDI->cur_density = pIn->density;
+
+   else
+   {
+     debug(("Format: bad density %d", pIn->density));
+     pOut->status = FDERR_BADFORMAT;
+     return;
+   }
+
+   /* Set a few regs up */
+
+   SetDiskRecord ( pDI, pIn->nsects, 9 /* !! */);
+
+   SWIregs.r[0] = 0;
+   SWIregs.r[1] = DiskOp_WriteTrack + ( (int) &DiskRec << 6);
+   SWIregs.r[2] = GetDiskAddress ( pDI, DiskRec.firstsect,
+                    pIn->track, pIn->head );
+
+   /* Create format control blocks, etc */
+
+   if ( pDI->flags & DF_USENEWFMT )
+   {
+     if ( !MakeFormatSpec ( (struct FormatSpec *)SYS_TempBuf,
+                             pDI,
+                             pIn->nsects,
+                             pIn->format_data   )  )
+     {
+       debug(("New format: failed, %d sectors", pIn->nsects));
+       pOut->status = FDERR_BADFORMAT;
+       return;
+     }
+
+     SWIregs.r[3] = 0;
+     SWIregs.r[4] = (int) SYS_TempBuf;
+   }
+   else  /* Old-style format ---- */
+   {
+     if ( !MakeTrackImage ( SYS_TempBuf, SYS_BufSize, pIn->nsects,
+                                                      pIn->format_data ) )
+     {
+       debug(("Old format: failed, %d sectors", pIn->nsects));
+       pOut->status = FDERR_BADFORMAT;
+       return;
+     }
+
+     SWIregs.r[3] = (int) SYS_TempBuf;
+     SWIregs.r[4] = SYS_BufSize;
+   }
+
+   pOut->status = TranslateError(  _kernel_swi(
+                  (pDI->flags & DF_USEQUADFS) ? QuadFS_DiskOp : ADFS_DiskOp,
+                  &SWIregs,  &SWIregs   ) );
+
+   if ( pOut->status != FDERR_OK )
+     SYS_trace ( "Error on format" );
+}
+
+/* ***************************************************************** */
+
+static void FDD_HPCdispatch ( BYTE *buf )
+{
+  FD_HPC_IN_OUT *pB = (FD_HPC_IN_OUT *) buf;
+
+  if ( pB->in.common.hpc_id != HPC_FD_ID )
+  {
+    SYS_trace("FD HPC gone amok!!");
+    pB->out.common.retcode = HPCERR_NOTPRESENT;
+    return;
+  }
+
+  debug(("FD call %04Xh on drive %d", pB->in.common.reason,
+            pB->in.common.drvnum));
+
+  switch ( pB->in.common.reason )
+  {
+    case HPC_FD_INFO:
+      FDD_GetInfo ( &(pB->in.Info), &(pB->out.Info) );
+      break;
+
+    case HPC_FD_STATUS:
+      FDD_CheckStatus ( &(pB->in.Status), &(pB->out.Status) );
+      break;
+
+    case HPC_FD_READ:
+    case HPC_FD_WRITE:
+    case HPC_FD_VERIFY:
+      FDD_DiskOp ( &(pB->in.RWV), &(pB->out.RWV) );
+      break;
+
+    case HPC_FD_FORMAT:
+      FDD_Format ( &(pB->in.Format), &(pB->out.Format) );
+      break;
+
+    default:
+      pB->out.common.retcode = FDERR_UNKNOWN;
+      break;
+  }
+}
+
+
+/* ******************************** */
+
+static bool FDD_SetConfig()
+{
+  FDD_InitDriveInfo();
+  FDD_SetADFSRetries(2);
+  return false;
+}
+
+
+/* ******************************** */
+
+bool FDD_Init()
+{
+
+  SYS_registerEvent ( SYS_SetConfig, FDD_SetConfig, 0 );
+  SYS_registerHPC ( HPC_FD_ID, FDD_HPCdispatch, HPC_NORMAL, 0 );
+  return true;
+}
+

@@ -1,0 +1,16 @@
+/*
+ * Name   : network.h
+ * Desc   : Handlers for network component of PCConfig
+ * Author : Matthew Bloch
+ * Date   : 1-October-1997
+ */
+
+#ifndef __network_h
+#define __network_h
+
+extern void do_network_initialise(void);
+extern void setup_network_window(void);
+extern void update_network_window(void);
+extern int  network_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

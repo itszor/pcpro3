@@ -1,0 +1,774 @@
+; ****************************************************************
+;
+; DIVA Project 80386 code
+;
+; BIOSTBL.ASI	ROM tables: Video parameters,
+;		FD and HD tables
+;
+; Versions
+; 0.1	24-11-91 INH	Original
+;	13-03-92	Fonts moved to BIOSFont.ASI
+;	27-10-92	VGA_PtrTbl1 added
+;	24-02-93	VGA mode parameters added
+;	19-07-93	Mode tables made accurate
+;	22-10-93	DAC Entry 10h (Flight-Sim green) corrected
+; 1.24	27-01-94	HD Parameters made correct. Xtd BIOS area present
+; *****************************************************************
+
+
+	; System Parameters table definition
+	; This is a table pointed to by use of Int 15h function C0h
+	; Phoenix BIOS has it at FE6F5; I don't think anyone relies
+	; on this though.
+
+	; Note: when PIC2 is present, IO.SYS seems to want to write
+	; lots of crap to I/O port 672h. I don't know why, but this
+	; access needs to be ignored by ARM if so.
+
+SYSParams:	DB	08h, 00h	; Size of table (minimum=8)
+		DB	0FCh, 00h	; Model=AT
+		DB	00, 074h	; Bios revision = 00,
+					; System parameters are:
+					; PIC2, RTC, Int15 function 4Fh,
+					; present;
+					; extended BIOS data present
+
+		DB	0, 0, 0, 0	; Reserved
+
+; Hard disk parameters ******************************
+
+HD_parms1:
+	; Test HD: 17x5x977
+		DW	977		; NCyls
+		DB	5		; NHeads
+		DB	0, 0		; Reserved
+		DW	0		; Write Precomp
+		DB	0		; Reserved
+		DB	00h		; Control byte
+		DB	0,0,0
+		DW	0		; Landing zone
+		DB	17		; NSects
+		DB	0
+
+
+HD_parms2:
+	; Standard HD: 17x5x1024
+		DW	1024		; NCyls
+		DB	5		; NHeads
+		DB	0, 0		; Reserved
+		DW	0		; Write Precomp
+		DB	0		; Reserved
+		DB	00h		; Control byte
+		DB	0,0,0
+		DW	0		; Landing zone
+		DB	17		; NSects
+		DB	0
+
+; Video Parameters ====================================================
+
+; 6845 parameters for MDA or CGA video modes
+ 
+VID_params:   
+        DB      38h, 28h, 2dh, 0ah, 1fh, 6, 19h         ; 40x25
+        DB      1ch, 2, 7, 6, 7
+        DB      0, 0, 0, 0
+                
+        DB      71h, 50h, 5ah, 0ah, 1fh, 6, 19h         ; 80x25
+        DB      1ch, 2, 7, 6, 7
+        DB      0, 0, 0, 0
+                
+        DB      38h, 28h, 2dh, 0ah, 7fh, 6, 64h         ; graphics
+        DB      70h, 2, 1, 6, 7
+        DB      0, 0, 0, 0
+                
+        DB      61h, 50h, 52h, 0fh, 19h, 6, 19h         ; 80x25 B&W card
+        DB      19h, 2, 0dh, 0bh, 0ch
+        DB      0, 0, 0, 0
+                
+regen_lengths   DW      2048                            ; regen lengths
+                DW      4096
+                DW      16384
+                DW      16384
+        
+cols_in_mode    DB      40, 40, 80, 80, 40, 40, 80, 80          ; cols
+        
+VID_modevals    DB      2Ch, 28h, 2Dh, 29h, 2Ah, 2Eh, 1Eh, 29h  ; mode sets
+		DB	3, 3, 5, 5, 3, 3, 3, 4			; Don't know
+VID_CGApals	DB	30h, 30h, 30h, 30h, 30h, 30h, 3Fh, 0FFh 
+
+
+; VGA Tables ===========================================================
+
+VGA_PtrTbl1	DW	VGA_ModeTbl, BIOSROMSeg		; Video param tbl
+		DW	0, 0				; Dynamic Save Area
+		DW	0, 0				; Text Aux Char Gen
+		DW	0, 0				; Graphics Char Set
+		DW	VGA_PtrTbl2, BIOSROMSeg		; 2nd pointer tbl
+		DW	0, 0				; Reserved
+		DW	0, 0				; Reserved
+
+VGA_PtrTbl2	DW	01Ah				; Length
+		DW	VGA_DCCTbl, BIOSROMSeg
+		DW	0, 0				; 2nd Aux Char Gen
+		DW	0, 0				; User Palette Profile
+		DW	0, 0				; Reserved #5
+		DW	0, 0				; Reserved #6
+		DW	0, 0				; Reserved #7
+
+
+VGA_DCCTbl	DB	10h, 01h, 08h, 00h		; Mumble frotz
+		DB	00, 00, 00, 01, 00, 02, 02, 01
+		DB	00, 04, 04, 01, 00, 05, 02, 05
+		DB	00, 06, 01, 06, 05, 06, 00, 08
+		DB	01, 08, 00, 07, 02, 07, 02, 06
+
+; VGA Mode Tables ====================================================
+
+; For each mode, these have the following format
+
+;  nCols,nRows-1,CharHeight, PageSizeL, PageSizeH, SR1, SR2, SR3
+;		SR4,MiscOp, CR0,  CR1,  CR2,  CR3,  CR4,  CR5,
+;		CR6,  CR7,  CR8,  CR9,  CRA,  CRB,  CRC,  CRD,
+;		CRE,  CRF,  CR10, CR11, CR12, CR13, CR14, CR15,
+;		CR16, CR17, CR18, AR0,  AR1,  AR2,  AR3,  AR4,
+;		AR5,  AR6,  AR7,  AR8,  AR9,  ARA,  ARB,  ARC,
+;		ARD,  ARE,  ARF,  AR10, AR11, AR12, AR13, GR0,
+;		GR1,  GR2,  GR3,  GR4,  GR5,  GR6,  GR7,  GR8
+
+; For each mode number, the position of its corresponding entry in
+; this array is looked up according to a variety of circumstances
+; (no VGA, 200/350/400-line text modes) by the VID_ModeChange routine.
+; The order of entries in this table must be correlated to entries
+; in the VID_noVGAtbl/VID_400linetbl (etc) tables.
+; 26/11/93 - Cleared AR10 bit 3 (blink) in colour text modes
+VGA_ModeTbl:
+ 
+; Mode 00/01h, 200-line
+	DB	028h, 018h, 008h, 000h, 010h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 0A0h
+	DB	0BFh, 01Fh, 000h, 0C7h, 006h, 007h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+; Mode 00/01h, 200-line
+	DB	028h, 018h, 008h, 000h, 010h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 0A0h
+	DB	0BFh, 01Fh, 000h, 0C7h, 006h, 007h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+; Mode 02/03h, 400-line
+	DB	050h, 018h, 010h, 000h, 010h, 001h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Fh, 00Dh, 00Eh, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+; Mode 02/03h, 400-line
+	DB	050h, 018h, 010h, 000h, 010h, 001h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Fh, 00Dh, 00Eh, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+
+; Mode 04/05h
+	DB	028h, 018h, 008h, 000h, 040h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 080h
+	DB	0BFh, 01Fh, 000h, 0C1h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 000h, 096h
+	DB	0B9h, 0A2h, 0FFh, 000h, 013h, 015h, 017h, 002h
+	DB	004h, 006h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 001h, 000h, 003h, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 030h, 00Fh, 000h, 0FFh
+; Mode 04/05h
+	DB	028h, 018h, 008h, 000h, 040h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 080h
+	DB	0BFh, 01Fh, 000h, 0C1h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 000h, 096h
+	DB	0B9h, 0A2h, 0FFh, 000h, 013h, 015h, 017h, 002h
+	DB	004h, 006h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 001h, 000h, 003h, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 030h, 00Fh, 000h, 0FFh
+
+; Mode 06h
+	DB	050h, 018h, 008h, 000h, 040h, 001h, 001h, 000h
+	DB	006h, 063h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	0BFh, 01Fh, 000h, 0C1h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 08Eh, 08Fh, 028h, 000h, 096h
+	DB	0B9h, 0C2h, 0FFh, 000h, 017h, 017h, 017h, 017h
+	DB	017h, 017h, 017h, 017h, 017h, 017h, 017h, 017h
+	DB	017h, 017h, 017h, 001h, 000h, 001h, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 00Dh, 000h, 0FFh
+
+; Mode 07h, 400-line
+	DB	050h, 018h, 010h, 000h, 010h, 000h, 003h, 000h
+	DB	002h, 0A6h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Fh, 00Dh, 00Eh, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 00Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 008h, 008h, 008h, 008h
+	DB	008h, 008h, 008h, 010h, 018h, 018h, 018h, 018h
+	DB	018h, 018h, 018h, 00Eh, 000h, 00Fh, 008h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Ah, 000h, 0FFh
+
+; 08h
+; Mode 07h, 350-line
+	DB	050h, 018h, 00Eh, 000h, 010h, 000h, 003h, 000h
+	DB	002h, 0A6h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Dh, 00Bh, 00Ch, 000h, 000h
+	DB	000h, 000h, 083h, 0A5h, 05Dh, 028h, 00Dh, 063h
+	DB	0BAh, 0A3h, 0FFh, 000h, 008h, 008h, 008h, 008h
+	DB	008h, 008h, 008h, 010h, 018h, 018h, 018h, 018h
+	DB	018h, 018h, 018h, 00Eh, 000h, 00Fh, 008h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Ah, 000h, 0FFh
+
+; 09h
+; Mode 07h, 200-line (not a real mode)
+	DB	050h, 018h, 008h, 000h, 010h, 000h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 0C7h, 006h, 007h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 007h, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 008h, 008h, 008h, 008h
+	DB	008h, 008h, 008h, 010h, 018h, 018h, 018h, 018h
+	DB	018h, 018h, 018h, 00Eh, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Ah, 000h, 0FFh
+
+; 0Ah
+; Mode 02/03h, 400-line
+	DB	050h, 018h, 010h, 000h, 010h, 001h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Fh, 00Dh, 00Eh, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+
+; 0Bh
+; Mode 02/03h, 350-line
+	DB	050h, 018h, 00Eh, 000h, 010h, 001h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 04Dh, 00Bh, 00Ch, 000h, 000h
+	DB	000h, 000h, 083h, 0A5h, 05Dh, 028h, 01Fh, 063h
+	DB	0BAh, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+
+; 0Ch
+; Mode 02h/03h, 200-line
+	DB	050h, 018h, 008h, 000h, 010h, 001h, 003h, 000h
+	DB	002h, 063h, 05Fh, 04Fh, 050h, 082h, 055h, 081h
+	DB	0BFh, 01Fh, 000h, 0C7h, 006h, 007h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+
+; Mode 0Dh
+	DB	028h, 018h, 008h, 000h, 020h, 009h, 00Fh, 000h
+	DB	006h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 080h
+	DB	0BFh, 01Fh, 000h, 0C0h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 000h, 096h
+	DB	0B9h, 0E3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 006h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 00Fh, 0FFh
+; Mode 0Eh
+	DB	050h, 018h, 008h, 000h, 040h, 001h, 00Fh, 000h
+	DB	006h, 063h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	0BFh, 01Fh, 000h, 0C0h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 000h, 096h
+	DB	0B9h, 0E3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 006h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 00Fh, 0FFh
+; Mode 0Fh
+	DB	050h, 018h, 00Eh, 000h, 080h, 001h, 00Fh, 000h
+	DB	006h, 0A2h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	0BFh, 01Fh, 000h, 040h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 083h, 0A5h, 05Dh, 028h, 00Fh, 063h
+	DB	0BAh, 0E3h, 0FFh, 000h, 008h, 000h, 000h, 018h
+	DB	018h, 000h, 000h, 000h, 008h, 000h, 000h, 000h
+	DB	018h, 000h, 000h, 00Bh, 000h, 005h, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 005h, 0FFh
+; Mode 10h
+	DB	050h, 018h, 00Eh, 000h, 080h, 001h, 00Fh, 000h
+	DB	006h, 0A3h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	0BFh, 01Fh, 000h, 040h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 083h, 0A5h, 05Dh, 028h, 00Fh, 063h
+	DB	0BAh, 0E3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 038h, 039h, 03Ah, 03Bh, 03Ch
+	DB	03Dh, 03Eh, 03Fh, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 00Fh, 0FFh
+; Mode 11h
+	DB	050h, 01Dh, 010h, 000h, 0A0h, 001h, 00Fh, 000h
+	DB	006h, 0E3h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	00Bh, 03Eh, 000h, 040h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 0EAh, 0ACh, 0DFh, 028h, 000h, 0E7h
+	DB	004h, 0C3h, 0FFh, 000h, 03Fh, 03Fh, 03Fh, 03Fh
+	DB	03Fh, 03Fh, 03Fh, 03Fh, 03Fh, 03Fh, 03Fh, 03Fh
+	DB	03Fh, 03Fh, 03Fh, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 001h, 0FFh
+; Mode 12h
+	DB	050h, 01Dh, 010h, 000h, 0A0h, 001h, 00Fh, 000h
+	DB	006h, 0E3h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	00Bh, 03Eh, 000h, 040h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 0EAh, 0ACh, 0DFh, 028h, 000h, 0E7h
+	DB	004h, 0E3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 038h, 039h, 03Ah, 03Bh, 03Ch
+	DB	03Dh, 03Eh, 03Fh, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 00Fh, 0FFh
+; Mode 13h
+	DB	028h, 018h, 008h, 000h, 020h, 001h, 00Fh, 000h
+	DB	00Eh, 063h, 05Fh, 04Fh, 050h, 082h, 054h, 080h
+	DB	0BFh, 01Fh, 000h, 041h, 000h, 000h, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 028h, 040h, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 006h, 007h, 008h, 009h, 00Ah, 00Bh, 00Ch
+	DB	00Dh, 00Eh, 00Fh, 041h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 040h, 005h, 00Fh, 0FFh
+
+; Entry 14h
+; Mode 00/01h, 350-line
+	DB	028h, 018h, 00Eh, 000h, 010h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 0A0h
+	DB	0BFh, 01Fh, 000h, 04Dh, 00Bh, 00Ch, 000h, 000h
+	DB	000h, 000h, 083h, 0A5h, 05Dh, 014h, 01Fh, 063h
+	DB	0BAh, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+; Entry 15h
+; Mode 00/01h, 400-line
+	DB	028h, 018h, 010h, 000h, 010h, 009h, 003h, 000h
+	DB	002h, 063h, 02Dh, 027h, 028h, 090h, 02Bh, 0A0h
+	DB	0BFh, 01Fh, 000h, 04Fh, 00Dh, 00Eh, 000h, 000h
+	DB	000h, 000h, 09Ch, 0AEh, 08Fh, 014h, 01Fh, 096h
+	DB	0B9h, 0A3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 010h, 011h, 012h, 013h, 014h
+	DB	015h, 016h, 017h, 000h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 010h, 00Eh, 000h, 0FFh
+
+; 19-10-93: SVGA modes
+; At present, we only support the one, 800x600x4bpp mode
+;  nCols,nRows-1,CharHeight, PageSizeL, PageSizeH, SR1, SR2, SR3
+;		SR4,MiscOp, CR0,  CR1,  CR2,  CR3,  CR4,  CR5,
+;		CR6,  CR7,  CR8,  CR9,  CRA,  CRB,  CRC,  CRD,
+;		CRE,  CRF,  CR10, CR11, CR12, CR13, CR14, CR15,
+;		CR16, CR17, CR18, AR0,  AR1,  AR2,  AR3,  AR4,
+;		AR5,  AR6,  AR7,  AR8,  AR9,  ARA,  ARB,  ARC,
+;		ARD,  ARE,  ARF,  AR10, AR11, AR12, AR13, GR0,
+;		GR1,  GR2,  GR3,  GR4,  GR5,  GR6,  GR7,  GR8
+
+SVGA_mode6Ah:
+	DB	064h, 024h, 010h, 000h, 0F0h, 001h, 00Fh, 000h
+	DB	006h, 0EFh, 07Bh, 063h, 064h, 09Eh, 069h, 092h
+	DB	06Fh, 0F0h, 000h, 060h, 001h, 07Fh, 000h, 000h
+	DB	000h, 000h, 058h, 08Ah, 057h, 032h, 000h, 058h
+	DB	06Fh, 0E3h, 0FFh, 000h, 001h, 002h, 003h, 004h
+	DB	005h, 014h, 007h, 038h, 039h, 03Ah, 03Bh, 03Ch
+	DB	03Dh, 03Eh, 03Fh, 001h, 000h, 00Fh, 000h, 000h
+	DB	000h, 000h, 000h, 000h, 000h, 005h, 00Fh, 0FFh
+
+; DAC Tables ************************************ 
+
+TBL_DAC_Default	DW 0040h
+        DB 000h, 000h, 000h   ; Colour 00 
+        DB 000h, 000h, 02Bh   ; Colour 01 
+        DB 000h, 02Bh, 000h   ; Colour 02 
+        DB 000h, 02Bh, 02Bh   ; Colour 03 
+        DB 02Bh, 000h, 000h   ; Colour 04 
+        DB 02Bh, 000h, 02Bh   ; Colour 05 
+        DB 02Bh, 02Bh, 000h   ; Colour 06 
+        DB 031h, 031h, 031h   ; Colour 07 
+        DB 000h, 000h, 018h   ; Colour 08 
+        DB 000h, 000h, 03Fh   ; Colour 09 
+        DB 000h, 031h, 015h   ; Colour 0A 
+        DB 000h, 031h, 03Fh   ; Colour 0B 
+        DB 031h, 000h, 015h   ; Colour 0C 
+        DB 031h, 000h, 03Fh   ; Colour 0D 
+        DB 031h, 031h, 015h   ; Colour 0E 
+        DB 031h, 031h, 03Fh   ; Colour 0F 
+        DB 000h, 015h, 000h   ; Colour 10 
+        DB 000h, 015h, 031h   ; Colour 11 
+        DB 000h, 03Fh, 000h   ; Colour 12 
+        DB 000h, 037h, 037h   ; Colour 13 
+        DB 031h, 015h, 000h   ; Colour 14 
+        DB 031h, 015h, 031h   ; Colour 15 
+        DB 031h, 03Fh, 000h   ; Colour 16 
+        DB 037h, 03Fh, 037h   ; Colour 17 
+        DB 000h, 015h, 015h   ; Colour 18 
+        DB 000h, 015h, 03Fh   ; Colour 19 
+        DB 000h, 03Fh, 015h   ; Colour 1A 
+        DB 000h, 03Fh, 03Fh   ; Colour 1B 
+        DB 031h, 015h, 015h   ; Colour 1C 
+        DB 031h, 015h, 03Fh   ; Colour 1D 
+        DB 031h, 03Fh, 015h   ; Colour 1E 
+        DB 031h, 03Fh, 03Fh   ; Colour 1F 
+        DB 015h, 000h, 000h   ; Colour 20 
+        DB 015h, 000h, 031h   ; Colour 21 
+        DB 015h, 031h, 000h   ; Colour 22 
+        DB 015h, 031h, 031h   ; Colour 23 
+        DB 03Fh, 000h, 000h   ; Colour 24 
+        DB 03Fh, 000h, 031h   ; Colour 25 
+        DB 03Fh, 031h, 000h   ; Colour 26 
+        DB 03Fh, 031h, 031h   ; Colour 27 
+        DB 015h, 000h, 015h   ; Colour 28 
+        DB 015h, 000h, 03Fh   ; Colour 29 
+        DB 015h, 031h, 015h   ; Colour 2A 
+        DB 015h, 031h, 03Fh   ; Colour 2B 
+        DB 03Fh, 000h, 015h   ; Colour 2C 
+        DB 03Fh, 000h, 03Fh   ; Colour 2D 
+        DB 03Fh, 031h, 015h   ; Colour 2E 
+        DB 03Fh, 031h, 03Fh   ; Colour 2F 
+        DB 015h, 015h, 000h   ; Colour 30 
+        DB 015h, 015h, 031h   ; Colour 31 
+        DB 015h, 03Fh, 000h   ; Colour 32 
+        DB 015h, 03Fh, 031h   ; Colour 33 
+        DB 03Fh, 015h, 000h   ; Colour 34 
+        DB 03Fh, 015h, 031h   ; Colour 35 
+        DB 03Fh, 03Fh, 000h   ; Colour 36 
+        DB 03Fh, 03Fh, 031h   ; Colour 37 
+        DB 020h, 020h, 020h   ; Colour 38 
+        DB 015h, 015h, 03Fh   ; Colour 39 
+        DB 015h, 03Fh, 015h   ; Colour 3A 
+        DB 015h, 03Fh, 03Fh   ; Colour 3B 
+        DB 03Fh, 015h, 015h   ; Colour 3C 
+        DB 03Fh, 015h, 03Fh   ; Colour 3D 
+        DB 03Fh, 03Fh, 015h   ; Colour 3E 
+        DB 03Fh, 03Fh, 03Fh   ; Colour 3F 
+
+TBL_DAC_Mono	DW 0040h
+	DB 000h, 000h, 000h	; Colour 00
+	DB 000h, 000h, 000h	; Colour 01
+	DB 000h, 000h, 000h	; Colour 02
+	DB 000h, 000h, 000h	; Colour 03
+	DB 000h, 000h, 000h	; Colour 04
+	DB 000h, 000h, 000h	; Colour 05
+	DB 000h, 000h, 000h	; Colour 06
+	DB 000h, 000h, 000h	; Colour 07
+	DB 02Fh, 02Fh, 02Fh	; Colour 08
+	DB 02Fh, 02Fh, 02Fh	; Colour 09
+	DB 02Fh, 02Fh, 02Fh	; Colour 0A
+	DB 02Fh, 02Fh, 02Fh	; Colour 0B
+	DB 02Fh, 02Fh, 02Fh	; Colour 0C
+	DB 02Fh, 02Fh, 02Fh	; Colour 0D
+	DB 02Fh, 02Fh, 02Fh	; Colour 0E
+	DB 02Fh, 02Fh, 02Fh	; Colour 0F
+	DB 02Fh, 02Fh, 02Fh	; Colour 10
+	DB 02Fh, 02Fh, 02Fh	; Colour 11
+	DB 02Fh, 02Fh, 02Fh	; Colour 12
+	DB 02Fh, 02Fh, 02Fh	; Colour 13
+	DB 02Fh, 02Fh, 02Fh	; Colour 14
+	DB 02Fh, 02Fh, 02Fh	; Colour 15
+	DB 02Fh, 02Fh, 02Fh	; Colour 16
+	DB 02Fh, 02Fh, 02Fh	; Colour 17
+	DB 03Fh, 03Fh, 03Fh	; Colour 18
+	DB 03Fh, 03Fh, 03Fh	; Colour 19
+	DB 03Fh, 03Fh, 03Fh	; Colour 1A
+	DB 03Fh, 03Fh, 03Fh	; Colour 1B
+	DB 03Fh, 03Fh, 03Fh	; Colour 1C
+	DB 03Fh, 03Fh, 03Fh	; Colour 1D
+	DB 03Fh, 03Fh, 03Fh	; Colour 1E
+	DB 03Fh, 03Fh, 03Fh	; Colour 1F
+	DB 000h, 000h, 000h	; Colour 20
+	DB 000h, 000h, 000h	; Colour 21
+	DB 000h, 000h, 000h	; Colour 22
+	DB 000h, 000h, 000h	; Colour 23
+	DB 000h, 000h, 000h	; Colour 24
+	DB 000h, 000h, 000h	; Colour 25
+	DB 000h, 000h, 000h	; Colour 26
+	DB 000h, 000h, 000h	; Colour 27
+	DB 02Fh, 02Fh, 02Fh	; Colour 28
+	DB 02Fh, 02Fh, 02Fh	; Colour 29
+	DB 02Fh, 02Fh, 02Fh	; Colour 2A
+	DB 02Fh, 02Fh, 02Fh	; Colour 2B
+	DB 02Fh, 02Fh, 02Fh	; Colour 2C
+	DB 02Fh, 02Fh, 02Fh	; Colour 2D
+	DB 02Fh, 02Fh, 02Fh	; Colour 2E
+	DB 02Fh, 02Fh, 02Fh	; Colour 2F
+	DB 02Fh, 02Fh, 02Fh	; Colour 30
+	DB 02Fh, 02Fh, 02Fh	; Colour 31
+	DB 02Fh, 02Fh, 02Fh	; Colour 32
+	DB 02Fh, 02Fh, 02Fh	; Colour 33
+	DB 02Fh, 02Fh, 02Fh	; Colour 34
+	DB 02Fh, 02Fh, 02Fh	; Colour 35
+	DB 02Fh, 02Fh, 02Fh	; Colour 36
+	DB 02Fh, 02Fh, 02Fh	; Colour 37
+	DB 03Fh, 03Fh, 03Fh	; Colour 38
+	DB 03Fh, 03Fh, 03Fh	; Colour 39
+	DB 03Fh, 03Fh, 03Fh	; Colour 3A
+	DB 03Fh, 03Fh, 03Fh	; Colour 3B
+	DB 03Fh, 03Fh, 03Fh	; Colour 3C
+	DB 03Fh, 03Fh, 03Fh	; Colour 3D
+	DB 03Fh, 03Fh, 03Fh	; Colour 3E
+	DB 03Fh, 03Fh, 03Fh	; Colour 3F
+
+
+TBL_DAC_Mode13	DW 0100h
+        DB 000h, 000h, 000h   ; Colour 00 
+        DB 000h, 000h, 02Ah   ; Colour 01 
+        DB 000h, 02Ah, 000h   ; Colour 02 
+        DB 000h, 02Ah, 02Ah   ; Colour 03 
+        DB 02Ah, 000h, 000h   ; Colour 04 
+        DB 02Ah, 000h, 02Ah   ; Colour 05 
+        DB 02Ah, 015h, 000h   ; Colour 06 
+        DB 02Ah, 02Ah, 02Ah   ; Colour 07 
+        DB 015h, 015h, 015h   ; Colour 08 
+        DB 015h, 015h, 03Fh   ; Colour 09 
+        DB 015h, 03Fh, 015h   ; Colour 0A 
+        DB 015h, 03Fh, 03Fh   ; Colour 0B 
+        DB 03Fh, 015h, 015h   ; Colour 0C 
+        DB 03Fh, 015h, 03Fh   ; Colour 0D 
+        DB 03Fh, 03Fh, 015h   ; Colour 0E 
+        DB 03Fh, 03Fh, 03Fh   ; Colour 0F 
+        DB 000h, 000h, 000h   ; Colour 10 
+        DB 005h, 005h, 005h   ; Colour 11 
+        DB 008h, 008h, 008h   ; Colour 12 
+        DB 00Bh, 00Bh, 00Bh   ; Colour 13 
+        DB 00Eh, 00Eh, 00Eh   ; Colour 14 
+        DB 011h, 011h, 011h   ; Colour 15 
+        DB 014h, 014h, 014h   ; Colour 16 
+        DB 018h, 018h, 018h   ; Colour 17 
+        DB 01Ch, 01Ch, 01Ch   ; Colour 18 
+        DB 020h, 020h, 020h   ; Colour 19 
+        DB 024h, 024h, 024h   ; Colour 1A 
+        DB 028h, 028h, 028h   ; Colour 1B 
+        DB 02Dh, 02Dh, 02Dh   ; Colour 1C 
+        DB 032h, 032h, 032h   ; Colour 1D 
+        DB 038h, 038h, 038h   ; Colour 1E 
+        DB 03Fh, 03Fh, 03Fh   ; Colour 1F 
+        DB 000h, 000h, 03Fh   ; Colour 20 
+        DB 010h, 000h, 03Fh   ; Colour 21 
+        DB 01Fh, 000h, 03Fh   ; Colour 22 
+        DB 02Fh, 000h, 03Fh   ; Colour 23 
+        DB 03Fh, 000h, 03Fh   ; Colour 24 
+        DB 03Fh, 000h, 02Fh   ; Colour 25 
+        DB 03Fh, 000h, 01Fh   ; Colour 26 
+        DB 03Fh, 000h, 010h   ; Colour 27 
+        DB 03Fh, 000h, 000h   ; Colour 28 
+        DB 03Fh, 010h, 000h   ; Colour 29 
+        DB 03Fh, 01Fh, 000h   ; Colour 2A 
+        DB 03Fh, 02Fh, 000h   ; Colour 2B 
+        DB 03Fh, 03Fh, 000h   ; Colour 2C 
+        DB 02Fh, 03Fh, 000h   ; Colour 2D 
+        DB 01Fh, 03Fh, 000h   ; Colour 2E 
+        DB 010h, 03Fh, 000h   ; Colour 2F 
+        DB 000h, 03Fh, 000h   ; Colour 30 
+        DB 000h, 03Fh, 010h   ; Colour 31 
+        DB 000h, 03Fh, 01Fh   ; Colour 32 
+        DB 000h, 03Fh, 02Fh   ; Colour 33 
+        DB 000h, 03Fh, 03Fh   ; Colour 34 
+        DB 000h, 02Fh, 03Fh   ; Colour 35 
+        DB 000h, 01Fh, 03Fh   ; Colour 36 
+        DB 000h, 010h, 03Fh   ; Colour 37 
+        DB 01Fh, 01Fh, 03Fh   ; Colour 38 
+        DB 027h, 01Fh, 03Fh   ; Colour 39 
+        DB 02Fh, 01Fh, 03Fh   ; Colour 3A 
+        DB 037h, 01Fh, 03Fh   ; Colour 3B 
+        DB 03Fh, 01Fh, 03Fh   ; Colour 3C 
+        DB 03Fh, 01Fh, 037h   ; Colour 3D 
+        DB 03Fh, 01Fh, 02Fh   ; Colour 3E 
+        DB 03Fh, 01Fh, 027h   ; Colour 3F 
+        DB 03Fh, 01Fh, 01Fh   ; Colour 40 
+        DB 03Fh, 027h, 01Fh   ; Colour 41 
+        DB 03Fh, 02Fh, 01Fh   ; Colour 42 
+        DB 03Fh, 037h, 01Fh   ; Colour 43 
+        DB 03Fh, 03Fh, 01Fh   ; Colour 44 
+        DB 037h, 03Fh, 01Fh   ; Colour 45 
+        DB 02Fh, 03Fh, 01Fh   ; Colour 46 
+        DB 027h, 03Fh, 01Fh   ; Colour 47 
+        DB 01Fh, 03Fh, 01Fh   ; Colour 48 
+        DB 01Fh, 03Fh, 027h   ; Colour 49 
+        DB 01Fh, 03Fh, 02Fh   ; Colour 4A 
+        DB 01Fh, 03Fh, 037h   ; Colour 4B 
+        DB 01Fh, 03Fh, 03Fh   ; Colour 4C 
+        DB 01Fh, 037h, 03Fh   ; Colour 4D 
+        DB 01Fh, 02Fh, 03Fh   ; Colour 4E 
+        DB 01Fh, 027h, 03Fh   ; Colour 4F 
+        DB 02Dh, 02Dh, 03Fh   ; Colour 50 
+        DB 031h, 02Dh, 03Fh   ; Colour 51 
+        DB 036h, 02Dh, 03Fh   ; Colour 52 
+        DB 03Ah, 02Dh, 03Fh   ; Colour 53 
+        DB 03Fh, 02Dh, 03Fh   ; Colour 54 
+        DB 03Fh, 02Dh, 03Ah   ; Colour 55 
+        DB 03Fh, 02Dh, 036h   ; Colour 56 
+        DB 03Fh, 02Dh, 031h   ; Colour 57 
+        DB 03Fh, 02Dh, 02Dh   ; Colour 58 
+        DB 03Fh, 031h, 02Dh   ; Colour 59 
+        DB 03Fh, 036h, 02Dh   ; Colour 5A 
+        DB 03Fh, 03Ah, 02Dh   ; Colour 5B 
+        DB 03Fh, 03Fh, 02Dh   ; Colour 5C 
+        DB 03Ah, 03Fh, 02Dh   ; Colour 5D 
+        DB 036h, 03Fh, 02Dh   ; Colour 5E 
+        DB 031h, 03Fh, 02Dh   ; Colour 5F 
+        DB 02Dh, 03Fh, 02Dh   ; Colour 60 
+        DB 02Dh, 03Fh, 031h   ; Colour 61 
+        DB 02Dh, 03Fh, 036h   ; Colour 62 
+        DB 02Dh, 03Fh, 03Ah   ; Colour 63 
+        DB 02Dh, 03Fh, 03Fh   ; Colour 64 
+        DB 02Dh, 03Ah, 03Fh   ; Colour 65 
+        DB 02Dh, 036h, 03Fh   ; Colour 66 
+        DB 02Dh, 031h, 03Fh   ; Colour 67 
+        DB 000h, 000h, 01Ch   ; Colour 68 
+        DB 007h, 000h, 01Ch   ; Colour 69 
+        DB 00Eh, 000h, 01Ch   ; Colour 6A 
+        DB 015h, 000h, 01Ch   ; Colour 6B 
+        DB 01Ch, 000h, 01Ch   ; Colour 6C 
+        DB 01Ch, 000h, 015h   ; Colour 6D 
+        DB 01Ch, 000h, 00Eh   ; Colour 6E 
+        DB 01Ch, 000h, 007h   ; Colour 6F 
+        DB 01Ch, 000h, 000h   ; Colour 70 
+        DB 01Ch, 007h, 000h   ; Colour 71 
+        DB 01Ch, 00Eh, 000h   ; Colour 72 
+        DB 01Ch, 015h, 000h   ; Colour 73 
+        DB 01Ch, 01Ch, 000h   ; Colour 74 
+        DB 015h, 01Ch, 000h   ; Colour 75 
+        DB 00Eh, 01Ch, 000h   ; Colour 76 
+        DB 007h, 01Ch, 000h   ; Colour 77 
+        DB 000h, 01Ch, 000h   ; Colour 78 
+        DB 000h, 01Ch, 007h   ; Colour 79 
+        DB 000h, 01Ch, 00Eh   ; Colour 7A 
+        DB 000h, 01Ch, 015h   ; Colour 7B 
+        DB 000h, 01Ch, 01Ch   ; Colour 7C 
+        DB 000h, 015h, 01Ch   ; Colour 7D 
+        DB 000h, 00Eh, 01Ch   ; Colour 7E 
+        DB 000h, 007h, 01Ch   ; Colour 7F 
+        DB 00Eh, 00Eh, 01Ch   ; Colour 80 
+        DB 011h, 00Eh, 01Ch   ; Colour 81 
+        DB 015h, 00Eh, 01Ch   ; Colour 82 
+        DB 018h, 00Eh, 01Ch   ; Colour 83 
+        DB 01Ch, 00Eh, 01Ch   ; Colour 84 
+        DB 01Ch, 00Eh, 018h   ; Colour 85 
+        DB 01Ch, 00Eh, 015h   ; Colour 86 
+        DB 01Ch, 00Eh, 011h   ; Colour 87 
+        DB 01Ch, 00Eh, 00Eh   ; Colour 88 
+        DB 01Ch, 011h, 00Eh   ; Colour 89 
+        DB 01Ch, 015h, 00Eh   ; Colour 8A 
+        DB 01Ch, 018h, 00Eh   ; Colour 8B 
+        DB 01Ch, 01Ch, 00Eh   ; Colour 8C 
+        DB 018h, 01Ch, 00Eh   ; Colour 8D 
+        DB 015h, 01Ch, 00Eh   ; Colour 8E 
+        DB 011h, 01Ch, 00Eh   ; Colour 8F 
+        DB 00Eh, 01Ch, 00Eh   ; Colour 90 
+        DB 00Eh, 01Ch, 011h   ; Colour 91 
+        DB 00Eh, 01Ch, 015h   ; Colour 92 
+        DB 00Eh, 01Ch, 018h   ; Colour 93 
+        DB 00Eh, 01Ch, 01Ch   ; Colour 94 
+        DB 00Eh, 018h, 01Ch   ; Colour 95 
+        DB 00Eh, 015h, 01Ch   ; Colour 96 
+        DB 00Eh, 011h, 01Ch   ; Colour 97 
+        DB 014h, 014h, 01Ch   ; Colour 98 
+        DB 016h, 014h, 01Ch   ; Colour 99 
+        DB 018h, 014h, 01Ch   ; Colour 9A 
+        DB 01Ah, 014h, 01Ch   ; Colour 9B 
+        DB 01Ch, 014h, 01Ch   ; Colour 9C 
+        DB 01Ch, 014h, 01Ah   ; Colour 9D 
+        DB 01Ch, 014h, 018h   ; Colour 9E 
+        DB 01Ch, 014h, 016h   ; Colour 9F 
+        DB 01Ch, 014h, 014h   ; Colour A0 
+        DB 01Ch, 016h, 014h   ; Colour A1 
+        DB 01Ch, 018h, 014h   ; Colour A2 
+        DB 01Ch, 01Ah, 014h   ; Colour A3 
+        DB 01Ch, 01Ch, 014h   ; Colour A4 
+        DB 01Ah, 01Ch, 014h   ; Colour A5 
+        DB 018h, 01Ch, 014h   ; Colour A6 
+        DB 016h, 01Ch, 014h   ; Colour A7 
+        DB 014h, 01Ch, 014h   ; Colour A8 
+        DB 014h, 01Ch, 016h   ; Colour A9 
+        DB 014h, 01Ch, 018h   ; Colour AA 
+        DB 014h, 01Ch, 01Ah   ; Colour AB 
+        DB 014h, 01Ch, 01Ch   ; Colour AC 
+        DB 014h, 01Ah, 01Ch   ; Colour AD 
+        DB 014h, 018h, 01Ch   ; Colour AE 
+        DB 014h, 016h, 01Ch   ; Colour AF 
+        DB 000h, 000h, 010h   ; Colour B0 
+        DB 004h, 000h, 010h   ; Colour B1 
+        DB 008h, 000h, 010h   ; Colour B2 
+        DB 00Ch, 000h, 010h   ; Colour B3 
+        DB 010h, 000h, 010h   ; Colour B4 
+        DB 010h, 000h, 00Ch   ; Colour B5 
+        DB 010h, 000h, 008h   ; Colour B6 
+        DB 010h, 000h, 004h   ; Colour B7 
+        DB 010h, 000h, 000h   ; Colour B8 
+        DB 010h, 004h, 000h   ; Colour B9 
+        DB 010h, 008h, 000h   ; Colour BA 
+        DB 010h, 00Ch, 000h   ; Colour BB 
+        DB 010h, 010h, 000h   ; Colour BC 
+        DB 00Ch, 010h, 000h   ; Colour BD 
+        DB 008h, 010h, 000h   ; Colour BE 
+        DB 004h, 010h, 000h   ; Colour BF 
+        DB 000h, 010h, 000h   ; Colour C0 
+        DB 000h, 010h, 004h   ; Colour C1 
+        DB 000h, 010h, 008h   ; Colour C2 
+        DB 000h, 010h, 00Ch   ; Colour C3 
+        DB 000h, 010h, 010h   ; Colour C4 
+        DB 000h, 00Ch, 010h   ; Colour C5 
+        DB 000h, 008h, 010h   ; Colour C6 
+        DB 000h, 004h, 010h   ; Colour C7 
+        DB 008h, 008h, 010h   ; Colour C8 
+        DB 00Ah, 008h, 010h   ; Colour C9 
+        DB 00Ch, 008h, 010h   ; Colour CA 
+        DB 00Eh, 008h, 010h   ; Colour CB 
+        DB 010h, 008h, 010h   ; Colour CC 
+        DB 010h, 008h, 00Eh   ; Colour CD 
+        DB 010h, 008h, 00Ch   ; Colour CE 
+        DB 010h, 008h, 00Ah   ; Colour CF 
+        DB 010h, 008h, 008h   ; Colour D0 
+        DB 010h, 00Ah, 008h   ; Colour D1 
+        DB 010h, 00Ch, 008h   ; Colour D2 
+        DB 010h, 00Eh, 008h   ; Colour D3 
+        DB 010h, 010h, 008h   ; Colour D4 
+        DB 00Eh, 010h, 008h   ; Colour D5 
+        DB 00Ch, 010h, 008h   ; Colour D6 
+        DB 00Ah, 010h, 008h   ; Colour D7 
+        DB 008h, 010h, 008h   ; Colour D8 
+        DB 008h, 010h, 00Ah   ; Colour D9 
+        DB 008h, 010h, 00Ch   ; Colour DA 
+        DB 008h, 010h, 00Eh   ; Colour DB 
+        DB 008h, 010h, 010h   ; Colour DC 
+        DB 008h, 00Eh, 010h   ; Colour DD 
+        DB 008h, 00Ch, 010h   ; Colour DE 
+        DB 008h, 00Ah, 010h   ; Colour DF 
+        DB 00Bh, 00Bh, 010h   ; Colour E0 
+        DB 00Ch, 00Bh, 010h   ; Colour E1 
+        DB 00Dh, 00Bh, 010h   ; Colour E2 
+        DB 00Fh, 00Bh, 010h   ; Colour E3 
+        DB 010h, 00Bh, 010h   ; Colour E4 
+        DB 010h, 00Bh, 00Fh   ; Colour E5 
+        DB 010h, 00Bh, 00Dh   ; Colour E6 
+        DB 010h, 00Bh, 00Ch   ; Colour E7 
+        DB 010h, 00Bh, 00Bh   ; Colour E8 
+        DB 010h, 00Ch, 00Bh   ; Colour E9 
+        DB 010h, 00Dh, 00Bh   ; Colour EA 
+        DB 010h, 00Fh, 00Bh   ; Colour EB 
+        DB 010h, 010h, 00Bh   ; Colour EC 
+        DB 00Fh, 010h, 00Bh   ; Colour ED 
+        DB 00Dh, 010h, 00Bh   ; Colour EE 
+        DB 00Ch, 010h, 00Bh   ; Colour EF 
+        DB 00Bh, 010h, 00Bh   ; Colour F0 
+        DB 00Bh, 010h, 00Ch   ; Colour F1 
+        DB 00Bh, 010h, 00Dh   ; Colour F2 
+        DB 00Bh, 010h, 00Fh   ; Colour F3 
+        DB 00Bh, 010h, 010h   ; Colour F4 
+        DB 00Bh, 00Fh, 010h   ; Colour F5 
+        DB 00Bh, 00Dh, 010h   ; Colour F6 
+        DB 00Bh, 00Ch, 010h   ; Colour F7 
+        DB 000h, 000h, 000h   ; Colour F8 
+        DB 000h, 000h, 000h   ; Colour F9 
+        DB 000h, 000h, 000h   ; Colour FA 
+        DB 000h, 000h, 000h   ; Colour FB 
+        DB 000h, 000h, 000h   ; Colour FC 
+        DB 000h, 000h, 000h   ; Colour FD 
+        DB 000h, 000h, 000h   ; Colour FE 
+        DB 000h, 000h, 000h   ; Colour FF 

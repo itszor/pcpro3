@@ -1,0 +1,4 @@
+void hourglass_on(void);
+void hourglass_off(void);
+void disable_escape(int flag);
+_kernel_oserror *var_read(char *var_name, char *buffer);
