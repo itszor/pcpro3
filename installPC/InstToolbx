@@ -1,0 +1,5 @@
+IfThere <System$Dir>.SysPaths Then | Else Error 0 You need to run !NewSystem before trying to install the Toolbox modules
+If "<Boot$Dir>"="" Then Error 0 Couldn't find your !Boot folder
+Wimpslot -min 320k -max 320k
+InstallPCRes:_uz -C -u -n InstallPCRes:Boot Resources/!System/* Choices/Boot/PreDesk/UnplugTBox -d <Boot$Dir> >null:$ 2>null:$
+Error 0 Your Toolbox modules should now be up-to-date enough to run !InstallPC

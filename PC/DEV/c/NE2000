@@ -24,6 +24,7 @@
 #include "sys.h.transfer"  /* For BlockIn/Out routines */
 #include "module.h.pcne2"
 #include "dev.h.ne2000"
+
 /* I/O ports */
 
 #define NE2_FIRST       0x340

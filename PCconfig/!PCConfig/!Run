@@ -1,0 +1,32 @@
+| Ensure our choices folder, and the wimpscrap dir are there
+|
+If "<Choices$Dir>"="" Then Error 0 Can't find your Choices folder; has the machine been booted properly?
+If "<Wimp$ScrapDir>"="" Then Error 0 Can't find your Scrap directory; has the machine been booted properly?
+CDir <Choices$Dir>.PC
+CDir <Wimp$ScrapDir>.PC
+
+Set PC_Config$Dir <Obey$Dir>
+
+RMEnsure UtilityModule 3.10 Error This application is only suitable for use with RISC OS 3.10 or later
+
+RMENSURE FilterManager 0.09 RMLoad System:modules.FilterMgr
+RMENSURE FilterManager 0.09 Error You Need filter manager 0.09 or later
+
+RMEnsure BorderUtils 0.02 RMEnsure WindowManager 3.17 RMLoad System:modules.BorderUtil
+
+Set Alias$CheckToolbox RMEnsure %%0 0.00 RMLoad System:Modules.Toolbox.%%1|MRMEnsure %%0 %%2 Error 0 Your %%0 module is out of date; please install the Toolbox update from your PCPro 3 installation disc.
+
+CheckToolbox Toolbox    Toolbox  1.36 
+CheckToolbox Window     Window   1.31
+CheckToolbox Menu       Menu     0.24
+CheckToolbox Iconbar    Iconbar  1.12
+CheckToolbox ProgInfo   ProgInfo 0.09
+CheckToolbox DCS        DCS_quit 1.06
+Unset Alias$CheckToolbox
+
+Iconsprites <PC_Config$Dir>.!Sprites
+wimpslot -min 100K -max 100K
+
+|Run <PC_Config$Dir>.!RunImage 2><PC_Config$Dir>.^.stderr
+Run <PC_Config$Dir>.!RunImage 2>null:$
+

@@ -1,4 +1,4 @@
-#define VERSION_STRING "2.03 (18-Jan-98)"
+#define VERSION_STRING "3.00 (23-Sept-98)"
 /*
 *    DivaPC ARM C source
 *
@@ -18,14 +18,14 @@
 *    25-02-95        1.993 No longer says Diva_NE2000_mod in help string
 *    06-03-96	     1.995 Doesn't report overflows or Tx fails to PC
 *    08-05-96        Re-released as version 2.00
-*    04-07-97 W      Added logging facility
+*    04-07-97 W      Started adding logging facility
 *    15-10-97 MB     Tidied strange code.  Added -F parameter
 *                      so my Config stuff works nicely. (this is V2.01)
 *    11-01-98        Improved error handling so that init errors are reported
 *                      properly rather than just being output to stdout (2.02)
 *    18-01-98        Added code to pay attention to Diva$SuggestedInterface
 *                      (2.03)
-     1998.06.18 W    Finaished adding logging facility        
+     1998.06.18 W    Finished adding logging facility        
 */
 
 
@@ -45,7 +45,7 @@
 
 /* debugging options */
 #define DEBUG 0
-#define LOGDATA 0        /* enables general logging of PCNE2 behaviour */
+#define LOGDATA 0       /* enables general logging of PCNE2 behaviour */
 #define LOGPACKETS 0     /* enables logging of actual packet data  - not implemented*/
 #define LOGFILE "<diva$dir>.NE2000trc"
 
@@ -108,7 +108,7 @@ static int   RxFrameCount = 0;
 static int   RxFrameTypes  [MAX_RXFRAMES];
 static bool  RxConnected   [MAX_RXFRAMES];
 #if LOGDATA
-static FILE * fhlogfile
+static FILE * fhlogfile;
 #endif
 
 /* Buffers ************************************************************ */
@@ -780,7 +780,9 @@ static bool SetupReceiver ( bool ConnectNotRelease )
   addrlvl = (PCNE2_RxOptions & RCR_PROMISC)   ? ADDRLVL_PROMISCUOUS :
             (PCNE2_RxOptions & RCR_MULTICAST) ? ADDRLVL_MULTICAST :
                                         ADDRLVL_NORMAL;
-
+#if LOGDATA
+      fprintf (fhlogfile, "Setupreciever:Connect:%d, \n", ConnectNotRelease );
+#endif
   /* Now request various packet types */
 
   for ( i=0; i < RxFrameCount; i++ )
@@ -798,6 +800,12 @@ static bool SetupReceiver ( bool ConnectNotRelease )
     R.r[4] = ERRLVL_NO_ERRORS;
     R.r[5] = PCNE2_pw;            /* Protocol handle (our PW) */
     R.r[6] = (int) PCNE2_ReceiveFn;     /* Receive handler function */
+
+#if LOGDATA
+      fprintf (fhlogfile, "DCI_+filter:R0-6:%x, %x, %x, %x, %x, %x, %x \n",
+          R.r[0] ,R.r[1],R.r[2],R.r[3],R.r[4],R.r[5],R.r[6] );
+#endif
+
 
     err = _kernel_swi ( PCNE2_DriverSWIbase + DCI_Filter, &R, &R );
     if ( err != NULL )
@@ -1266,6 +1274,9 @@ static bool AttachToDriver( char *name )
 
 static void PCNE2_exit ( void )
 {
+  #if LOGDATA
+  fprintf (fhlogfile, "PCNE2_exit cleanup\n");
+  #endif
   SetupReceiver(false);
   MbufShutdown();
   #if LOGDATA
@@ -1354,10 +1365,11 @@ extern _kernel_oserror *PCNE2_Init (char *cmd_tail, int podule_base, int pw )
     {
       #if LOGDATA
       fprintf (fhlogfile, "Init failed\n");
-      fclose (fhlogfile);
       #endif
           
       strcat(ErrorBlk.errmess, " (PC networking could not be loaded)");
+      /*now unclaim any packet types we did get */
+      
       return &ErrorBlk;
     }
   }

@@ -27,6 +27,7 @@
 *      1998.03.12      Turbodriver bodge added
 *      1998.03.16      Show config function added
 *      1998.10.11 MB   LFBmode switch added
+*      2000.02.04 W    'Show config' file now saved to scrap.PC.
 */
 
 #include <stdio.h>
@@ -266,7 +267,7 @@ void CFG_Show (void)
   FILE   *cfg_out;
   int    n=0;
 
-  cfg_out = fopen("<Wimp$ScrapDir>.PCConfig", "w");
+  cfg_out = fopen("<Wimp$ScrapDir>.PC.PCConfig", "w");
   fprintf(cfg_out, "                !PC configuration\n");
   fprintf(cfg_out, "                -----------------\n\n");
   fprintf(cfg_out, "  Please note that these settings are looked at only when\n");
@@ -287,7 +288,7 @@ void CFG_Show (void)
   }
 
   fclose(cfg_out);
-  system("Filer_Run <Wimp$ScrapDir>.PCConfig");
+  system("Filer_Run <Wimp$ScrapDir>.PC.PCConfig");
 }
 
 /********************************************************************/

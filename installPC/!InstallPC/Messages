@@ -44,9 +44,11 @@ bootinf1:A patch to fix various bugs in CDFS.
 bootinf2:A patch to allow RISC OS (and !PC) to recognise the extra 'Windows' keys found on modern keyboards.
 bootinf3:Upgrade so that RISC OS 3.5 users can access DOS partitions bigger than 32MB from RISC OS.
 bootinf4:Utility which puts the PC Card into a power-saving mode when the RISC PC starts up.
-bootinf5:A script to ensure most common extensions on DOS files (DOC, TXT etc.) are shown as the appropriate filetypes RISC OS.
+bootinf5:DOSFS mappings to ensure most common extensions on DOS files (DOC, TXT etc.) are shown as the appropriate filetypes RISC OS.
 bootinf6:A utility to stop you accidentally deleting your DOS partitions.
-bootinf7:A patch to stop the Filer from chickening out when it comes to sorting large directories.
+bootinf7:A patch to allow the Filer to sort large directories.
+bootinf8:A patch to fix memory allocation on RISCOS 4.03.
+bootinf9:A module that makes the 'Web' button on the info window work with browsers other than !Browse.
 whatsthis:What's this
 pcsmsg:Message from InstallPC
 no_new_netlinks:Cannot find NetLinks archive to upgrade from; send your PCPro 3 + old NetLinks disc to obtain a suitable (free) upgrade.  Until you do, you will not be able to use the NetLinks software.

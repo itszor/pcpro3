@@ -122,6 +122,7 @@ typedef struct
   int  sharedmemflags;
   int  preservevidmem;
   int  floppy[2];
+  int  scaletofit;
 }adv_struct;
 
 typedef struct

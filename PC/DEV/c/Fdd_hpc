@@ -27,11 +27,7 @@
 
 #include "dev.h.hpc_fd"
 
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
+#include "sys.h.debug"
 
 /* Definitions **************************************************** */
 

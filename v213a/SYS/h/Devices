@@ -1,0 +1,22 @@
+/*
+*
+*     SYS.H.Devices - device init calls provided by all modules
+*
+*     20-12-91 INH Original
+*      9- 1-91     Shutdowns removed
+*
+*/
+
+extern bool HDD_Init(void);
+extern bool VID_Init(void);
+extern bool KBD_Init(void);
+extern bool FDD_Init(void);
+extern bool RTC_Init(void);
+extern bool PRN_Init(void);
+extern bool CDR_Init(void);
+extern bool NE2_Init(void);
+extern bool MUL_Init(void);
+
+
+
+

@@ -26,6 +26,10 @@ void update_booting_window(void)
 
 int booting_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+  
   if(id_block->self_component == BOOTING_OK)
   {
     optionbutton_get_state(0,booting_window,BOOTING_ALLOW_FLOPPY_DISC,&tmp_config.booting.boot_from_floppy);

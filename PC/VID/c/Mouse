@@ -37,12 +37,7 @@
 #define MOUSE_LAST         0x31B
 
 #define DEBUG 0
-
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
+#include "sys.h.debug"
 
 /* Default definitions *********************************************** */
 

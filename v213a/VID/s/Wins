@@ -1,0 +1,212 @@
+;************************************************
+;
+;    DivaPC ARM Assembler source
+;
+;    VID.S.WINS  - Assembler for Windows Driver
+;
+;    27-03-93 INH Original
+;************************************************
+
+     GET SYS.S.STDDEFS
+
+
+     AREA |C$$Code|, CODE, READONLY
+
+     EXPORT  WINS_DrawPointer
+     EXPORT  WINS_ErasePointer
+
+
+
+     ; Windows Mouse Pointer Drawing routines ============================
+
+     ; WINS_DrawPointer =======================
+
+     ; WINS_DrawPointer draws the mouse pointer on the screen,
+     ; while simultaneously saving the data underneath into
+     ; a buffer. The pointer is drawn by ANDing the screen with
+     ; a mask and XORing in a new value. The AND and XOR values
+     ; are held in the 'source data' array packed into the same word:
+     ; each source word is (in binary)
+     ;
+     ;  abababab abababab abababab abababab
+     ;
+     ; Each 'ab' defines the mask and XOR values for two adjacent bits
+     ; in the destination: the dest is BIC'd with 'aa' and then
+     ; XORed with 'bb'. (It's a BIC so that a value of 00 leaves the
+     ; destination unchanged).
+
+     ; The parameters to WINS_DrawPointer (and WINS_ErasePointer) are
+     ; passed in as a structure, chiefly because I can't be bothered
+     ; to figure out how APCS would have done it.
+
+     ^ 0, R12              ; Definitions for DrawPointer params structure
+
+dst_ptr    #  4            ; Pointer to (sprite) destination
+dst_ptr2   #  4            ; Pointer to (screen) destination
+save_ptr   #  4            ; Pointer to save area for destination
+src_ptr    #  4            ; Pointer to pointer-shape source
+
+pix_shift  #  4            ; Alignment source->destination
+dst_width  #  4            ; Number of words of destination to write
+src_pitch  #  4            ; Offset between lines of source in words
+dst_pitch  #  4            ; Offset between lines of dest in words
+dst_height #  4            ; Number of lines to do
+
+dst_offset #  4            ; Not used by us
+
+     ; pix_shift is bits number where bit 0 of the source needs
+     ; to end up in the destination.
+     ;
+     ; For a 4-bpp screen, if our destination was 16 pixels
+     ; (2 words) wide, we would typically have
+     ;
+     ; src:  |0.1.2.3.4.5.6.7|0.1.2.3.4.5.6.7|0.1.2.3.4.5.6.7|
+     ; dst:            |0.1.2.3.4.5.6.7|0.1.2.3.4.5.6.7|
+     ;
+     ; In this case dst_width = 2, and pix_shift would be 12
+     ; (3 pixels * 4b.p.p)
+     ;
+     ; Note that typically 'src' will need to have one word of zeros
+     ; at the start and one word of zeros at the end of each line.
+
+
+src_pitch_alt DCD 0       ; Altered src-pitch value
+dst_pitch_alt DCD 0       ; Altered dst-pitch value
+lines_left    DCD 0       ; Number of lines left to do
+mask_5555     DCD &55555555 ; 01010101 bit pattern
+
+
+WINS_DrawPointer ; (struct DrawPtrParams *pDPP )
+     STMFD  SP!, {R4-R12, LR}
+
+     MOV    R12, R0       ; R12->Parameters
+     LDR    R0, dst_width
+
+     LDR    R1, src_pitch  ; Make src_pitch = src_pitch-dst_width-1
+     SUB    R1, R1, R0     ; = offset from start of one source line
+     SUB    R1, R1, #1     ; to the next
+     STR    R1, src_pitch_alt
+
+     LDR    R1, dst_pitch  ; Make dst_pitch = dst_pitch-dst_width
+     SUB    R1, R1, R0
+     STR    R1, dst_pitch_alt
+
+     LDR    R1, dst_height
+     STR    R1, lines_left ; Set up lines_left
+
+     LDR    R5, pix_shift  ; Load up register values
+     RSB    R6, R5, #32
+     LDR    R7, dst_ptr
+     LDR    R8, dst_ptr2
+     LDR    R9, save_ptr
+     LDR    R10, src_ptr
+     LDR    R11, mask_5555
+
+     ; At this point
+     ; R5 = pixel shift (0..31)
+     ; R6 = 32-R5
+     ; R7 -> sprite destination
+     ; R8 -> screen destination
+     ; R9 -> save area
+     ; R10 -> source data
+     ; R11 = 010101...0101 binary
+
+     ; During the main loop
+     ; R0-R2 = work regs
+     ; R3 = last source word
+     ; R4 = dest words left to do
+
+WDP_LineLoop                 ; At start of each line
+
+     LDR    R3, [R10], #4    ; Get starting source word
+     LDR    R4, dst_width
+WDP_WordLoop                 ; For each word of destination
+     MOV    R0, R3, LSR R6      ; R0 = left-overs from last src word
+     LDR    R3, [R10], #4       ; R3 = new src word
+     ORR    R0, R0, R3, LSL R5  ; R0 = combined source value
+
+     AND    R1, R11, R0         ; R1 = 0b0b0b0b0b etc
+     AND    R2, R11, R0, LSR #1 ; R2 = 0a0a0a0a0a
+     ORR    R1, R1, R1, LSL #1  ; R1 = bbbb (XOR value)
+     ORR    R2, R2, R2, LSL #1  ; R2 = aaaa (BIC value)
+
+     LDR    R0, [R7]            ; R0 = word from destination
+     STR    R0, [R9], #4        ; Save at *R9++
+     BIC    R0, R0, R2          ; Mask off bits
+     EOR    R0, R0, R1          ; XOR in new bits
+     STR    R0, [R7], #4        ; Store to sprite
+     STR    R0, [R8], #4        ; And to screen
+
+     SUBS   R4, R4, #1          ; Loop until done
+     BNE    WDP_WordLoop
+
+     ; End of line: adjust pointers
+     ADR    R3, src_pitch_alt
+     LDMIA  R3, {R0, R1, R2}     ; R0 = src_pitch_alt
+                                 ; R1 = dst_pitch_alt
+                                 ; R2 = lines_left
+     ADD    R10, R10, R0, LSL #2 ; Add on src_pitch_alt to source
+     ADD    R7, R7, R1, LSL #2   ; Add on dst_pitch_alt to dest1
+     ADD    R8, R8, R1, LSL #2   ; Add on dst_pitch_alt to dest2
+
+     SUBS   R2, R2, #1           ; One less line left
+     STR    R2, lines_left
+     BNE    WDP_LineLoop
+
+     ; That's it!
+     LDMFD  SP!, {R4-R12, PC}^
+
+
+     ; WINS_ErasePointer ======================
+
+     ; WINS_ErasePointer erases the mouse pointer by copying back the
+     ; original screen data saved in the save buffer. It is passed
+     ; identical parameters (in the form of a pointer to a structure)
+     ; to WINS_DrawPointer
+
+WINS_ErasePointer ; (struct DrawPtrParams *pDPP )
+     STMFD  SP!, {R4-R12, LR}
+
+     MOV    R12, R0       ; R12->Parameters
+
+     LDR    R4, dst_height
+     LDR    R6, dst_width
+     LDR    R7, dst_ptr
+     LDR    R8, dst_ptr2
+     LDR    R9, save_ptr
+
+     LDR    R10, dst_pitch ; R10 = (word) offset between lines
+     SUB    R10, R10, R6
+
+WEP_LineLoop
+     MOVS   R5, R6, LSR #2   ; R5 = number of 4-word bits to do
+     BEQ    WEP_NoMulti
+WEP_MultiLoop                ; while ( R5 >= 0 )
+     LDMIA  R9!, {R0-R3}     ; do 4 words
+     STMIA  R7!, {R0-R3}     ;    R5--;
+     STMIA  R8!, {R0-R3}
+     SUBS   R5, R5, #1
+     BNE    WEP_MultiLoop
+WEP_NoMulti
+     TST     R6, #2          ; Any 2-word chunks to do?
+     LDMNEIA R9!, {R0-R1}
+     STMNEIA R7!, {R0-R1}
+     STMNEIA R8!, {R0-R1}
+     TST     R6, #1          ; Any 1-word chunks to do?
+     LDRNE   R0, [R9], #4
+     STRNE   R0, [R7], #4
+     STRNE   R0, [R8], #4
+
+     ; Next line
+     ADD     R7, R7, R10, LSL #2
+     ADD     R8, R8, R10, LSL #2
+
+     SUBS    R4, R4, #1      ; More lines?
+     BNE     WEP_LineLoop
+
+     ; That's it!
+     LDMFD  SP!, {R4-R12, PC}^
+
+
+
+  END

@@ -1,3 +1,8 @@
+/*
+* 1999.01.07 W v0.82 Re-instated old scaletofit option in advanced options
+*/
+
+
 #include "toolbox.h"
 #include "event.h"
 #include "gadgets.h"
@@ -13,7 +18,6 @@ extern void do_adv_initialise(void)
 extern void setup_adv_window(void)
 {
   update_adv_window();
-
   raise_error(toolbox_show_object(0,adv_window,0,0,0,0));
 }
 
@@ -32,13 +36,17 @@ extern void update_adv_window(void)
   raise_error(radiobutton_set_state(0,adv_window,ADV_SHAREDMEM_ALLON+config.adv.sharedmemflags,1));
   raise_error(radiobutton_set_state(0,adv_window,ADV_FLOPPY0+config.adv.floppy[0],1));
   raise_error(radiobutton_set_state(0,adv_window,ADV_FLOPPY1+config.adv.floppy[1],1));
+  raise_error(optionbutton_set_state(0,adv_window,ADV_SCALETOFIT,config.adv.scaletofit));
 }
 
 #define GET_RADIO_SET(vv,ff) raise_error(radiobutton_get_state(0,adv_window,(ff),&x,(vv))); *(vv)-=(ff)
 
 extern int  adv_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
-  int x,v;
+  int x;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   if (id_block->self_component == ADV_OK)
   {
@@ -57,6 +65,7 @@ extern int  adv_window_click_handler(int event_code, ToolboxEvent *event, IdBloc
     check_for_modified_data((int)&config.adv, (int)&tmp_config.adv, sizeof(config.adv));
     GET_RADIO_SET(&tmp_config.adv.floppy[0], ADV_FLOPPY0);
     GET_RADIO_SET(&tmp_config.adv.floppy[1], ADV_FLOPPY1);
+    raise_error(optionbutton_get_state(0,adv_window,ADV_SCALETOFIT,&tmp_config.adv.scaletofit));
     config.adv = tmp_config.adv;
   }
   return(1);

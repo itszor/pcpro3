@@ -1,2 +1,0 @@
-int confirm_stretch(void);
-void stretch_it(void);

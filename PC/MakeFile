@@ -136,7 +136,7 @@ o.config: Sys.c.config Sys.h.stdtypes Sys.h.sys Sys.h.config
           mc sys config
 
 o.main:   Sys.c.main Sys.h.stdtypes Sys.h.sys Sys.h.config Sys.h.cpu
-o.main:   Sys.h.devices Sys.h.hrdstate Sys.h.FEstate Sys.h.WFEbits
+o.main:   Sys.h.devices Sys.h.hrdstate Sys.h.FEstate Sys.h.WFEbits Sys.h.version
 o.main:   Sys.h.Veneers
 o.main:   module.h.PCsupport
           mc sys main
@@ -153,7 +153,7 @@ o.sys:    Module.h.pcdevhelp
           mc sys sys
 
 o.wfebits: Sys.c.WFEbits Sys.h.stdtypes Sys.h.FEState Sys.h.WFEbits
-o.wfebits: Sys.h.sys Sys.h.version Sys.h.config Sys.h.wfes Sys.h.cpu
+o.wfebits: Sys.h.sys Sys.h.config Sys.h.wfes Sys.h.cpu
           mc sys wfebits
 
 o.syss:   Sys.s.syss Sys.s.stddefs

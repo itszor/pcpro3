@@ -4,7 +4,7 @@
 *    structs 'n' stuff
 */
 
-#include "kernel.h"
+//#include "kernel.h"
 
 /* Macros for storing shorts / triples(!) / longs the wrong way up */
 #define INV2(v) (((v>>8)&0xff)|((v&0xff)<<8))

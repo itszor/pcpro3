@@ -5,10 +5,16 @@ RMEnsure UtilityModule  3.50 Error 0 !PC will only work on an Acorn RISC PC; the
 If "<Wimp$ScrapDir>"="" Then Error 0 Can't find your !Scrap folder -- has the machine been properly booted?
 If "<Boot$Dir>"="" Then Error 0 Can't find your !Boot folder -- has the machine been properly booted?
 
-IfThere System:370.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !NewSystem to correct this.
-IfThere System:360.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !NewSystem to correct this.
-IfThere System:350.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !NewSystem to correct this.
-IfThere System:SysPaths Then | Else Error 0 Your !System structure seems out-of-date; please run !NewSystem to correct this
+IfThere System:400.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:370.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:360.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:SysPaths Then | Else Error 0 Your !System structure seems out-of-date; please run !UpdateSys to correct this
+Set InstallPCUnplugFound 0
+
+IfThere Boot:Choices.Boot.PreDesk.UnplugTBox Then Set InstallPCUnplugFound 1
+IfThere Boot:Utils.UnplugTBox Then Set InstallPCUnplugFound 1
+RMEnsure UtilityModule 4.00 If "<InstallPCUnplugFound>"="0" Then Error 0 Your !System structure seems out-of-date; please run !UpdateSys to correct this
+Unset InstallPCUnplugFound
 
 Set InstallPC$Dir <Obey$Dir>
 Set InstallPCRes$Path <Obey$Dir>.Resources.
@@ -29,11 +35,10 @@ RMEnsure Window   0.00 RMLoad System:Modules.Toolbox.Window
 RMEnsure Toolbox  1.36 Set InstallPC$ToolboxMod Toolbox 1.36
 RMEnsure Window   1.43 Set InstallPC$ToolboxMod Window 1.43
 
-If "<InstallPC$ToolboxMod>"<>"" Then Error 0 Some or all of your Toolbox modules are outdated; please run the 'InstToolbox' script to rectify this situation.
+If "<InstallPC$ToolboxMod>"<>"" Then Error 0 Some or all of your Toolbox modules are outdated; please run !UpdateSys' to rectify this situation.
 
-If "<Wimp$ScrapDir>"="" Then Error 0 I can't find your !Scrap folder; has the machine been booted properly?
 Wimpslot -min 256k -max 256k
 
-|Run <InstallPC$Dir>.!Runimage 2>null:$
-Run <InstallPC$Dir>.!Runimage 2><InstallPC$Dir>.^.stderr
+Run <InstallPC$Dir>.!Runimage 2>null:$
+|Run <InstallPC$Dir>.!Runimage 2><InstallPC$Dir>.^.stderr
 

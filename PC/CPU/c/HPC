@@ -240,7 +240,7 @@ static void Do_Cmd_Write( int data )
       return;  
       
     case HPC_GET_TASKMODE: //maybe this shouldn't really be a command -we need a 'do fake IO access mechanism'
-      /*<something>=SYS_FEState.FullFErunning;   /*return true if single tasking, false if not */
+      //<something>=SYS_FEState.FullFErunning;   /*return true if single tasking, false if not */
       return;  
 
     default:

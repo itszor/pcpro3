@@ -2,5 +2,9 @@
 
 extern int task_handle, child_task_handle, quit;
 
-void installer_progress(char *msg);
-void FERR(_kernel_oserror *e);
+extern void installer_progress(char *msg);
+extern void FERR(_kernel_oserror *e);
+extern void whinge(char *msg);
+
+/* this for special version for hang problem during 'finishing up'*/
+#define HANGDEBUG 0

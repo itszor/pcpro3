@@ -1,0 +1,14 @@
+; CMHG file for !PC (Gemini) memory manager module
+; 
+; 22-11-94 INH  Original
+
+help-string:  Gemini_Mem_Mgr 2.02
+
+title-string: PCMem
+
+initialisation-code: init
+
+swi-handler-code:      PCMem_SWI
+swi-chunk-base-number: 0x4B4C0
+swi-decoding-table:    PCMem,
+   SetMem, FillPTE, GetMemTbl, ShowInfo

@@ -65,7 +65,6 @@ extern bool SYS_Init (void);
 #define SYS_BufSize 0x4000
 extern BYTE SYS_TempBuf[SYS_BufSize];
 
-extern bool SApresent;           /* True when SA detected on startup of !PC*/
 extern int RISCOSlevel;          /* Version of RISCOS in use */
                                  /* 2 for RISCOS 2, 3 for ROS 3 */
 extern bool SYS_ErrorPending;
@@ -78,3 +77,6 @@ extern int TraceDestination;
 extern void SYS_InitDoCallbacks(void);
 
 #define ER(x) if ((x)) SYS_trace("error at line %d: %s", __LINE__, (x)->errmess)
+
+extern void log_callback(int r0, int r1, int r2, int r3);
+extern void about_to_call_swi(void);

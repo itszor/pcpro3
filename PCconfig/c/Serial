@@ -27,6 +27,10 @@ void update_serial_window(void)
 
 int serial_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+  
   if(id_block->self_component == SERIAL_OK)
   {
     optionbutton_get_state(0,serial_window,SERIAL_DIRECT_SERIAL,&tmp_config.serial.direct_serial);

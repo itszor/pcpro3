@@ -38,10 +38,16 @@ void update_printing_window(void)
   }
 
   if(config.printing.direct_parallel)
+  {
    optionbutton_set_state(0,printing_window,PRINTING_DIRECT_PARALLEL,1);
+   raise_error(gadget_set_flags(0,printing_window,PRINTING_TURBODRIVERBODGE,0));
+  }
   else
+  {
    optionbutton_set_state(0,printing_window,PRINTING_DIRECT_PARALLEL,0);
-
+   raise_error(gadget_set_flags(0,printing_window,PRINTING_TURBODRIVERBODGE,Gadget_Faded));
+  }
+   
   if(config.printing.turbodriverbodge)
    optionbutton_set_state(0,printing_window,PRINTING_TURBODRIVERBODGE,1);
   else
@@ -51,9 +57,14 @@ void update_printing_window(void)
 int printing_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   int selected;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   switch(id_block->self_component)
   {
+    int Directparallel_state;
+    
     case PRINTING_OK:
 
      optionbutton_get_state(0,printing_window,PRINTING_DIRECT_PARALLEL,&tmp_config.printing.direct_parallel);
@@ -78,13 +89,23 @@ int printing_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *
      config.printing = tmp_config.printing;
      break;
 
+    //if using riscos printer then you can't use direct parallel
     case PRINTING_LPT1_TO_RO_STREAM:
     case PRINTING_LPT2_TO_RO_STREAM:
      raise_error(optionbutton_set_state(0,printing_window,PRINTING_DIRECT_PARALLEL,0));
+     raise_error(optionbutton_set_state(0,printing_window,PRINTING_TURBODRIVERBODGE,0));
+     //need to grey out turbodriver bodge too
+     raise_error(gadget_set_flags(0,printing_window,PRINTING_TURBODRIVERBODGE,Gadget_Faded));
      break;
 
     case PRINTING_DIRECT_PARALLEL:
      raise_error(radiobutton_set_state(0,printing_window,PRINTING_RO_PRINT_STREAM,1));
+     optionbutton_get_state(0,printing_window,PRINTING_DIRECT_PARALLEL,&Directparallel_state);
+     //grey out tdriverbodge if directparallel not selected
+     if (Directparallel_state)
+     raise_error(gadget_set_flags(0,printing_window,PRINTING_TURBODRIVERBODGE,0));
+     else
+     raise_error(gadget_set_flags(0,printing_window,PRINTING_TURBODRIVERBODGE,Gadget_Faded));
      break;
 
    }

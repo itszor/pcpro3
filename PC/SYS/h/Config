@@ -13,6 +13,7 @@
 *    97-03-03 W    Disablefloppies added
 *  1997-10-30 MB   NE2000* options added
 *  1998-03-12 MB   TurboDriverBodge added
+*  1998.09.11 MB   LFBmode switch added
 */
 
 struct SysConfig

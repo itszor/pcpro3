@@ -18,6 +18,10 @@
  *                          PCMem to allocate VRAM as part of Gemini's memory
  *                          allocation, and RAM isn't zeroed to start with.
  *  2.21a 1998.03.23      Pays attention to CFG.IncludeVRAM properly
+ *  2.34b 1998.09.16 W    Added SetWBCache - not yet used
+ *  2.35  1998.09.20 MB   Added serial number checking.
+ *  3.02  1998.12.08 W    Fixed VRAM logic so that size iscorrect for <16Mb Main RAM
+ *  3.05  2000.02.01 W    Turning off SA cache during RAM allocation moved to PCMEM module
  */
 
 #include "kernel.h"
@@ -25,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <stdlib.h>
 
 #include "sys.h.stdtypes"
 #include "sys.h.sys"
@@ -48,7 +53,13 @@
 #include "module.h.pcsupport"
 #include "module.h.pcmemswis"
 
+#define DEBUG 0
+#include "sys.h.debug"
 
+/* special fake SCAMP register */
+#define scampF0 0
+
+#ifdef PC_DEMO
 static char demotimeout[12]={0xb2,0x40,0x8c,0xff,0x02,0x54,
                              0xbd,0x6e,0x32,0x83,0xe7,0x5f};
 
@@ -60,7 +71,7 @@ static char demotimeout[12]={0xb2,0x40,0x8c,0xff,0x02,0x54,
       SYS_error( true, demotimeout ); \
       exit(1); \
     }
-
+#endif
 
 /* Globals **************************************************** */
 
@@ -252,6 +263,47 @@ static void SetHold(bool OnNotOff)
   }
 }
 
+/* change caching during a run
+* if going from WB to WT then hold CPU - both caches should be flushed
+* Then we turn WB bit off in REV2R register, and for 512K cards set size to 128K
+* which is the biggest we can do in WT mode.
+
+In reverse we just have to turn the WB cache on and set the size.
+probably safest to hold the CPU whilst doing this though */
+
+
+extern void SetWBCache(bool WBNotWT)
+{
+  SetHold(true);
+  if (WBNotWT)
+  {
+    REV2R_val |= REV2R_WBMODE;
+    /*if ( CFG.L2Size == 128 )
+      CFGR_val |= CFGR_CACHE_128K;
+    else
+      CFG_val &= ~CFGR_CACHE_128K;*/
+  }
+  else
+  {
+    REV2R_val &= ~REV2R_WBMODE;
+    /*if ( CFG.L2Size == 128 )
+      CFGR_val |= CFGR_CACHE_128K;
+    else
+      CFG_val &= ~CFGR_CACHE_128K;*/
+   }
+  //CPUS_Write ( CFGR, CFGR_val );
+  CPUS_Write ( REV2R, REV2R_val );
+  SetHold(false);
+}
+
+/* matthew's variant of the above */
+extern void CPU_L2Cache( bool on )
+{
+  if (on)
+    CPUS_Write( REV2R, REV2R_val );
+  else
+    CPUS_Write( REV2R, REV2R_val&(0xffffffff^(REV2R_WBMODE|REV2R_INVONHIT)));
+}
 
 /* ------------------------------- */
 
@@ -302,8 +354,6 @@ static bool HardwareInit ( int RAMsize )
 
   struct adrblk blocks[MBCR_regs];
   int i, s, ctlword, pcaddr, ramsize_index;
-  #define SADataCacheOff "cache iw"
-  #define SADataCacheOn  "cache idw"
 
   /* Hardware type determination */
 
@@ -317,8 +367,10 @@ static bool HardwareInit ( int RAMsize )
     CPU_HWType = HW_GEMINI2;
 
     if ( CFG.ASICOptions & AO_NO_WRFIFO16 )
+      /*  REV2R_val = REV2R_ENCLKO | REV2R_ENL2FL; - don't try this yet!*/
       REV2R_val = REV2R_ENCLKO;
     else
+      /*REV2R_val = REV2R_ENCLKO | REV2R_FIFO16 | REV2R_FAEN | REV2R_ENL2FL;*/
       REV2R_val = REV2R_ENCLKO | REV2R_FIFO16 | REV2R_FAEN;
 
     if ( CFG.L1Cache == L1C_WRBACK )
@@ -386,26 +438,21 @@ static bool HardwareInit ( int RAMsize )
 
   /* Attempt to allocate this much RAM ---------- */
   /* We need to turn off the SA data cache whilst doing this to work round an
-     interrupt hole in RISCOS/SA */
-
-  if (SApresent) OScommand (SADataCacheOff);
+     interrupt hole in RISCOS/SA - this is now done in module */
 
   R.r[0] = ramsizes[ramsize_index].val;
-  R.r[1] = 0;
-  if (CFG.IncludeVRAM)
-    R.r[1] = 1; /* 'include VRAM in this size' flag */
+  if (CFG.IncludeVRAM) R.r[1] = 1; /* 'include VRAM in this size' flag */
+  else R.r[1] = 0;
   err = _kernel_swi ( PCMem_SetMem, &R, &R );
   if ( err != NULL )
   {
     SYS_trace("Error from SetMem SWI: %s", err->errmess );
-    if (SApresent) OScommand (SADataCacheOn); /* turn cache back on before failing */
     return false;
   }
   CPU_VRAMSize = 0;
-  if (CFG.IncludeVRAM)
+  if (CFG.IncludeVRAM) /* SetMem returns allocated size of VRAM in R0 */
     CPU_VRAMSize = R.r[0];
 
-  if (SApresent) OScommand (SADataCacheOn);
 
   /* Now read what memory we have actually got ------ */
 
@@ -428,7 +475,8 @@ static bool HardwareInit ( int RAMsize )
 
   /* Set config register ------------------------ */
 
-  ramsize_index = RoundSize ( RAMsize + (2*MEG) );
+  /* set the configured size to the main RAM + VRAM */
+  ramsize_index = RoundSize ( RAMsize + CPU_VRAMSize);
 
   CFGR_val = ramsizes[ramsize_index].tag |
              CFGR_RAM_CACHED | CFGR_RDONLY_CACHED;
@@ -483,14 +531,6 @@ gives either 32K (gemini i) OR 512k (GEMINI II)*/
 }
 
 /* ------------------------------------ */
-
-extern bool CPU_L2Cache( bool on )
-{
-  if (on)
-    CPUS_Write( REV2R, REV2R_val );
-  else
-    CPUS_Write( REV2R, REV2R_val&(0xffffffff^(REV2R_WBMODE|REV2R_INVONHIT)));
-}
 
 static bool CPU_Reset( void )
 {
@@ -585,7 +625,6 @@ static bool CPU_Reset( void )
 static bool ROM_load( char * filename, int PCaddr, int maxsize )
 { int size;
   FILE *infile;
-  char *s;
 
   infile = fopen (filename, "rb");
 
@@ -610,6 +649,7 @@ static bool ROM_load( char * filename, int PCaddr, int maxsize )
   return true;
 }
 
+#if scampF0
 static void LoadExt(void)
 {
   FILE *infile;
@@ -624,6 +664,7 @@ static void LoadExt(void)
   *(int*)(CPU_MemoryBase+(256<<10)) = 0x56E423FC;
   fclose(infile);
 }
+#endif
 
 /* A20Gate routines ******************************************** */
 
@@ -657,8 +698,11 @@ static void CPU_SetA20_Rev2 ( int OnNotOff )
 
 /* CPU_SetConfig() ====================================== */
 
-static unsigned int mark=0x646D7450;
+
+//static unsigned int mark=0x646D7450;
+#ifdef PC_DEMO
 static time_t inst_time;
+#endif
 
 static bool CPU_SetConfig(void)
 {
@@ -681,8 +725,8 @@ static bool CPU_SetConfig(void)
   SYS_BannerText("Loading BIOS");
   ROM_load("<Diva$Dir>.ROM", ROM_First, ROM_Length);
 #ifdef PC_DEMO
-  /* Times out two weeks after installation */
-  if ( difftime(time(NULL), inst_time) > (14*24*60*60) )
+  /* Ti*mes out one week after installation */
+  if ( difftime(time(NULL), inst_time) > (7*24*60*60) )
     DEMOTIMEOUT;
 #endif
   /*SYS_BannerText("Loading ATIem ROM");
@@ -704,6 +748,7 @@ static bool CPU_SetConfig(void)
 }
 
 
+
 /* CPU_Run and related routines ************************************* */
 
 static void trace_cb_list( Callback** _cb )
@@ -717,7 +762,9 @@ static void trace_cb_list( Callback** _cb )
   }
 }
 
+#ifdef PC_DEMO
 static int xy=0;
+#endif
 
 static void CPU_TimedRun ( int timeout_cs )
 {
@@ -756,6 +803,7 @@ void CPU_StopRun ( void )
 {
   *CPU_pTimerWord = 0;
   *CPUS_pStopFlag = 1;
+  debug((""))
 }
 
 /* ----------------------- */
@@ -819,7 +867,9 @@ void CPU_Run( bool suspend )
 
 static int Ctrl_Index=0;
 
+#if scampF0
 static int ExtWord=0, ewp=0;
+#endif
 
 static int Ctrl_Rd8 ( int addr )
 {
@@ -840,7 +890,7 @@ static int Ctrl_Rd8 ( int addr )
                  /* undynamic: return (CFG.VideoRAM >> 5);*/
         return ( VIDS_FreeMemory(VID_MemorySize) >> 15 );
 
-#if 0
+#if scampF0
       case 0xF0:
         LoadExt();
         ewp = 0;
@@ -887,7 +937,7 @@ static void Ctrl_Wr8 ( int addr, int data )
         }
         break;
 
-#if 0
+#if scampF0
       case 0xF0:
         ExtWord |= data<<((ewp++%4)<<3);
         /*SYS_trace("ExtWord = %08x (%d)", ExtWord, ewp);*/

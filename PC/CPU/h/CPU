@@ -8,10 +8,15 @@
 *        20-03-95 INH  Original
 * 2.15 1997.10.14 RW   Moved CPU_Timerword here
 *      1998.09.06 MB   Added CPU_L2Cache
+*      1998.09.17 W    Added CPU_WBCache
 */
 
-/* Temporarily turn off L2 cache */
-extern bool CPU_L2Cache( bool on );
+
+/* Toggle L2 cache between WB & WT modes - wook's variant*/
+extern void SetWBCache( bool WBNotWT );
+
+/* Temporarily turn off L2 cache - matthew's variant*/
+extern void CPU_L2Cache( bool on );
 
 /* Called from a handler function, stops CPU emulation immediately */
 extern void CPU_StopRun ( void );

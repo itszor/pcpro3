@@ -13,6 +13,7 @@
  *                   after !PC had released the port
  */
 
+
 #include <stdio.h>
 /*#include "os.h"*/
 #include "swis.h"
@@ -25,6 +26,8 @@
 #include "dev.h.turbolut"
 #include "module.h.pc_io"
 
+#define DEBUG 0
+#include "sys.h.debug"
 
 #define COM_IRQ   4
 #define LPT_IRQ   7
@@ -37,13 +40,6 @@
 #define SWI(x) _kernel_swi(x, &COM_SwiRegs, &COM_SwiRegs)
 #define regs(n) (COM_SwiRegs.r[n])
 
-#define DEBUG 0
-
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
 
 /* Globals ********************************************************* */
 

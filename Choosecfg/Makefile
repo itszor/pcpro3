@@ -7,7 +7,7 @@ ObjectFiles	=		\
 			o.misc	\
 
 
-ProjectName		=	ChooseCfg
+ProjectName		=	Choosecfg
 
 
 

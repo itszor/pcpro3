@@ -25,6 +25,10 @@ void update_network_window(void)
 
 int network_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+ 
   if(id_block->self_component == NETWORK_OK)
   {
     optionbutton_get_state(0,network_window,NETWORK_ISO,&tmp_config.network.iso);

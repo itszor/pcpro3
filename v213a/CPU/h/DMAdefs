@@ -1,0 +1,215 @@
+/*
+*   DIVAPC C source
+*
+*   CPU.H.DMADEFS  Definitions internal to DMA module
+*
+*   Versions
+*
+*   29-02-91 INH  Skeleton file
+*   10-03-95 DAF  Started adding definitions
+*   12-03-55 DAF  More definitions, better structuring
+*   22-03-95 DAF  Made compile
+*   23-03-05 DAF  Change which channel cascades
+*   16-05-95 INH  Split from CPU.H.DMA
+*   19-05-95 DAF  Added DMA_TRANSFER_MASK definition
+*/
+
+/*****************************************************************************
+ *
+ * State per controller
+ *     DMA_command_status
+ *         1 bit - disable controller - DMA_DISABLED
+ *         1 bit - channel 0 hold feature - DMA_CHANNEL0_HOLD
+ *         1 bit - enablwe chan0 => chan1 mem => mem copy - DMA_MEMMEM_COPY
+ *     flip flop - DMA_FLIP_FLOP
+ *     4 channels worth of state - Controller [?]
+ *
+ * State per channel - Controller [?]
+ *     8 bits of ls612 latch - DMA_LS612 == page register
+ *     2 bits - transfer type (verifty, read, write, illegal) - DMA_?_TRANSFER
+ *     1 bit - auto inc/dec - DMA_AUTO_DEC
+ *     1 bit - auto initialise - DMA_AUTO_INITIALISE
+ *     2 bits - mode (demand, single, block, cascade) - DMA_?_MODE
+ *     1 bit request bit - DMA_REQUEST
+ *     1 bit mask bit - DMA_MASK
+ *     1 bit request pending - DMA_PENDING
+ *     1 bit TC reached DMA_TC_REACHED
+ *
+ ****************************************************************************/
+
+/* Flavour control - basic build variant control */
+
+
+/* RM R12 value passed with registrations */
+
+#define DMA_r12_value       0
+
+
+/* Value undefined locations return (all same bit) */
+
+#define DMA_undef           0xffffffff
+
+
+/* 0 = minimal checks, 1 = be paranoid about everything */
+
+#define DMA_paranoid        1
+
+
+/* 0 = controller 1 always enabled, 1 = depends on cascade mode setting */
+
+#define DMA_DO_CASCADE      1
+
+
+/* Channel the BIOS cascades the second controller from */
+
+#define DMA_BIOS_MASTER     1        /* controller 1 is master */
+#define DMA_BIOS_SLAVE      0	     /* controller 0 is slave */
+#define DMA_BIOS_CASCADE    0        /* cascade channel in master */
+
+
+
+/* 0 = always flush all cache, 1 = flush selected region */
+
+#define DMA_PARTIAL_CACHE   1
+
+/* If this is set then the extra input registers present in the harris MDA chipset
+are present. If not then you only get the 'standard' intel set. So far as I
+know it makes very little difference */
+
+#define EXTRA_DMA_REGS    1
+
+/* basic debugging info */
+
+#define DEBUG 0
+
+/* Bit set for tracing of register for read access (ie 1 = trace reg#0)
+0xfffff is trace all*/
+
+#define DMA_RDTRACE     0x00000
+
+
+/* Bit set for tracing of register for write access bits 0-19*/
+
+#define DMA_WRTRACE     0x00000
+
+
+/* Other basic tracing actions */
+
+#define DMA_TRACE_RESET     0
+#define DMA_TRACE_CASCADE   0
+#define DMA_TRACE_ACTION    0
+#define DMA_TRACE_REQUEST   0
+/* record the Actual data transferred  - produces large files! */
+#define DMA_TRACE_DATA      0
+
+
+/*****************************************************************************/
+
+typedef enum
+{
+    DMA_ch0_address     = 0,
+    DMA_ch0_count       = 1,
+    DMA_ch1_address     = 2,
+    DMA_ch1_count       = 3,
+    DMA_ch2_address     = 4,
+    DMA_ch2_count       = 5,
+    DMA_ch3_address     = 6,
+    DMA_ch3_count       = 7,
+
+    DMA_command_status  = 8,
+    DMA_request         = 9,
+    DMA_mask_single     = 10,
+    DMA_mode            = 11,
+    DMA_reset_flipflop  = 12,
+    DMA_master_temp     = 13,
+    DMA_reset_mask      = 14,
+    DMA_mask_all        = 15
+} DMA_register;
+
+/*****************************************************************************/
+
+typedef struct
+{
+    WORD            addr_curr,      /* Current value of address register */
+                    addr_base,      /* Base address register */
+                    count_curr,     /* Current value of count register */
+                    count_base;     /* Base count register */
+    uint            chan_flags;     /* channel level state/info */
+    BYTE            last_ls612;     /* Value used for CPU_BusRequest */
+} DMA_Channel;
+
+/* Values for chan_flags field of DMA_Channel structure */
+
+/* This first group occurs in the same bit positions as the mode register */
+
+#define DMA_VERIFY_TRANSFER             ( 0u << 2u )
+#define DMA_WRITE_TRANSFER              ( 1u << 2u )      /* write of memory */
+#define DMA_READ_TRANSFER               ( 2u << 2u )      /* read of memory */
+#define DMA_ILLEGAL_TRANSFER            ( 3u << 2u )
+#define DMA_TRANSFER_MASK               ( 3u << 2u )
+#define DMA_AUTO_INITIALISE             ( 1u << 4u )
+#define DMA_AUTO_DEC                    ( 1u << 5u )
+#define DMA_DEMAND_MODE                 ( 0u << 6u )
+#define DMA_SINGLE_MODE                 ( 1u << 6u )
+#define DMA_BLOCK_MODE                  ( 2u << 6u )
+#define DMA_CASCADE_MODE                ( 3u << 6u )
+#define DMA_MODE_MASK                   ( 0xfcu     )
+#define DMA_MODE_SHIFT                  ( 2u        )
+
+/* these bits don't correspond to registor positions */
+#define DMA_REQUEST                     ( 1u << 8u )   /* Software asked to start a transfer*/
+#define DMA_MASK                        ( 1u << 9u )   /* if set:channel masked = disabled */
+#define DMA_PENDING                     ( 1u << 10u )  /* (pseduo) Hardware asked for transfer*/
+#define DMA_TC_REACHED                  ( 1u << 11u )  /* terminal count reached */
+#define DMA_ACTIVE                      ( 1u << 12u )  /* Transfer active */
+
+/* 8 bits of LS612 latch, as the 3rd byte - dma.c:check_actions() knows this */
+
+#define DMA_LS612_SHIFT                 ( 16u )
+#define DMA_LS612_MASK                  ( 0xffu << DMA_LS612_SHIFT )
+#define DMA_LS612_MASK8			DMA_LS612_MASK
+#define DMA_LS612_MASK16                ( 0xfeu << DMA_LS612_SHIFT )
+
+/*****************************************************************************/
+
+typedef struct
+{
+    uint            cont_flags;     /* controller level state/info */
+    DMA_Channel     chan [4];       /* 4 channels per controller */
+    BYTE            temp_reg;       /* The mem=>mem temporary register */
+    BYTE            mode_count;     /* Counter for reading mode register */
+} DMA_Controller;
+
+/* Values for cont_flags field of DMA_Controller structure */
+/* bottom 3 bits are as for real controller, and are the only ones the PC side can change */
+/* The flip flop & 16_bit flags are for our purposes */
+
+#define DMA_MEMMEM_COPY                 ( 1u << 0u )
+#define DMA_CHANNEL0_HOLD               ( 1u << 1u )
+#define DMA_DISABLED                    ( 1u << 2u )
+#define DMA_FLIP_FLOP                   ( 1u << 3u )  /* flip flop state stored here*/
+#define DMA_16BIT                       ( 1u << 4u )  /* set if this is 16-bit controller */
+#define DMA_COMMAND_MASK                ( DMA_MEMMEM_COPY | DMA_CHANNEL0_HOLD | DMA_DISABLED )
+
+/*****************************************************************************
+ *
+ * INTERNAL MACROS
+ */
+
+#define DMA_RESET_CONT_FLAGS            0
+#define DMA_RESET_TEMP_REG              0
+#define DMA_RESET_CHAN_FLAGS            DMA_MASK
+#define DMA_RESET_MODE_COUNT            0
+#define DMA_CONTNUM(dcp)                ( (dcp) - & Controller [0] )
+
+/*****************************************************************************
+ *
+ * EXPORTED DATA
+ */
+
+#if 0
+extern DMA_Controller Controller [2];      /* Two DMA controllers are emulated */
+#endif
+
+
+/* eof cpu\h\dma */

@@ -8,7 +8,7 @@ extern int  regcode;
 extern char regstring[16];
 
 extern int copied_files, files_to_copy, no_fresh_install, no_registration_code,
-           netlinks_driver_chosen, no_sysfiles, install_netlinks;
+           num_configs, netlinks_driver_chosen, no_sysfiles, install_netlinks;
 
 extern char installed_pc_version[8];
 extern char this_pc_version[8];
@@ -28,8 +28,10 @@ extern void do_copy_files(void);
 #define BOOT_OPT_DMAP  5
 #define BOOT_OPT_GRDD  6
 #define BOOT_OPT_FLRP  7
+#define BOOT_OPT_MEMFIX 8
+#define BOOT_OPT_URI   9
 
-#define BOOT_OPTS      8
+#define BOOT_OPTS      10
 extern int boot_flags[BOOT_OPTS];
 
 #endif

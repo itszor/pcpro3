@@ -1,0 +1,8 @@
+amu bin.PCSupport bin.PCNE2 bin.PCMEM bin.PC_IO bin.PCDevHelp
+copy bin.PCSupport <testPC$dir>.!PC.PCSupport
+copy bin.PCNE2     <testPC$dir>.!PC.PCNE2
+copy bin.PCMEM     <testPC$dir>.!PC.PCMem
+copy bin.PC_IO     <testPC$dir>.!PC.PC_IO
+copy bin.PCDevHelp <testPC$dir>.!PC.PCDevHelp
+
+          

@@ -1,0 +1,258 @@
+/*
+*    DivaPC ARM C source
+*
+*    SYS.C.CONFIG  - Configuration reading
+*
+*
+*    13-01-92 INH  Original
+*    19-02-92      VGAAttached added
+*                  UseA0forROM, FlushISSR DoResetBugFix removed
+*                  Printers added
+*                  Rewritten
+*                  MultiIO support
+*    16-04-93      Rewritten for PCConfig
+*    12-05-93      PowerSaving added
+*    02-07-93      BusMouse added
+*    11-03-94      BusSlot added
+*    		   PCRAM changed to Mb. L1Cache, L2Cache bits.
+*    09-08-95	   UseWindowFE, VGAattached default to On
+*    17-01-96      (v2.0) VGAAttached, UseLoResText, InitInMono,
+*    		    HighRAMEnable deleted, PreserveVidMem added
+*  1997-03-03 W    Disablefloppies added 
+*  1997.10.02      v2.13 Uses <Diva$ConfigFile> on startup now
+*                        Added activity and holdoff values to Config
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+
+#define  ConfigFileName "<Diva$ConfigFile>"
+#define  LineLength 100
+#define  Comment '#'
+
+/* Globals ************************************************** */
+
+typedef enum
+{
+  End,
+  Boolean,
+  Numeric,
+  String
+} ParmType;
+
+struct ParmRec
+{
+  ParmType tag;
+  char    *key;
+  void    *result;
+  int      defaultval;
+};
+
+struct SysConfig CFG;
+
+static struct ParmRec ConfigOptions[] =
+{
+  String,  "HD0-FILE-NAME", &CFG.HDfilename[0],   0,
+  String,  "HD1-FILE-NAME", &CFG.HDfilename[1],   0,
+
+  Numeric, "HD0-SCSI-ID",   &CFG.HD_SCSI_id[0],  -1,
+  Numeric, "HD1-SCSI-ID",   &CFG.HD_SCSI_id[1],  -1,
+  Numeric, "HD0-SCSI-HEADS",&CFG.HD_SCSI_hd[0],   0,
+  Numeric, "HD1-SCSI-HEADS",&CFG.HD_SCSI_hd[1],   0,
+  Numeric, "HD0-SCSI-SECTS",&CFG.HD_SCSI_sct[0],  0,
+  Numeric, "HD1-SCSI-SECTS",&CFG.HD_SCSI_sct[1],  0,
+
+  Numeric, "HD0-IDE-CYLS",  &CFG.HD_IDE_cyl[0],  -1,
+  Numeric, "HD1-IDE-CYLS",  &CFG.HD_IDE_cyl[1],  -1,
+  Numeric, "HD0-IDE-HEADS", &CFG.HD_IDE_hd[0],    5,
+  Numeric, "HD1-IDE-HEADS", &CFG.HD_IDE_hd[1],    5,
+  Numeric, "HD0-IDE-SECTS", &CFG.HD_IDE_sct[0],   17,
+  Numeric, "HD1-IDE-SECTS", &CFG.HD_IDE_sct[1],   17,
+
+  Numeric, "IDESTARTTIME",  &CFG.IDEStartTime,   10,
+
+  Numeric, "FLOPPY0",       &CFG.FloppySize[0],  0,
+  Numeric, "FLOPPY1",       &CFG.FloppySize[1],  0,
+  Numeric, "FLOPPY2",       &CFG.FloppySize[2],  0,
+  Numeric, "FLOPPY3",       &CFG.FloppySize[3],  0,
+  Boolean, "DISABLEFLOPPIES", &CFG.DisableFloppies, false,
+  Numeric, "AUTOSTART",     &CFG.AutoStart,      0,
+  Boolean, "USEWINDOWFE",   &CFG.UseWindowFE,    true,
+  Boolean, "SCALETOFIT",    &CFG.ScaleToFit,     false,
+  Numeric, "RISCOSPRINTER", &CFG.RISCOSprinter,  0,
+  Boolean, "DIRECTSERIAL",  &CFG.DirectSerial,   false,
+  Boolean, "DIRECTPARALLEL",&CFG.DirectParallel, false,
+  Numeric, "ONBOARDFLOPPY", &CFG.OnboardFloppy,  0,
+  Numeric, "SUSPENDOPTION", &CFG.SuspendOption,  SO_ALTBREAK | SO_MIDBUTTON,
+
+  Boolean, "TRACE",         &CFG.Trace,          false,
+  Boolean, "BUSMOUSE",      &CFG.BusMouse,       true,
+  Numeric, "BUSMOUSEINT",   &CFG.BusMouseInt,    3,
+  Numeric, "NE2000INT",     &CFG.NE2000Int,      5,
+  Numeric, "RETRACEEMULATION", &CFG.RetraceEmulation, 0,
+  Numeric, "PRESERVEVIDMEM", &CFG.PreserveVidMem, PVM_TO_VGA,
+  Boolean, "FLOPPYBOOT",    &CFG.FloppyBoot,     true,
+  Numeric, "BUSSLOT",       &CFG.BusSlot,        -1,
+  String,  "WINDRVMODE",    &CFG.WinDrvMode,     0,
+  Numeric, "VIDEORAM",      &CFG.VideoRAM,       256,
+  Numeric, "PCRAM",         &CFG.PCRAM,          1,
+
+  Boolean, "POWERSAVING",   &CFG.PowerSaving,    true,
+  Boolean, "CLKDOUBLED",    &CFG.ClkDoubled,     false,
+  Boolean, "COPROCESSOR",   &CFG.Coprocessor,    false,
+  Numeric, "L1CACHE",       &CFG.L1Cache,        L1C_AUTO,
+  Numeric, "L2CACHE",       &CFG.L2Cache,        L2C_AUTO,
+  Numeric, "L2SIZE",        &CFG.L2Size,         128,
+  Numeric, "ASICOPTIONS",   &CFG.ASICOptions,    0,
+  Numeric, "SHAREDMEMFLAGS",&CFG.SharedMemFlags, 0,
+  Numeric, "FOREGROUNDSLICE",&CFG.WindFocusSpeed, 3,
+  Numeric, "BACKGROUNDSLICE",&CFG.WindNoFocusSpeed, 1,
+  Numeric, "BACKGROUNDHOLDOFF",&CFG.WindNoFocusHoldoff, 10,
+
+  /* The following are not settable by the user */
+
+  Numeric, "x",             &CFG.HDfilename[2],  0,
+  Numeric, "x",             &CFG.HDfilename[3],  0,
+  Numeric, "x",             &CFG.HD_SCSI_id[2],  -1,
+  Numeric, "x",             &CFG.HD_SCSI_id[3],  -1,
+  Numeric, "x",             &CFG.HD_IDE_cyl[2],  -1,
+  Numeric, "x",             &CFG.HD_IDE_cyl[3],  -1,
+
+  End,     NULL,            NULL,                0
+};
+
+
+/* Routines ************************************************* */
+
+
+static void Upcase ( char *p )
+{
+  while ( *p != 0 )
+  {
+    *p = toupper(*p);
+    p++;
+  }
+}
+
+/* ProcessLine ********************************************** */
+
+
+static void ProcessLine ( char *line )
+{
+  int i;
+
+  char keyword[LineLength], param[LineLength];
+
+  keyword[0]=0;
+  param[0]=0;
+
+  sscanf( line, "%s %s", keyword, param );
+
+  if ( keyword[0] == 0 || keyword[0] == Comment )
+    return;
+
+  Upcase(keyword);
+
+  for ( i=0; ConfigOptions[i].tag != End; i++ )
+  {
+    if ( strcmp (keyword, ConfigOptions[i].key ) != 0 )
+      continue;
+
+    switch ( ConfigOptions[i].tag )
+    {
+      case Numeric:
+        if ( sscanf(param, "%d", (int *) ConfigOptions[i].result ) != 1 )
+          SYS_trace ( "Configuration option '%s' not recognised", keyword );
+        return;
+
+      case Boolean:
+        {
+          bool *pb = (bool *) ConfigOptions[i].result;
+          Upcase(param);
+
+          if ( strcmp (param, "OFF" ) == 0 ||
+               strcmp (param, "FALSE" ) == 0 )
+            *pb = false;
+          else
+            *pb = true;
+        }
+        return;
+
+      case String:
+        {
+          char *p = (char *)malloc(strlen(param) + 1 );
+
+          if ( p != NULL )
+            strcpy ( p, param );
+          else
+            SYS_trace("Couldn't alloc string space whilst reading config file!");
+
+          *((char * *)ConfigOptions[i].result) = p; /* Don'cha love C */
+        }
+        return;
+
+      default:
+        break;
+    }
+  }
+
+  if ( SYS_callCfg(line) )
+    return;
+
+  SYS_error( false, "cwcfgline", keyword );
+
+}
+
+
+/* ************************************************************* */
+
+static void SetDefaults()
+{
+  int i;
+  int *p;
+
+  for ( i=0; ConfigOptions[i].tag != End; i++ )
+  {
+    if ( ConfigOptions[i].tag != String )
+    {
+      p = (int *)ConfigOptions[i].result;  /* ASSUME bool same as int */
+      *p = ConfigOptions[i].defaultval;
+    }
+    else
+      *((char * *)ConfigOptions[i].result) = NULL;
+  }
+}
+
+/********************************************************************/
+
+bool CFG_Init (void)
+{
+  FILE *infile;
+  char linebuf[LineLength];
+
+  SetDefaults();
+
+  /* Read config file ******************* */
+
+  infile = fopen ( ConfigFileName, "r" );
+
+  if ( infile==NULL )
+  {
+    SYS_error( true, "fecfgfile", ConfigFileName);
+    return false;
+  }
+
+  while( fgets ( linebuf, LineLength, infile ) != NULL )
+     ProcessLine (linebuf);
+
+  fclose(infile);
+
+  return true;
+
+}

@@ -7,6 +7,7 @@
 
 #include "init.h"
 #include "InstallPC.h"
+#include "installer.h"
 #include "misc.h"
 #include "messages.h"
 #include "installer.h"
@@ -29,7 +30,7 @@ extern char update_pc_version[8]="?.??";
 
 extern int boot_flags[BOOT_OPTS]={0,0,0,0,0,0};
 
-int tasks_started = 0, boot_item = 0;
+static int tasks_started = 0, boot_item = 0;
 
 static char no_dot_buffer[16];
 
@@ -54,7 +55,6 @@ extern char *no_dot(char *v)
 static void do_registration_code(void)
 {
   FILE    *fh, *fh_out;
-  char    b[16];
   int     v;
 
   /* Nearly forgot this... */
@@ -111,7 +111,9 @@ static char boot_path[BOOT_OPTS][52]={
   "Choices/Boot/PreDesk/PCSleep/*",
   "Choices/Boot/Tasks/DOSMap",
   "Choices/Boot/PreDesk/!GuardDD/*",
-  "Choices/Boot/PreDesk/!FilerPtch/*"
+  "Choices/Boot/PreDesk/!FilerPtch/*",
+  "Choices/Boot/PreDesk/Memfix",
+  "Choices/Boot/Tasks/URIconv"
 };
 
 extern void do_update_boot(int item, int taskwin)
@@ -173,10 +175,8 @@ static void do_copy_netdocs(void)
 /* This function vastly simplified 20/10/1998 */
 extern void do_copy_files(void)
 {
-  FILE    *fh, *fh_out, *fh_out2;
-  char    *old_config;
-  char    cmd[256], line[256], new_line[256]/*, section[256]*/;
-  int     x, altered, old_config_len, dci_version;
+  char    cmd[256], line[256];
+  int     x;
 
   switch(tasks_started)
   {
@@ -215,10 +215,10 @@ extern void do_copy_files(void)
             //whinge(msg_lookup("preserve_prob")), quit = 1;
         }
 
-        sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -n InstallPCRes:Software -d <Diva$Folder>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
+        sprintf(cmd, "Taskwindow \"InstallPCApp:_uz -u -o InstallPCRes:Software -d <Diva$Folder>\" -wimpslot 320k -name \"InstallPC unzip\" -quit -task &%08X -txt &%08X", task_handle, task_handle);
         tasks_started++;
     /*    fprintf(stderr, "%s\n", cmd);*/
-        if (file_exists("InstallPCRes:Software") && compare_versions(this_pc_version, installed_pc_version) == 1)
+        if (file_exists("InstallPCRes:Software") && compare_versions(this_pc_version, installed_pc_version) >= 0)
         {
           FERR(wimp_start_task(cmd, &child_task_handle));
           installer_progress(msg_lookup("prog_install_pc"));
@@ -245,7 +245,7 @@ extern void do_copy_files(void)
       else
         tasks_started++;
     case 2 :
-      sprintf(cmd, "Obey <Diva$Folder>.!PC.!Boot", new_install_location);
+      sprintf(cmd, "Obey <Diva$Folder>.!PC.!Boot");
       FERR(wimp_start_task(cmd, &x));
       if (file_exists("InstallPCRes:NetLinks") && install_netlinks)
       {
@@ -278,13 +278,38 @@ extern void do_copy_files(void)
         tasks_started++;
     case 5 :
       installer_progress(msg_lookup("prog_install_done"));
+      #if HANGDEBUG
+      fprintf (stderr, "about to set registration code:");
+      fflush (stderr);
+      #endif
       do_registration_code();
+      #if HANGDEBUG
+      fprintf (stderr, "set registration code OK\n");
+      fflush (stderr);
+      #endif
       copied_files = files_to_copy;
       if (update_pc_version[0] != '?' && new_install_location[0] != 0)
       {
+        #if HANGDEBUG
+        fprintf (stderr, "preparing update command\n");
+        fflush (stderr);
+        #endif
         sprintf(line, "Run <Diva$Dir>.^.!Upd%s", no_dot(update_pc_version));
+        #if HANGDEBUG
+        fprintf (stderr, "Executing update command:%s\n",line);
+        fflush (stderr);
+        #endif
         FERR(wimp_start_task(line, &child_task_handle));
+
+        #if HANGDEBUG
+        fprintf (stderr, "preparing delete update command\n");
+        fflush (stderr);
+        #endif
         sprintf(line, "Delete <Diva$Dir>.^.!Upd%s", no_dot(update_pc_version));
+        #if HANGDEBUG
+        fprintf (stderr, "Executing delete update command:%s\n",line);
+        fflush (stderr);
+        #endif
         FERR(wimp_start_task(line, &child_task_handle));
       }
       return;

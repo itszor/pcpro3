@@ -1,0 +1,102 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.VGAS  - Externals for VGA assembler routines
+*
+*
+*    24-01-92 INH  Original
+*       03-92      Support for windowed FE mode
+*	01-96	   v2.00, extensive rewrite
+*    20-06-96      v2.01 VESA bits added
+*/
+
+/* 'Planar' mode exports ********************************* */
+
+extern int  VGAS_Read8      ( int );
+extern int  VGAS_ReadEOR;
+extern int  VGAS_ReadORR;
+
+extern void VGAS_Wm0Write8  ( int, int );
+extern void VGAS_Wm1Write8  ( int, int );
+extern void VGAS_Wm2Write8  ( int, int );
+extern void VGAS_Wm3Write8  ( int, int );
+extern void VGAS_GrOp_Wm0Write8  ( int, int );
+extern void VGAS_GrOp_Wm2Write8  ( int, int );
+extern void VGAS_GrOp_Wm3Write8  ( int, int );
+
+
+extern int   VGAS_SetResMask;
+extern int  *VGAS_8to32Table;
+extern int   VGAS_RotateVal;
+extern int   VGAS_SetResValue;
+extern int   VGAS_BitMask;
+extern int   VGAS_AddrMask;
+extern int   VGAS_Latches;
+extern int   VGAS_PlaneMask;
+extern BYTE *VGAS_MemoryBlk;
+extern int   VGAS_DisplayStart;
+extern int   VGAS_DisplayLength;
+extern BYTE *VGAS_DrawPointer;
+extern uint  VGAS_GrOp_So;
+extern uint  VGAS_GrOp_Sa;
+
+extern int  VGAS_VGAOddEvenRead8 ( int );
+extern void VGAS_VGAOddEvenWrite8 ( int, int );
+extern void VGAS_ConvertToInterleaved (void);
+extern void VGAS_ConvertToByte (void);
+
+
+/* Byte mode handlers and variables **************** */
+
+extern int   VGAS_OddEvenRead8     ( int );
+extern int   VGAS_OddEvenRead16    ( int );
+extern int   VGAS_Chain4Read8	  ( int );
+extern int   VGAS_Chain4Read16     ( int );
+extern int   VGAS_ByteModeRead8    ( int );
+
+extern int   VGAS_ByteReadEOR;
+extern int   VGAS_ByteReadORR;
+extern int   VGAS_AddrMask2;
+extern BYTE *VGAS_MemoryBlk2;
+extern int   VGAS_BytePlaneMask;
+extern BYTE *VGAS_256ClrXlate;
+
+extern void VGAS_256ClrWm0Write8 ( int, int );
+extern void VGAS_256ClrWm1Write8 ( int, int );
+extern void VGAS_256ClrChain4Write8 ( int, int );
+extern void VGAS_256ClrChain4Write16 ( int, int );
+extern void VGAS_256ClrNXWm0Write8 ( int, int );
+extern void VGAS_256ClrNXWm1Write8 ( int, int );
+extern void VGAS_256ClrNXChain4Write8 ( int, int );
+extern void VGAS_256ClrNXChain4Write16 ( int, int );
+extern void VGAS_256ClrOddEvenWrite8 ( int, int );
+
+
+/* VESA mode exports ********************************* */
+
+/* See vid.s.vgas for explanation of what these variables do */
+extern BYTE *VGAS_VESAMemOffset;
+extern BYTE *VGAS_VESADrawPointer;
+extern int   VGAS_VESAScreenFirst;
+extern int   VGAS_VESAScreenLength;
+
+extern int   VGAS_VESARead8(int);
+extern int   VGAS_VESARead16(int);
+extern void  VGAS_VESAWrite8(int,int);
+extern void  VGAS_VESAXlatWrite8(int,int);
+extern void  VGAS_VESAWrite16(int,int);
+extern void  VGAS_VESAXlatWrite16(int,int);
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -21,12 +21,13 @@
 
 #include "wimplib.h"
 
+#include "init.h"
 #include "installer.h"
 #include "InstallPC.h"
 #include "misc.h"
 #include "messages.h"
 
-char possible_pc_paths[5][24] = {
+static char possible_pc_paths[5][24] = {
   "<Diva$Dir>.^.\0",
   "<Boot$Dir>.^.\0",
   "<Boot$Dir>.^.PC.\0",
@@ -34,27 +35,24 @@ char possible_pc_paths[5][24] = {
   "<Boot$Dir>.^.PC486.\0"
 };
 
-char possible_pc_names[3][8] = {
+static char possible_pc_names[3][8] = {
   "!PC\0",
   "!PCx86\0",
   "!PC486\0"
 };
 
-char zero_string[4] = {0,0,0,0};
+static char installer_identity[64];
 
-char installer_identity[64];
-
-int   netlinks_driver_num=0;
 char *netlinks_driver_path[256];
 char  netlinks_driver_namelist[4096]="(none; just preserve my old settings)";
 
-void check_path_for_pc(char *path)
+/*static void check_path_for_pc(char *path)
 {
   if (file_exists(path))
     expand_path(path, pc_location, 128);
-}
+} */
 
-int extract_version_number(char *filename, char *version_buffer)
+static int extract_version_number(char *filename, char *version_buffer)
 {
   char line[256], *l;
   FILE *fh;
@@ -84,6 +82,8 @@ int extract_version_number(char *filename, char *version_buffer)
     ; /* do nothing */
   else
     version_buffer[4]=0;
+  
+  return (0);
 }
 
 int compare_versions(char *hic, char *illic)
@@ -179,8 +179,7 @@ extern void size_archives(void)
 
 extern void do_scan_system(void)
 {
-  FILE   *fh;
-  char   run_boot[256], line[256]="", expanded_path[256], *l;
+  char   run_boot[256], line[256]="";
   int    x_name, x_path;
 
   if (var_read("Boot$Dir", boot_disc_location) != 0)

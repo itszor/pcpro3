@@ -53,6 +53,9 @@ void update_switching_window(void)
 int switching_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   int x;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   if(id_block->self_component == SWITCHING_OK)
   {

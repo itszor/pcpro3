@@ -54,6 +54,13 @@ IP  RN   12
 SP  RN   13
 LR  RN   14
 
+sl  RN   10
+fp  RN   11
+ip  RN   12
+sp  RN   13
+lr  RN   14
+
+
 XOS_bit        EQU &20000
 
 ; SVC mode macro definitions

@@ -6,8 +6,10 @@ Just run it.  That's all there is.  It just makes sure the module search
 paths are in the proper order; previous to RISC OS 3.6, !System only had one
 modules folder.  Then Acorn changed to a more sensible scheme where we have
 one Modules folder for each version of the OS, so that modules which only
-worked on a particular version and above could be separate from those for
+worked on a particular version and above could be separated from those for
 previous versions of the OS.
 
-The upgrade involve creating the new folders in !System and copying a utility
-to set the paths properly, supplied courtesy of Acorn.
+The upgrade involves creating the new folders in !System and copying a
+utility to set the paths properly, supplied courtesy of Acorn. It then
+concatenates the newest Toolbox modules in the right place. You should
+reboot after running !NewSystem if it made any changes.

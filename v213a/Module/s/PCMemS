@@ -1,0 +1,93 @@
+; **************************************************************************
+;
+;   MODULE.S.PCMemS - Memory support for Gemini PC Card
+;
+;   22-11-94  INH   Original
+;
+; **************************************************************************
+
+        GET     Module.hdr.listopts
+        GET     Module.hdr.macros
+        GET     Module.hdr.system
+
+        AREA    |C$$code|, CODE, READONLY
+
+SWI_X_bit EQU 1 :SHL: 17
+
+XOS_Memory     EQU SWI_X_bit + &68
+XPCMem_FillPTE EQU SWI_X_bit + &4B4C1
+
+; ----------------------------------------
+
+        EXPORT   PCMemS_DAHandler
+        EXPORT   PCMemS_GrowFlag
+        EXPORT   PCMemS_ShrinkFlag
+
+; This handles the calls made when OS_ChangeDynamicArea is called;
+; it gets to choose which physical pages are allocated to the area.
+;
+; For PreGrow, we call a SWI in the module which will fill in the
+; page table. For PostGrow, we do nothing or return an error if
+; the the 'GrowFlag' flag is nonzero. For PreShrink, we do the same
+; with the 'ShrinkFlag' flag.
+
+        ALIGN
+
+PCMemS_DAHandler
+        ; R0 = reason code
+        BIC     LR, LR, #V_bit  ; Exit without error default
+	CMP     R0, #0
+        BEQ     DA_PreGrow
+        CMP     R0, #1
+        BEQ     DA_PostGrow
+        CMP     R0, #2
+	BEQ     DA_PreShrink
+        MOVS    PC, LR	        ; Exit without error
+
+DA_PreGrow
+	; R1->page block, R2->number of entries in block
+        STMFD   SP!, {LR}  	  ; Save LR while doing SWIs
+                                  ; R1->Page Block
+				  ; R2 = No. of entries
+        SWI     XPCMem_FillPTE    ; Get C code to do it
+        LDMFD   SP!, {LR}
+        MOVVCS  PC, LR            ; Return if no error
+        ORRS    PC, LR, #V_bit    ; Return with V set otherwise
+
+DA_PostGrow
+        LDR     R0, PCMemS_GrowFlag
+        MOVS    R0, R0            ; Is it zero?
+	MOVEQ   R0, #1            ; Restore R1 contents
+        MOVEQS  PC, LR            ; Exit if zero
+
+        ; R0 holds error pointer
+	ADR     R0, DA_GrowErr
+        ORRS    PC, LR, #V_bit
+
+DA_PreShrink
+        ; We have the opportunity to complain here
+        LDR     R0, PCMemS_ShrinkFlag
+	MOVS    R0, R0
+        MOVEQ   R0, #2          ; was 2 on entry
+        MOVEQS  PC, LR          ; Return if ShrinkFlag is zero
+
+        ADR     R0, DA_ShrinkErr ; Return shrink error
+        ORRS    PC, LR, # V_bit
+
+PCMemS_GrowFlag   DCD 0         ; Non-zero to object to grow
+PCMemS_ShrinkFlag DCD 0         ; Non-zero to object to shrink
+
+DA_ShrinkErr
+        DCD    &10001
+        DCB    "Cannot reduce this area right now", 0
+
+        ALIGN
+DA_GrowErr
+        DCD    &10002
+        DCB    "Memory size error", 0
+
+        ALIGN
+
+        DCB     "Module by IH", 0
+
+        END

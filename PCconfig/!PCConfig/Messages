@@ -1,0 +1,64 @@
+_TaskName:PCConfig
+Ver:0.84 (26 Jan 1999)
+no_diva:I dont know where your !PC application is. Please open the directory containing the PC application and re-start !PCConfig.
+no_diva_version:Your !PC.!Run file seems to be corrupted (can't find version number).  Please re-install and try again, or contact Aleph One.
+no_config_dir:I couldn't find your configuration folder, but have attempted to create a suitable default.  This is entirely normal if this is the first time you have installed this verson of !PC.
+config_import:This version of !PC doesn't seem to have a config folder; shall I import one from your previous version of !PC, or start one from scratch?
+netrun_warn:I've imported only the basic settings from your !NetRun file; if you had specified any esoteric packet types, you may want to go to the Advanced settings and re-enter them.
+diva_empty:Couldn't find a Config file inside this version of !PC.
+disc_help:Click here to alter hard disc settings
+ram_help:Click here to alter RAM settings
+printing_help:Click here to alter printer settings
+serial_help:Click here to alter serial port settings
+windows_help:Click here to alter Windows screen setup
+start_help:Click here to alter start-up settings
+switching_help:Click here to alter RISC OS/PC Card switching
+boot_help:Click here to alter boot settings
+err1:A PC Partition already exists with this name, do you wish to overwrite it?
+warn:Advanced configuration options should not be altered unless you are instructed to do so in the ReadMe file supplied with your PC Card disc
+nodrag:Please drag a PC DOS Partition to this window
+drive_c_not_found:You have not specified a valid location for Drive C; please do so or turn it off.
+drive_d_not_found:You have not specified a valid location for Drive D; please do so or turn it off.
+#dr0:ADFS::HardDisc4.$.Drive_C
+#dr1:ADFS::HardDisc5.$.Drive_D
+no_partition:»»» Drag partition here or create a new one «««
+createfailed:Couldn't create DOS disc; possibly there is no space left or you're trying to overwrite a locked file.
+mul:25
+
+lexerr:Mistake in ConfData file
+yaccerr:Syntax error in ConfData file
+iconerr:Not enough memory to make icon
+configwerr:Could not open file to write new configuration
+configeerr:Could not find the end of the file
+configrerr:load_config_file called with no pathname -- please report this to Aleph One!
+configrerp:Could not find my default config file, please re-install !PCConfig and try again
+tmplterr:Didn't get template
+ukconferr:Unknown configuration: %s
+windname:PC Card Configuration:
+confchange:Changes have been made: Do you want to save them before quitting?
+helpbox:This is the PC Card configuration utility
+helpgo:Click Select to perform the specified action
+helpbool:Click Select to alter this option
+helpnum:Enter a number in the box on the right
+helpstr:Enter a string in the box on the right
+helpfile:Enter a file name in the box on the right|MYou may drag a file to the box instead
+helprad:Choose one from the set of options
+helpstrct:Fill in all the parts of this structure
+helpuni:Select and fill in only one part of this section
+helpOK:Click here to save the configuration
+
+dcs_change_config:Before changing to edit another configuration, you must save or discard the changes you have made to this one.
+dcs_quit:Your current configuration hasn't been saved
+
+delete_confirm:Are you sure you want to remove this configuration?
+delete_last:You can't delete your only configuration!
+
+save_same_name:This configuration has the same name as another one; please change the name before saving it.
+
+silly_place:Hard drive can only be saved into normal filer windows
+file_exists:There is already a PC partition there with the same name!  Clicking OK will overwrite it with a blank one.
+full_path_please:Please choose a place to save the partiton by dragging the partition icon into a directory viewer.
+ar_add_action:New
+ar_rename_action:Rename
+ar_add_title:Create new configuration
+ar_rename_title:Rename configuration

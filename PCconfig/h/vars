@@ -44,6 +44,7 @@
 #define MAIN_CANCEL                0xD
 #define MAIN_SAVEASNEW             0x35
 #define MAIN_DELETE                0x36
+#define MAIN_DEFAULT               0x42
 #define MAIN_RENAME                0x40
 #define MAIN_HELP                  0x39
 #define MAIN_LAUNCH                0x3A
@@ -253,6 +254,8 @@
  * Advanced window component numbers *
  *************************************/
 
+/* note that radio button options must be consecutively numbered 
+ - the code relies on it*/
 #define ADV_L1CACHE_OFF            0x1
 #define ADV_L1CACHE_WRITETHROUGH   0x2
 #define ADV_L1CACHE_WRITEBACK      0x3
@@ -266,7 +269,7 @@
 #define ADV_ASICDISABLE_NEITHER    0xF
 #define ADV_ASICDISABLE_SMALL      0x10
 #define ADV_ASICDISABLE_LARGE      0x11
-#define ADV_ASICDISABLE_BOTH       0x12
+//#define ADV_ASICDISABLE_BOTH       0x12
 #define ADV_VIDRETRACE_NORMAL      0x14
 #define ADV_VIDRETRACE_FASTA       0x15
 #define ADV_VIDRETRACE_FASTB       0x16
@@ -280,7 +283,8 @@
 #define ADV_PRESERVEVIDMEM_TOVGA   0x28
 #define ADV_PRESERVEVIDMEM_ALWAYS  0x29
 #define ADV_FLOPPY0                0x35
-#define ADV_FLOPPY1                0x3B
+#define ADV_FLOPPY1    	           0x3B
+#define ADV_SCALETOFIT             0x42
 
 #define ADV_OK                     0x2A
 
@@ -310,18 +314,18 @@ extern  ObjectId       iconbar_icon,
                        printing_window,
                        serial_window,
                        windows_window,
-                       //start_up_window,
                        aspi_window,
                        switching_window,
                        booting_window,
                        memory_window,
                        dcs_window,
-                       network_window,
-                       //advanced_window;
                        adv_window,
+                       network_window,
+                       update_window,
+                       proginfo_window,
                        addrename_window;
 
-extern  int            advanced_window_wimp;
+//extern  int            advanced_window_wimp;
 
 extern configpair     config_list[32];
 
@@ -335,14 +339,13 @@ extern  MessagesFD     messages;
  * General Configuration variables *
  ***********************************/
 
-extern int old_number_of_discs;
-
 extern int discs_last_disc_dragged;
 
 extern BOOL configuration_changed;
 extern BOOL window_title_updated;
 
 extern int total_modes;
+extern small_mode_structure modes[100];
 extern options config;
 extern options tmp_config;
 extern options def_config;

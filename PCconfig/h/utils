@@ -11,6 +11,8 @@
 #ifndef __utils_h
 #define __utils_h
 
+#define NotUsed(name)  (void) name;  //this is used to stop compiler warnings
+
 extern void read_var_val(char *var, char *buffer, int buf_size);
 
 extern void raise_error(_kernel_oserror *e);

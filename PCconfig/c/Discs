@@ -1,3 +1,15 @@
+/*
+ * PCConfig application
+ *
+ * History: 
+ * original: Dean Murphy
+ * fettled : Matthew 1998
+ * Tidied: W 1999.01.13
+ *
+ */
+
+#include <stdlib.h>
+
 #include "stdio.h"
 #include "string.h"
 #include "toolbox.h"
@@ -14,31 +26,22 @@
 
 #include "debugit.h"
 
-extern int discs_last_disc_created = 0;
-extern int old_number_of_discs     = 0;
+static int discs_last_disc_created = 0;
+static int old_number_of_discs     = 0;
 
-void do_discs_initialise(void)
+
+
+static int createdisc_update_riscossize(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
-  tmp_config.discs.drive_c_use_partition   = config.discs.drive_c_use_partition = TRUE;
-  tmp_config.discs.drive_d_use_partition   = config.discs.drive_d_use_partition = TRUE;
-  tmp_config.discs.drive_c_direct_scsi_id  = config.discs.drive_c_direct_scsi_id = 0;
-  tmp_config.discs.drive_d_direct_scsi_id  = config.discs.drive_d_direct_scsi_id = 0;
-/*  strcpy(config.discs.drive_c_path_name, "adfs::4.$.pccard.drive_c");
-  strcpy(config.discs.drive_d_path_name, "adfs::4.$.pccard.drive_d");*/
-  strcpy(config.discs.drive_c_path_name, lookup_token("no_partition"));
-  strcpy(config.discs.drive_d_path_name, lookup_token("no_partition"));
+  int v;
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  NotUsed (event_code);
 
-#if DISCS_1
-  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_PARTITION_SELECTED,discs_window_other_event_handler,0));
-  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_SCSI_SELECTED,discs_window_other_event_handler,0));
-  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_PARTITION_SELECTED,discs_window_other_event_handler,0));
-  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_SCSI_SELECTED,discs_window_other_event_handler,0));
-#endif
-  raise_error(event_register_toolbox_handler(discs_window,NumberRange_ValueChanged,discs_window_handler,0));
-  raise_error(event_register_toolbox_handler(discs_window,ActionButton_Selected, discs_window_click_handler,0));
-  raise_error(event_register_toolbox_handler(createdisc_window,NumberRange_ValueChanged,createdisc_update_riscossize, NULL));
-
-  update_discs_window();
+  raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &v));
+  raise_error(numberrange_set_value(0, createdisc_window, CREATEDISC_RISCOSSIZE, (v*954)/1000 ));
+  return(0);
 }
 
 void update_discs_window(void)
@@ -128,7 +131,7 @@ void setup_discs_window(void)
   createdisc_update_riscossize(0,NULL,NULL,NULL);
 }
 
-void ensure_discs(int num)
+static void ensure_discs(int num)
 {
   int x;
 
@@ -160,6 +163,8 @@ int discs_data_load_handler(WimpMessage *message,void *handle)
     int wimp_window_handle;
     WimpGetPointerInfoBlock p;
     int z;
+    NotUsed (handle);
+
     /* Check for correct file type first */
 
     /* This seems pointless but it's too overcome a bug in the Toolbox which
@@ -178,23 +183,25 @@ int discs_data_load_handler(WimpMessage *message,void *handle)
 
     if(message->data.data_load.file_type != 0xfc8)
     {
-      /*
-        _kernel_oserror *e;
-
-        e->errnum = 1;
-
-        strcpy(e->errmess, "Please drag a PC DOS Partition to this window");
-        wimp_report_error(e,Wimp_ReportError_OK,"PC Config","!PC_Config",1,0);
-        */
+        /* "Please drag a PC DOS Partition to this window"*/
         werr(0,lookup_token("nodrag"));
         return(1);
     }
 
     numberrange_get_value(0,discs_window,DISCS_NUMBER,&z);
     if(component_handle == 0 && z == 0)
-      { ensure_discs(1); component_handle = DISCS_DRIVE_C_DISPLAY; }
+      { 
+        ensure_discs(1); 
+        component_handle = DISCS_DRIVE_C_DISPLAY; 
+        tmp_config.discs.drives = 1;
+      }
+
     if(component_handle == 0 && z == 1)
-      { ensure_discs(2); component_handle = DISCS_DRIVE_D_DISPLAY; }
+      { 
+        ensure_discs(2); 
+        component_handle = DISCS_DRIVE_D_DISPLAY; 
+        tmp_config.discs.drives = 2;
+       }
 
     if(component_handle == DISCS_DRIVE_C_DISPLAY  || component_handle == DISCS_DRIVE_C_DRAGGABLE)
     {
@@ -323,6 +330,9 @@ void shade_discs(int num)
 int discs_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   int z;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   if(id_block->self_component == DISCS_C_CREATE)
   {
@@ -349,7 +359,7 @@ int discs_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_
     int radio_check_c, radio_check_d, num_discs;
     char buff[20], disc_check_c[256], disc_check_d[256];
 
-    radiobutton_get_state(0,discs_window,DISCS_DRIVE_C_PARTITION,&radio_check_c,&num_discs);
+     radiobutton_get_state(0,discs_window,DISCS_DRIVE_C_PARTITION,&radio_check_c,&num_discs);
     radiobutton_get_state(0,discs_window,DISCS_DRIVE_D_PARTITION,&radio_check_d,&num_discs);
     writablefield_get_value(0,discs_window,DISCS_DRIVE_C_DISPLAY,disc_check_c,255,0);
     writablefield_get_value(0,discs_window,DISCS_DRIVE_D_DISPLAY,disc_check_d,255,0);
@@ -423,9 +433,13 @@ int discs_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_
 int discs_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   int discs;
-  /*window_set_title(1,discs_window,"PC Card configuration *");*/
   NumberRangeValueChangedEvent *ev = (NumberRangeValueChangedEvent *)event;
   discs = ev->new_value;
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event_code);
+
+  /*window_set_title(1,discs_window,"PC Card configuration *");*/
 
   switch(discs)
   {
@@ -451,18 +465,15 @@ int discs_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,
   return(1);
 }
 
-extern int createdisc_update_riscossize(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
-{
-  int v;
-
-  raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &v));
-  raise_error(numberrange_set_value(0, createdisc_window, CREATEDISC_RISCOSSIZE, (v*954)/1000 ));
-}
 
 #if DISCS_1
 int discs_window_other_event_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   int drive = 0;
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  
   switch(event_code)
   {
     case DISCS_C_PARTITION_SELECTED:
@@ -573,36 +584,6 @@ void update_partition_state(int drive)
   }
 }
 
-/*void create_pc_partition(char *path_name)
-{
-  _kernel_swi_regs r;
-
-  r.r[0] = 5;
-  r.r[1] = (int)path_name;
-  raise_error(_kernel_swi(OS_File,&r,&r));
-  if(r.r[0] != 0)
-  {
-    int ret;
-    ret = cancel_ok("A PC Partition already exists with this name, do you wish to overwrite it?");
-    if(ret == 1)
-    {
-      char buff[512];
-      sprintf(buff, "<PC_Config$Dir>.Resources.!PCFormat %s\0",path_name);
-      r.r[0] = (int)buff;
-      raise_error(_kernel_swi(Wimp_StartTask,&r,&r));
-      return;
-    }
-  }
-  else
-  {
-      char buff[512];
-      sprintf(buff, "<PC_Config$Dir>.Resources.!PCFormat %s\0",path_name);
-      r.r[0] = (int)buff;
-      raise_error(_kernel_swi(Wimp_StartTask,&r,&r));
-      return;
-  }
-}*/
-
 void create_pc_partition(char *leaf_name)
 {
   writablefield_set_value(0, createdisc_window, CREATEDISC_NAME, leaf_name);
@@ -618,6 +599,9 @@ int dragended_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, vo
   WimpMessage                 msg;
   int                         th, x;
   char                       *b;
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event_code);
 
   event_a = (DraggableDragEndedEvent*) event;
 
@@ -645,6 +629,7 @@ int dragended_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, vo
 int data_saveack_handler(WimpMessage *msg, void *h)
 {
   char path_stripped[256];
+  NotUsed(h);
 
   strcpy(path_stripped, msg->data.data_save_ack.leaf_name);
   path_stripped[strlen(path_stripped) - 3]=0;
@@ -664,6 +649,10 @@ int create_fc8_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,vo
   char path_name[256], cmd[256], initdos[10]="\0";
   _kernel_swi_regs r;
   int ret = 1, size, initdosflag, x;
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  NotUsed (event_code);
 
   raise_error(writablefield_get_value(0, createdisc_window, CREATEDISC_NAME, path_name, 256, &x));
   raise_error(numberrange_get_value(0, createdisc_window, CREATEDISC_SIZE, &size));
@@ -702,6 +691,28 @@ int create_fc8_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,vo
     else
       ensure_discs(2);
   }
+  return(0);
 }
 
+void do_discs_initialise(void)
+{
+  tmp_config.discs.drive_c_use_partition   = config.discs.drive_c_use_partition = TRUE;
+  tmp_config.discs.drive_d_use_partition   = config.discs.drive_d_use_partition = TRUE;
+  tmp_config.discs.drive_c_direct_scsi_id  = config.discs.drive_c_direct_scsi_id = 0;
+  tmp_config.discs.drive_d_direct_scsi_id  = config.discs.drive_d_direct_scsi_id = 0;
+  strcpy(config.discs.drive_c_path_name, lookup_token("no_partition"));
+  strcpy(config.discs.drive_d_path_name, lookup_token("no_partition"));
+
+#if DISCS_1
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_PARTITION_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_C_SCSI_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_PARTITION_SELECTED,discs_window_other_event_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,DISCS_D_SCSI_SELECTED,discs_window_other_event_handler,0));
+#endif
+  raise_error(event_register_toolbox_handler(discs_window,NumberRange_ValueChanged,discs_window_handler,0));
+  raise_error(event_register_toolbox_handler(discs_window,ActionButton_Selected, discs_window_click_handler,0));
+  raise_error(event_register_toolbox_handler(createdisc_window,NumberRange_ValueChanged,createdisc_update_riscossize, NULL));
+
+  update_discs_window();
+}
 #endif

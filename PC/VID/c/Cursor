@@ -59,7 +59,6 @@ void CUR_HideCursor(void)
 
   if ( CUR_ArmScreenOffset < 0 )
     return;
-
   x = (int *) (VIDS_DrawPointer + CUR_ArmScreenOffset);
 
   for (i=0; i<VIDS_CharHeight; i++)
@@ -86,7 +85,6 @@ static void CUR_ShowCursor(void)
 
   if ( CUR_ArmScreenOffset < 0 )
     return;
-
   x = (int *) (VIDS_DrawPointer + CUR_ArmScreenOffset);
 
   for (i=0; i<VIDS_CharHeight; i++)

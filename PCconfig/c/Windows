@@ -18,14 +18,14 @@
 #include "vars.h"
 #include "windows.h"
 
-int multiplier = 25;
+static int multiplier = 25;
 
 extern int total_modes                 = 0;
 extern small_mode_structure modes[100] = 0;
-extern big_mode_structure buffer_mode  = 0;
+static big_mode_structure buffer_mode  = 0;
 
-int low_memory_limit   = 0;
-int high_memory_limit  = 0;
+static int low_memory_limit   = 0;
+static int high_memory_limit  = 0;
 
 void setup_windows_window(void)
 {
@@ -52,11 +52,11 @@ void do_windows_initialise(void)
 
 void update_windows_window(void)
 {
-  char buff[6];
+  
   int tmp;
-  int min_val,max_val;
+  /*int min_val,max_val;*
 
-  /*raise_error(numberrange_get_bounds(3,windows_window,WINDOWS_USER_ALLOCATED,&low_memory_limit,&high_memory_limit,NULL,NULL));
+  raise_error(numberrange_get_bounds(3,windows_window,WINDOWS_USER_ALLOCATED,&low_memory_limit,&high_memory_limit,NULL,NULL));
   DEBUG debug_output("windows","Lower bound = %d\n",min_val);
   DEBUG debug_output("windows","Upper bound = %d\n",max_val);*/
 
@@ -88,11 +88,14 @@ void update_windows_window(void)
 
   if(tmp > high_memory_limit)
    tmp = high_memory_limit;
+  
+  /*{
+  char buff[6];
+  sprintf(buff,"%d\0",tmp);
+  raise_error(displayfield_set_value(0,windows_window,WINDOWS_MEMORY_SUGGESTED,buff));
 
-  /*sprintf(buff,"%d\0",tmp);
-  raise_error(displayfield_set_value(0,windows_window,WINDOWS_MEMORY_SUGGESTED,buff));*/
-
-  /*raise_error(numberrange_set_value(0,windows_window,WINDOWS_USER_ALLOCATED,tmp_config.windows.memory_allocated));*/
+  raise_error(numberrange_set_value(0,windows_window,WINDOWS_USER_ALLOCATED,tmp_config.windows.memory_allocated));
+  }*/
 
   raise_error(numberrange_set_value(0,windows_window,WINDOWS_FRAMESKIP,tmp_config.windows.frameskip));
   raise_error(optionbutton_set_state(0,windows_window,WINDOWS_FASTVIDEO,tmp_config.windows.fastvideo));
@@ -373,7 +376,11 @@ int windows_menu_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,
 {
   int x,colours = 0, mode_num;
   int old_colours = 0;
-  char buff[20];
+  /*char buff[20];*/
+  
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   old_colours = tmp_config.windows.colours;
 
@@ -449,7 +456,11 @@ int windows_menu_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,
 
 int windows_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
-  if(id_block->self_component == WINDOWS_OK)
+ NotUsed (handle);
+ NotUsed (event);
+ NotUsed (event_code);
+ 
+ if(id_block->self_component == WINDOWS_OK)
   {
     /*raise_error(numberrange_get_value(0,windows_window,WINDOWS_USER_ALLOCATED,&tmp_config.windows.memory_allocated));*/
 
@@ -466,9 +477,9 @@ int windows_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *i
 
   if(id_block->self_component == WINDOWS_USE)
   {
-    char buffer[20];
-    /*raise_error(displayfield_get_value(0,windows_window, WINDOWS_MEMORY_SUGGESTED, buffer,20,0));*/
-    /*raise_error(numberrange_set_value(0,windows_window, WINDOWS_USER_ALLOCATED, atoi(buffer)));*/
+    /*char buffer[20];
+    raise_error(displayfield_get_value(0,windows_window, WINDOWS_MEMORY_SUGGESTED, buffer,20,0));
+    raise_error(numberrange_set_value(0,windows_window, WINDOWS_USER_ALLOCATED, atoi(buffer)));*/
   }
 
   if(id_block->self_component == WINDOWS_USE_PALETTE)

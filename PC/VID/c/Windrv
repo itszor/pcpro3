@@ -2004,6 +2004,11 @@ void WIN_CheckCursorState(void)
 
 void WIN_Init (int Xtotal, int Ytotal, int bpp, int flags, int memsize )
 {
+  Xtotal=Xtotal; /* keeps compiler warnings quiet */
+  Ytotal=Ytotal;
+  bpp=bpp;
+  flags=flags;
+  memsize=memsize;
 }
 
 #endif

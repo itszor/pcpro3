@@ -12,6 +12,7 @@
 #include "iconbar.h"
 #include "gadgets.h"
 #include "event.h"
+#include "wimplib.h"
 
 #include "miscfile.h"
 #include "multicfg.h"
@@ -33,13 +34,26 @@ char config_new[16] = "\0";
 
 configpair     config_list[32]; /* Memory schmemory */
 
+
+/* generate a filename for the 'Last' file from current config_dir */
+static char * get_lastname(void)
+{
+  static char config_lastfile[128];
+  static char last[8] = "^..Last";
+
+  strcpy(config_lastfile, config_dir);
+  strcat(config_lastfile, last);
+  return (config_lastfile);
+}
+
+
 static void write_last(void)
 {
   FILE *fh;
 
   if (current_config == -1) return;
 
-  fh = fopen("<Diva$Dir>.!ChooseCfg.Last", "wb");
+  fh = fopen(get_lastname(), "wb");
 
   if (fh != NULL)
   {
@@ -79,6 +93,11 @@ extern void multicfg_change_config(void)
 
 static int change_config_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+  NotUsed (id_block);
+
   raise_error(stringset_get_selected(1, main_window, MAIN_CONFIGSEL, &about_to_change_config));
   if (configuration_changed)
   {
@@ -89,6 +108,7 @@ static int change_config_handler(int event_code, ToolboxEvent *event, IdBlock *i
   }
 
   multicfg_change_config();
+  return(0);
 }
 
 extern void multicfg_readlist(void)
@@ -143,14 +163,14 @@ extern void multicfg_readlist(void)
     config_number = about_to_change_config;
   }
   if (about_to_change_config != -1);
-  else if (file_exists("<Diva$Dir>.!ChooseCfg.Last")) {
-    fh = fopen("<Diva$Dir>.!ChooseCfg.Last", "rb");
+  else if (file_exists(get_lastname())) {
+    fh = fopen(get_lastname(), "rb");
     if (fh != NULL)
       fread(&about_to_change_config, sizeof(int), 1, fh);
     fclose(fh);
   } else about_to_change_config = 0;
   configuration_changed = FALSE;
-  fprintf(stderr, "about_to_change_config = %d\n", about_to_change_config);
+  //fprintf(stderr, "about_to_change_config = %d\n", about_to_change_config);
   multicfg_change_config();
 }
 
@@ -159,7 +179,7 @@ extern void multicfg_zero_last(void)
   FILE *fh;
   int  xx;
 
-  fh = fopen("<Diva$Dir>.!ChooseCfg.Last", "wb");
+  fh = fopen(get_lastname(), "wb");
   xx = 0;
   fwrite(&xx, sizeof(int), 1, fh);
   fclose(fh);
@@ -203,7 +223,7 @@ extern void multicfg_new_config_dir(char *import_config_dir)
 
   sprintf(cmd, "Copy %s %s.Default ~A~C~DF~L~N~P~QRS~T~V", f, config_dir);
   system(cmd);
-  fh = fopen("<Diva$Dir>.!ChooseCfg.Last", "wb");
+  fh = fopen(get_lastname(), "wb");
   xx = 0;
   fwrite(&xx, sizeof(int), 1, fh);
   fclose(fh);
@@ -252,7 +272,7 @@ extern BOOL do_multicfg_initialise(void)
   if (fh == NULL)
   {
     werr(1, lookup_token("no_diva"));
-    return;
+    return(0);
   }
 
   fgets(line, 256, fh);
@@ -262,7 +282,7 @@ extern BOOL do_multicfg_initialise(void)
   if (*l<32)
   {
     werr(1, lookup_token("no_diva_version"));
-    return;
+    return(0);
   }
   iconbar_set_text(0, iconbar_icon, ver);
   ver[1] = ver[0]; vdir = ver+1;

@@ -1,0 +1,1167 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.WinBlt - Drawing routines for Windows driver
+*
+*    12-08-94  INH  Split from VID.C.WINDRV2
+*/
+
+#include "string.h"
+
+#include "sys.h.stdtypes"
+#include "vid.h.modes"
+#include "vid.h.vids"
+#include "vid.h.tables"
+#include "vid.h.windefs"
+#include "vid.h.windrv"
+#include "vid.h.winblt"
+
+/* Bpp-related variables */
+#define BPP_4  0
+#define BPP_8  1
+#define BPP_16 2
+#define BPP_32 3
+
+static int Blt_BPP_index;  /* BPP_4, BPP_8, BPP_16, etc */
+int Blt_BitsPixel;         /* 32 in 24-bpp modes! */
+int Blt_BPP_shift;         /* log2 of bits per pixel */
+int Blt_PixPerWord;        /* # of pixels in 32-bit word */
+int Blt_PPW_shift;         /* log2 of pixels per word */
+int Blt_PPW_mask;          /* Pixels per word minus one */
+int Blt_PixMask_LH;        /* One pixel at LH end of word */
+int Blt_PixMask_RH;        /* One pixel at RH end of word */
+
+/* Blt_GetXYOffset ******************************************************* */
+
+/* Returns offset (in bytes) from top of screen/sprite of word
+   containing the given X/Y value. Use SPRITE_PTR or SCREEN_PTR
+   macros to convert this to an actual memory address.
+*/
+
+int Blt_GetXYOffset ( int X, int Y )
+{
+  return Y*WIN_BytesPerLine + ((X>>Blt_PPW_shift)<<2);
+}
+
+
+/* Pattern-related globals *********************************************** */
+
+static int Blt_Pattern[64]; /* Up to 8x8 pattern */
+static int Blt_PatX;       /* Set by Blt_SetDestMasks */
+static int Blt_PatYinc;    /* Up/down, depends on blit direction */
+static int Blt_PatXmask;   /* Depends on bpp */
+static int Blt_PatYmask;   /* Depends on bpp */
+
+int Blt_PatY;       /* Set by Blt_SetDestRect  */
+int Blt_PatWidth;   /* Width in words */
+
+
+/* Blt_SetDestMasks & related routines *********************************** */
+
+int Blt_LHmask;     /* LH end of Blt rectangle */
+int Blt_RHmask;     /* RH end of Blt rectangle */
+int Blt_DstLast;    /* # of words of destination affected -1 */
+int Blt_WordOffset; /* Offset of first dest word from start of
+                               line, in words */
+
+/* ------------------------------------------- */
+
+/* Blt_SetDestMasks ():
+
+   Sets up the masks for the current Blt operation. X0 is the first
+   pixel and X1 is the last pixel on the line which is to be affected.
+
+   The masks have '1's in bit positions which are to be affected, and
+   0's elsewhere.
+*/
+
+void Blt_SetDestMasks ( int X0, int X1 )
+{
+  X0 <<= Blt_BPP_shift;   /* X0 = first bit on line */
+  X1 = ((X1+1) << Blt_BPP_shift) - 1;  /* X1 = last bit on line */
+
+  Blt_LHmask = ALL_ONES << (X0 & 31);
+  Blt_RHmask = (unsigned int)ALL_ONES >> (31-(X1 & 31));
+  Blt_WordOffset = X0 = X0 >> 5;  /* X0 = offset of first word */
+  Blt_PatX = X0 & Blt_PatXmask;
+
+  Blt_DstLast = (X1 >> 5) - X0; /* Length of dst area, in words, -1 */
+
+  if ( Blt_DstLast <= 0 ) /* Start and end in same word */
+  {
+    Blt_LHmask = Blt_RHmask = Blt_RHmask & Blt_LHmask;
+    Blt_DstLast = 0;
+  }
+}
+
+/* Blt_SetupROP & related routines ******************************************* */
+
+BlitFnPtr  Blt_ROPfn;      /* Pointer to function which will do 1 line of Blit
+                              as set up by Blt_SetupROP and Blt_SetDestMasks */
+
+
+static int A0, Ad, As, Ap, Ads, Adp, Asp, Adsp;
+
+/* ---------------------------- */
+
+/* Blt_CopyA0():
+
+   Writes a solid value in to the destination. Used for
+   various sorts of solid-rectangle fills.
+*/
+
+void Blt_CopyA0 ( int *src, int *dest1, int *dest2 )
+{
+  int i=Blt_DstLast;
+  int d=A0;
+
+  NotUsed(src);
+
+  if ( i > 0 )
+  {
+    *dest1 = *dest2 = MERGE (*dest1, Blt_LHmask, d);
+    dest1++, dest2++;
+
+    /* Do middle */
+    while ( --i > 0 )
+      *dest1++ = *dest2++ = d;
+  }
+
+  *dest1 = *dest2 = MERGE (*dest1, Blt_RHmask, d);
+}
+
+/* ---------------------------- */
+
+/* Blt_CopySrc():
+
+   Copies source to destination. Used for dev->dev blit, as well
+   as SaveScreenBitmap.
+*/
+
+void Blt_CopySrc ( int *src, int *dest1, int *dest2 )
+{
+  int i = Blt_DstLast;
+
+  if ( i > 0 )
+  {
+    *dest1 = *dest2 = MERGE (*dest1, Blt_LHmask, *src);
+    src++, dest1++, dest2++;
+
+    while ( --i > 0 )
+      *dest1++ = *dest2++ = *src++;
+
+  }
+
+  *dest1 = *dest2 = MERGE (*dest1, Blt_RHmask, *src);
+}
+
+/* ---------------------------- */
+
+/* ROP_Gen_D():
+
+   Does all blitting functions with only destination
+   This is also used if we have a uniform pattern & no source.
+*/
+
+static void ROP_Gen_D ( int *src, int *dest1, int *dest2 )
+{
+  int i = Blt_DstLast;
+
+  NotUsed(src);
+
+  /* Do LH edge */
+
+  if ( i > 0 )
+  {
+    *dest1 = *dest2 = (A0 & Blt_LHmask) ^ ((Ad | ~Blt_LHmask) & *dest1);
+    dest1++, dest2++;
+
+    /* Do middle */
+    while ( --i > 0 )
+    {
+      *dest1 = *dest2 = A0 ^ (Ad & *dest1);
+      dest1++, dest2++;
+    }
+  }
+
+  /* Do RH edge */
+
+  *dest1 = *dest2 = (A0 & Blt_RHmask) ^ ((Ad | ~Blt_RHmask) & *dest1);
+}
+
+/* ----------------------------- */
+
+/* ROP_Gen_SD():
+
+   Does all blitting functions with only source & destination.
+   This is also used if we have a uniform pattern + a source.
+*/
+
+static void ROP_Gen_SD ( int *src, int *dest1, int *dest2 )
+{
+  int i=0, S, D;
+
+  while(1)
+  {
+    S = *src++;
+    D = *dest1;
+
+    S = A0 ^ (Ad & D) ^ (As & S) ^ (Ads & D & S);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i == 0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dest1++ = *dest2++ = S;
+    i++;
+  }
+
+  *dest1 = *dest2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+/* --------------------------------------------- */
+
+/* ROP_CopyPat_4bpp():
+
+   Does copy-pattern function in 4bpp mode. Reasonably important
+   for dithered pattern fills.
+*/
+
+static void Blt_CopyPat_4bpp ( int *src, int *dest1, int *dest2 )
+{
+  int i, P;
+
+  NotUsed(src);
+
+  i = Blt_DstLast;
+  P = Blt_Pattern[Blt_PatY];  /* Pattern value to copy */
+
+  if ( i > 0 )
+  {
+    *dest1 = *dest2 = MERGE (*dest1, Blt_LHmask, P);
+    dest1++, dest2++;
+
+    /* Do middle */
+    while ( --i > 0 )
+      *dest1++ = *dest2++ = P;
+  }
+  *dest1 = *dest2 = MERGE (*dest1, Blt_RHmask, P);
+}
+
+/* --------------------------- */
+
+/* Copy-pattern function for non-4bpp modes */
+
+static void Blt_CopyPat_Gen ( int *src, int *dest1, int *dest2 )
+{
+  int i, P;
+  int *pPat, patX, patXmask;   /* Local versions of all globals */
+
+  NotUsed(src);
+
+  i = Blt_DstLast;
+  pPat = Blt_Pattern + Blt_PatY;
+  patX = Blt_PatX;
+  patXmask = Blt_PatXmask;
+
+  if ( i > 0 )
+  {
+    P = pPat[ (patX++) & patXmask ];
+    *dest1++ = *dest2++ = MERGE (*dest1, Blt_LHmask, P);
+
+    while ( --i > 0 )
+      *dest1++ = *dest2++ = pPat[ (patX++) & patXmask ];
+  }
+
+  P = pPat[ (patX++) & patXmask ];
+  *dest1++ = *dest2++ = MERGE (*dest1, Blt_RHmask, P);
+}
+
+/* ROP_Gen_PD(): ------------------
+
+   Does all blitting functions with only pattern & destination
+*/
+
+static void ROP_Gen_PD ( int *src, int *dest1, int *dest2 )
+{
+  int i=0, P, D;
+  int *pPat, patX, patXmask;
+
+  NotUsed(src);
+
+  pPat = Blt_Pattern + Blt_PatY;
+  patX = Blt_PatX;
+  patXmask = Blt_PatXmask;
+
+  while(1)
+  {
+    /* Get pattern */
+
+    P = pPat[ (patX++) & patXmask ];
+    D = *dest1;
+
+    P = A0 ^ (Ad & D) ^ (Ap & P) ^ (Adp & D & P);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i==0)
+      P = MERGE(D, Blt_LHmask, P);
+
+    *dest1++ = *dest2++ = P;
+    i++;
+  }
+
+  *dest1 = *dest2 = MERGE( D, Blt_RHmask, P );
+
+}
+
+
+/* --------------------------------------------- */
+
+/* ROP_Gen_PSD():
+
+   Does all blitting functions, completely
+*/
+
+static void ROP_Gen_PSD ( int *src, int *dest1, int *dest2 )
+{
+  int i=0, S, P, D;
+  int *pPat, patX, patXmask;
+  pPat = Blt_Pattern + Blt_PatY;
+  patX = Blt_PatX;
+  patXmask = Blt_PatXmask;
+
+  while(1)
+  {
+    /* Get source */
+    S = *src++;
+
+    /* Get pattern */
+
+    P = pPat[ (patX++) & patXmask ];
+
+    /* Get destination */
+
+    D = *dest1;
+
+    S = A0 ^ (Ad & D) ^(As & S) ^ (Ap & P) ^ (Asp & S & P)
+           ^ (Ads & D & S) ^ (Adp & D & P) ^ (Adsp & D & S & P);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i==0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dest1++ = *dest2++ = S;
+    i++;
+  }
+
+  *dest1 = *dest2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+
+/* --------------------------------------------- */
+
+/* The pattern may be one uniform colour value rather than an
+   8x8 grid, depending on flags bits in the ROP value. 
+   In this case the pattern value will be taken from patdata[0]
+   and quite a lot of precalculation can be done.
+
+*/
+
+void Blt_SetupROP ( int opcode, int *patdata )
+{   
+  int ROP = opcode & OPC_ROP_MASK;
+
+  /* Source copy special case */
+
+  if ( ROP == A_S )
+  {
+    Blt_ROPfn = Blt_CopySrc;
+    return;
+  }
+
+
+  /* Get pattern, if required */
+
+  if ( (opcode & OPC_FULL_PAT) != 0 &&
+       (ROP & PAT_PRESENT)     != 0
+     )
+  {
+    /* << 5 is *8 for 8 lines of pattern, *4 for words->bytes */
+    memcpy( Blt_Pattern, patdata, Blt_PatWidth << 5 );
+  }
+
+
+  /* Pattern copy special case */
+  
+  if ( ROP == A_P )       /* Pattern copy */
+  {
+    if ( opcode & OPC_UNI_PAT )
+    {
+      A0 = *patdata;
+      Blt_ROPfn = Blt_CopyA0;
+    }
+    else if ( Blt_PatXmask == 0 ) /* Pattern <= 1 word wide */
+      Blt_ROPfn = Blt_CopyPat_4bpp;
+    else
+      Blt_ROPfn = Blt_CopyPat_Gen;
+
+    return;
+  }
+                          
+  /* Set A-format codes */
+
+  A0   = (ROP & A_0  ) ? ALL_ONES : 0;
+  Ad   = (ROP & A_D  ) ? ALL_ONES : 0;
+  As   = (ROP & A_S  ) ? ALL_ONES : 0;
+  Ap   = (ROP & A_P  ) ? ALL_ONES : 0;
+  Ads  = (ROP & A_DS ) ? ALL_ONES : 0;
+  Adp  = (ROP & A_DP ) ? ALL_ONES : 0;
+  Asp  = (ROP & A_SP ) ? ALL_ONES : 0;
+  Adsp = (ROP & A_DSP) ? ALL_ONES : 0;
+
+  /* If pattern is uniform, it can be optimised out */
+
+  if ( opcode & OPC_UNI_PAT )
+  {
+    int P = *patdata;
+    A0  = A0 ^ (Ap & P);
+    Ad  = Ad ^ (Adp & P);
+    As  = As ^ (Asp & P);
+    Ads = Ads ^ (Adsp & P); 
+
+    if ( As | Ads ) /* Source present */
+      Blt_ROPfn = ROP_Gen_SD;           
+    else if ( Ad )  /* Dest present */
+      Blt_ROPfn = ROP_Gen_D;
+    else
+      Blt_ROPfn = Blt_CopyA0;
+
+    return;
+  }
+                             
+  /* Non-uniform or non-pattern cases */
+
+  if ( ROP & PAT_PRESENT )
+  {
+    if ( ROP & SRC_PRESENT )
+      Blt_ROPfn = ROP_Gen_PSD;
+    else
+      Blt_ROPfn = ROP_Gen_PD;  
+  }
+  else if ( ROP & SRC_PRESENT )
+    Blt_ROPfn = ROP_Gen_SD;
+  else if ( ROP & DST_PRESENT )
+    Blt_ROPfn = ROP_Gen_D;  
+  else
+    Blt_ROPfn = Blt_CopyA0;
+}
+
+/* ----------------- */
+
+/* The Pixel and Polyline functions draw using a fixed pen
+   colour plus a pen/dest ROP value. The following functions
+   convert these to 'AND' (Ad) and 'XOR' (A0) values.
+*/
+
+/* A0' = A0 ^ (Ap & P) */
+
+int Blt_GetA0 ( int pen, int opcode )
+{
+  if ( (opcode & A_P) == 0 ) pen = 0;
+
+  if ( opcode & A_0 )
+    return ~pen;
+  else
+    return pen;
+}
+
+/* --------------- */
+
+/* Ad' = Ad ^ (Adp & P) */
+
+int Blt_GetAd ( int pen, int opcode )
+{
+  if ( (opcode & A_DP) == 0 ) pen = 0;
+
+  if ( opcode & A_D )
+    return ~pen;
+  else
+    return pen;
+}
+
+/* ------------------------------------------------------- */
+
+static int Blt_TransMask[8]; /* Transparency mask */
+
+static void ROP_Trans_PD ( int *src, int *dest1, int *dest2 )
+{
+  int i, P, D, M;
+  int *pPat, patX, patXmask;
+
+  NotUsed(src);
+
+  pPat = Blt_Pattern + Blt_PatY;
+  patX = Blt_PatX;
+  patXmask = Blt_PatXmask;
+
+  for ( i=0; i<=Blt_DstLast; i++)
+  {
+    /* Get Transparency mask */
+
+    M = Blt_TransMask[ patX & patXmask];
+
+    /* Get pattern */
+
+    P = pPat[ (patX++) & patXmask ];
+
+    D = *dest1;
+
+    P = A0 ^ (Ad & D) ^ (Ap & P) ^ (Adp & D & P);
+
+    if ( i == Blt_DstLast )
+      M &= Blt_RHmask;
+    else if ( i== 0 )
+      M &= Blt_RHmask;
+
+    P = MERGE(D, M, P);
+
+    *dest1++ = *dest2++ = P;
+  }
+
+}
+
+/* This is used only by the Scanlines function, to set up
+   a patt/dest only operation with a 'transparency' mask.
+   It is not envisaged that this will be used very often,
+   hence there is only one routine to handle all cases.
+
+   Currently, we can't call this with a source value in the
+   ROP, and we can't have a 'uniform' pattern. This relies
+   on ARMDRV to always set the non-uniform flag when it
+   generates a pattern with a transparency mask.
+*/
+
+void Blt_SetupTransROP ( int opcode, int *patdata )
+{
+  BYTE mask = (opcode >> 8); /* Assume OPC_TRANS_MASK = 0xFF00 */
+
+  if ( mask == 0xFF )  /* Not transparent! */
+  {
+    Blt_SetupROP ( opcode, patdata );
+    return;
+  }
+ 
+  Blt_ROPfn = ROP_Trans_PD;
+  A0   = (opcode & A_0  ) ? ALL_ONES : 0;
+  Ad   = (opcode & A_D  ) ? ALL_ONES : 0;
+  Ap   = (opcode & A_P  ) ? ALL_ONES : 0;
+  Adp  = (opcode & A_DP ) ? ALL_ONES : 0;
+  memcpy ( Blt_Pattern, patdata, Blt_PatWidth << 5 );
+  Blt_MonoToColour ( &mask, Blt_TransMask, Blt_PatWidth, 0, ALL_ONES );
+}
+
+/* Blt_SetDestRect and related routines ********************************* */
+
+int    Blt_DestOfs;    /* Offset of current dest. rectangle from
+                            sprite/screen start, in bytes */
+
+int    Blt_DestLineInc;  /* Amount to add to DestOfs between lines,
+                             in bytes */
+
+/* Blt_DoLine -------------------- */
+
+/* This does 1 line of blitting using the source data given,
+   putting the results on the screen.
+*/
+
+void Blt_DoLine ( int *src )
+{
+  Blt_ROPfn ( src, SPRITE_PTR(Blt_DestOfs), SCREEN_PTR(Blt_DestOfs) );
+
+  Blt_PatY = (Blt_PatY + Blt_PatYinc) & Blt_PatYmask;
+  Blt_DestOfs += Blt_DestLineInc;
+}
+
+/* Blt_SetDestRect -------------- */
+
+void Blt_SetDestRect ( RECT *pR, bool Upwards )
+{
+  Blt_SetDestMasks ( pR->X0, pR->X1 );
+
+  if ( Upwards )
+  {
+    Blt_DestLineInc = -WIN_BytesPerLine;
+    Blt_DestOfs = Blt_GetXYOffset (pR->X0, pR->Y1);
+    Blt_PatY      = (pR->Y1 & 7) * Blt_PatWidth;
+    Blt_PatYinc   = -Blt_PatWidth;
+  }
+  else
+  {
+    Blt_DestLineInc = WIN_BytesPerLine;
+    Blt_DestOfs = Blt_GetXYOffset (pR->X0, pR->Y0);
+    Blt_PatY      = (pR->Y0 & 7) * Blt_PatWidth;
+    Blt_PatYinc   = Blt_PatWidth;
+  }
+
+}
+
+/* Colour-conversion routines ************************************* */
+
+static int Expand8bpp[16] =
+{
+  0x00000000, 0xFF000000, 0x00FF0000, 0xFFFF0000,
+  0x0000FF00, 0xFF00FF00, 0x00FFFF00, 0xFFFFFF00,
+  0x000000FF, 0xFF0000FF, 0x00FF00FF, 0xFFFF00FF,
+  0x0000FFFF, 0xFF00FFFF, 0x00FFFFFF, 0xFFFFFFFF
+};
+
+static int Expand16bpp[4] =
+{
+  0x00000000, 0xFFFF0000, 0x0000FFFF, 0xFFFFFFFF
+};
+
+
+/* Converts mono source bytes to 'len' words of destination, given the
+   foreground and background colours. Bits which are '1' in the source
+   are converted to BACKGROUND! Fixed alignment is assumed.
+*/
+
+extern void Blt_MonoToColour ( BYTE *src, int *dst, int len, int Fg, int Bg )
+{
+  uint d=0;
+
+  switch ( Blt_BPP_index )
+  {
+    case BPP_4:
+      Bg ^= Fg;
+      while ( len-- > 0 )
+        *dst++ = Fg ^ (Bg & TBL_8to32[ *src++ ]);
+      break;
+
+    case BPP_8:
+      Bg ^= Fg;
+      while ( len -- > 0 )
+      {
+        d = *src++;
+        *dst++ = Fg ^ (Bg & Expand8bpp[d >> 4]);
+        if ( len-- > 0 )
+          *dst++ = Fg ^ (Bg & Expand8bpp[d & 0xF]);
+      }
+      break;
+
+    case BPP_16:
+      Bg ^= Fg;
+      while ( len-- > 0 )
+      {
+        if ( (d & 0xFF) == 0 ) d = ( *src++ << 24) | 1;
+        *dst++ = Fg ^ (Bg & Expand16bpp[d >> 30]);
+        d <<=2;
+      }
+      break;
+
+    case BPP_32:
+      while ( len-- > 0 )
+      {
+        if ( (d & 0xFF) == 0 ) d = (*src++ << 24) | 1;
+        *dst++ = (d & 0x80000000) ? Bg : Fg;
+        d <<=1;
+      }
+      break;
+  }
+}
+
+/* String-blit routines ******************************************* */
+
+/* These are basically specialised versions of a mono->device blit.
+   Text can be written in one of 3 ways:
+
+     XOR : the colour given in Blt_Foregnd is XORed on to the screen
+            where bits in the source line are '1'.
+
+     Copy : the source line is converted 0->Backgnd, 1->Foregnd,
+            & the result copied to the screen.
+
+     Trans: '1's in the source line are written in the foreground
+            colour to the screen, zeros are left unwritten.
+
+   The desired destination rectangle should have been set up
+     beforehand with Blt_SetDestRect.
+*/
+
+static void Blt_Strblt4_DS ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i=0, S, D;
+
+  while(1)
+  {
+    S = TBL_8to32[*src++];
+
+    D = *dst1;
+
+    S = A0 ^ (Ad & D) ^ (As & S) ^ (Ads & D & S);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i == 0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dst1++ = *dst2++ = S;
+    i++;
+  }
+
+  *dst1 = *dst2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+/* ---------------------- */
+
+/* A0As is used when only A0 and As are set in the ROP,
+   i.e. for 'opaque' drawing.
+*/
+
+static void Blt_Strblt4_A0As ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i;
+
+  i = Blt_DstLast;
+
+  if ( i > 0 )
+  {
+    *dst1 = *dst2 = MERGE ( *dst1, Blt_LHmask,
+          A0 ^ (As & TBL_8to32[ *src++ ]) );
+
+    dst1++, dst2++;
+
+    while ( --i > 0 )
+    {
+      *dst1 = *dst2 = A0 ^ (As & TBL_8to32[ *src++ ]);
+      dst1++, dst2++;
+    }
+  }
+
+  *dst1 = *dst2 = MERGE ( *dst1, Blt_RHmask,
+        A0 ^ (As & TBL_8to32[ *src++ ]) );
+}
+
+/* ---------------------- */
+
+/* 'Transparent' drawing draws the foreground colour in those
+   pixels where the source is a '1'. It is appropriate when
+
+   A0 = 0;
+   As = Foreground colour;
+   Ad = 1;
+   Ads = 1;
+*/
+
+static void Blt_Strblt4_Trans ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i = Blt_DstLast;
+  int S;
+
+  if ( i > 0 )
+  {
+    S = TBL_8to32[ *src++ ] & Blt_LHmask;
+    *dst1 = *dst2 = MERGE (*dst1, S, As );
+
+    dst1++, dst2++;
+    while ( --i > 0 )
+    {
+      S = TBL_8to32[ *src++ ] ;
+      *dst1 = *dst2 = MERGE (*dst1, S, As );
+      dst1++, dst2++;
+    }
+  }
+
+  S = TBL_8to32[ *src++ ] & Blt_RHmask;
+  *dst1 = *dst2 = MERGE (*dst1, S, As );
+}
+
+/* -------------------------------- */
+
+static void Blt_Strblt8_DS ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i=0, monodata=0, S, D;
+
+  while(1)
+  {
+    if ( i & 1 )
+      S = Expand8bpp[monodata & 0xF];
+    else
+    {
+      monodata = *src++;
+      S = Expand8bpp[monodata >> 4];
+    }
+
+    D = *dst1;
+
+    S = A0 ^ (Ad & D) ^ (As & S) ^ (Ads & D & S);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i == 0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dst1++ = *dst2++ = S;
+    i++;
+  }
+
+  *dst1 = *dst2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+/* -------------------------------- */
+
+static void Blt_Strblt16_DS ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i=0, monodata=0, S, D;
+
+  while(1)
+  {
+    if ( (i & 3) == 0 )
+      monodata = *src++;
+    else
+      monodata = (monodata << 2) & 0xFF;
+
+    S = Expand16bpp[monodata >> 6];
+    D = *dst1;
+
+    S = A0 ^ (Ad & D) ^ (As & S) ^ (Ads & D & S);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i == 0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dst1++ = *dst2++ = S;
+    i++;
+  }
+
+  *dst1 = *dst2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+/* -------------------------------- */
+
+static void Blt_Strblt32_DS ( BYTE *src, int *dst1, int *dst2 )
+{
+  int i=0, monodata=0, S, D;
+
+  while(1)
+  {
+    if ( (i & 7) == 0 )
+      monodata = *src++;
+    else
+      monodata <<= 1;
+
+    S = (monodata & 0x80) ? ALL_ONES : 0;
+    D = *dst1;
+
+    S = A0 ^ (Ad & D) ^ (As & S) ^ (Ads & D & S);
+
+    if ( i >= Blt_DstLast )
+      break;
+
+    if (i == 0)
+      S = MERGE(D, Blt_LHmask, S);
+
+    *dst1++ = *dst2++ = S;
+    i++;
+  }
+
+  *dst1 = *dst2 = MERGE( D, Blt_RHmask, S );
+
+}
+
+/* -------------------------------- */
+
+StrBltFnPtr Blt_StrBltFn;
+
+void Blt_SetupStrblt ( int ROP, int fg, int bg )
+{
+  ROP &= OPC_ROP_MASK;
+
+  switch ( ROP )
+  {
+    case ROP_TEXT_XOR:
+      A0 = Ads = 0;
+      Ad = ALL_ONES;
+      As = fg;
+      break;
+
+    case ROP_TEXT_TRANS:
+      A0 = 0;
+      Ad = Ads = ALL_ONES;
+      As = fg;
+      break;
+
+    case ROP_TEXT_OPAQ:
+      A0 = bg;
+      As = bg ^ fg;
+      Ad = Ads = 0;
+  }
+
+  switch ( Blt_BPP_index )
+  {
+    case BPP_4:
+    default:
+      if ( ROP == ROP_TEXT_OPAQ )
+        Blt_StrBltFn = Blt_Strblt4_A0As;
+      else if ( ROP == ROP_TEXT_TRANS )
+        Blt_StrBltFn = Blt_Strblt4_Trans;
+      else
+        Blt_StrBltFn = Blt_Strblt4_DS;
+      break;
+
+    case BPP_8:
+      Blt_StrBltFn = Blt_Strblt8_DS;
+      break;
+    case BPP_16:
+      Blt_StrBltFn = Blt_Strblt16_DS;
+      break;
+    case BPP_32:
+      Blt_StrBltFn = Blt_Strblt32_DS;
+      break;
+  }
+}
+
+/* Blt_SetFetchRect routines ************************************** */
+
+/* These are used to fetch one line of data from the device to either
+   a mono or colour bitmap.
+*/
+
+static bool   Blt_ExtraFetch;   /* See below */
+static int    Blt_FetchShift;   /* Shift amount for src->dst alignment */
+static int    Blt_FetchLen;     /* Number of src words to fetch */
+static int    Blt_SrcOfs;       /* Screen position to do fetch from */
+static int    Blt_SrcLineInc;   /* Amount to add to Src between lines */
+static int    Blt_MonoFetchBit; /* 1st dest. bit for mono fetch */
+
+/* Blt_FetchColour(): -------------------------
+
+   This gets a block of words from the device to the given destination,
+   using the alignment previously set up with SetFetchRect.
+   The alignment is given by Blt_FetchShift and the Blt_ExtraFetch flag
+   as illustrated below for 4-bpp modes
+
+   ExtraFetch = false, Shift=12 (3 pixels), len=2
+
+   source:      |0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|
+   dest : |0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|
+
+   ExtraFetch = true, Shift = 24 (6 pixels), len=3
+
+   source: |0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|
+   dest :      |0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|0-1-2-3-4-5-6-7|
+
+   For a 'straight' fetch, set ExtraFetch = false and Shift=0.
+
+   A total of Blt_FetchLen words are always fetched and all the data
+   they contain is written to the destination. This may (on occasions)
+   mean writing one more destination word than is strictly necessary.
+
+*/
+
+void Blt_FetchColour ( int *dest )
+{
+  int *src;
+  int len;
+  int upshift, downshift;
+  unsigned int d, leftover;
+
+  upshift   = Blt_FetchShift;  /* Left shift amount */
+  downshift = 32-upshift;    /* Right shift amount */
+
+  len   = Blt_FetchLen;
+  src   = SPRITE_PTR(Blt_SrcOfs);
+
+  if ( Blt_ExtraFetch )
+  {
+    leftover = *src++;
+    len--;
+  }
+  else
+    leftover = 0;
+
+  while (len-- > 0)
+  {
+    d = *src++;
+    *dest++ = (d << upshift) | (leftover >> downshift);
+    leftover = d;
+  }
+
+  *dest = (leftover >> downshift);
+
+  Blt_SrcOfs += Blt_SrcLineInc;
+
+}
+
+/* Blt_FetchMono() ------------------------------------------- */
+
+/* This is used to get data from the screen to the given destination,
+   converting to mono as it does so.
+
+   The alignment is as previously set with SetFetchRect. It works
+   as follows:
+     Blt_MonoFetchBit contains the destination bit corresponding to
+     the first pixel at Blt_SrcOfs:
+
+   Blt_MonoFetchBit = 0x80:
+
+   src: |0|1|2|3|4|5|6|7|0|1|2|3|4|5|6|7|     (pixels)
+         v v v v v v v v v v v v v v v v
+   dst: |7|6|5|4|3|2|1|0|7|6|5|4|3|2|1|0|     (PC mono bits)
+
+   Blt_MonoFetchBit = 0x40:
+
+   src:     |0|1|2|3|4|5|6|7|0|1|2|3|4|5|6|7|
+             v v v v v v v v v v v v v v v v
+   dst: |7|6|5|4|3|2|1|0|7|6|5|4|3|2|1|0|7|6|5|4|3|2|1|0|
+
+   Blt_MonoFetchBit = 0x200:
+
+   src: |0|1|2|3|4|5|6|7|0|1|2|3|4|5|6|7|
+             v v v v v v v v v v v v v v
+   dst:     |7|6|5|4|3|2|1|0|7|6|5|4|3|2|1|0|
+
+
+   A total of Blt_FetchLen words are always fetched and processed.
+
+   This is probably dog-slow, but it's not that critical as I don't
+   think it's ever used for much.
+*/
+
+void Blt_FetchMono( int bg_colour, BYTE *dst)
+{
+  int  srcdata, dstbit, dstdata;
+  int  len, mask;
+  int  *src;
+
+  len   = Blt_FetchLen;
+  src   = SPRITE_PTR(Blt_SrcOfs);
+
+  dstbit = Blt_MonoFetchBit;
+  dstdata = 0;
+
+  while ( len-- > 0 )
+  {
+    srcdata = (*src++) ^ bg_colour;
+    for ( mask = Blt_PixMask_LH; mask != 0 ; mask <<= Blt_BitsPixel )
+    {
+      if ( (srcdata & mask) == 0 )
+        dstdata |= dstbit;
+
+      dstbit >>= 1;
+      if ( dstbit == 0 )
+      {
+        *dst++  = dstdata;
+        dstdata = 0;
+        dstbit  = 0x80;
+      }
+    }
+  }
+
+  *dst = dstdata;
+
+  /* Finish up */
+
+  Blt_SrcOfs += Blt_SrcLineInc;
+
+}
+
+
+/* ----------------------------------------------------------- */
+
+/* Blt_SetFetchRect sets up options related to fetching source data from
+   the device. dstX is the desired destination X co-ord. Data will be
+   fetched to align with this.
+*/
+
+void Blt_SetFetchRect ( RECT *pR, bool Upwards, int dstX )
+{
+  int srcX, align;
+
+  srcX = pR->X0;
+
+  if ( Upwards )
+  {
+    Blt_SrcOfs = Blt_GetXYOffset( srcX, pR->Y1 );
+    Blt_SrcLineInc = -WIN_BytesPerLine;
+  }
+  else
+  {
+    Blt_SrcOfs = Blt_GetXYOffset( srcX, pR->Y0 );
+    Blt_SrcLineInc = WIN_BytesPerLine;
+  }
+
+  Blt_FetchLen = (pR->X1 >> Blt_PPW_shift)-(srcX >> Blt_PPW_shift)+ 1;
+
+  /* Set mono alignment: align is the shift (in pixels) from the
+     offset of the 1st pixel within source word to that in the dest byte */
+
+  align = (dstX & 7) - (srcX & Blt_PPW_mask);
+
+  /* Get mono bit pos corresponding to pixel at LH edge of source word */
+  Blt_MonoFetchBit = 1 << (7-align);
+
+  /* Set colour alignment - number of bits to upshift to get from
+     source to dest */
+
+  align = ((dstX << Blt_BPP_shift) & 31) -
+          ((srcX << Blt_BPP_shift) & 31);
+
+
+  if ( align < 0 )
+  {
+    Blt_ExtraFetch = true;
+    Blt_FetchShift = 32 + align;
+  }
+  else
+  {
+    Blt_ExtraFetch = false;
+    Blt_FetchShift = align;
+  }
+
+}
+
+/* BPP-related routines -------------------------------- */
+
+static int bpp_shifts[] = { 2, 3, 4, 5 };
+static int LH_pixels[] = { 0xF, 0xFF, 0xFFFF, 0xFFFFFF };
+static int RH_pixels[] = { 0xF0000000, 0xFF000000, 0xFFFF0000,
+                           0xFFFFFF };
+
+void Blt_SetBPP ( int bpp )
+{
+  /* Precalculates a lot of useful values.
+     These calcs. will only work for between 4 and 32 bits per pixel. */
+
+  Blt_BPP_index  = (bpp == 32) ? BPP_32 :
+                   (bpp == 16) ? BPP_16 :
+                   (bpp == 8)  ? BPP_8  :
+                                 BPP_4;
+
+  Blt_PixMask_LH = LH_pixels[Blt_BPP_index];
+  Blt_PixMask_RH = RH_pixels[Blt_BPP_index];
+  Blt_BPP_shift  = bpp_shifts[Blt_BPP_index];
+  Blt_BitsPixel  = 1 << Blt_BPP_shift;
+  Blt_PPW_shift  = 5 - Blt_BPP_shift;
+  Blt_PixPerWord = 32 >> Blt_BPP_shift;
+  Blt_PPW_mask   = 31 >> Blt_BPP_shift;
+  Blt_PatWidth   = 1 << (Blt_BPP_shift - 2);
+  Blt_PatXmask   = Blt_PatWidth - 1;
+  Blt_PatYmask   = 7 << (Blt_BPP_shift - 2);
+
+}

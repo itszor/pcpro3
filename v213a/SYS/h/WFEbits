@@ -1,0 +1,28 @@
+/*
+*    DivaPC ARM C source
+*
+*    SYS.H.WFEBITS  - Header for misc. window functions
+*
+*
+*
+*    01-04-92 INH  Original
+*/
+
+#define filetype_SPRITE 0xff9
+#define filetype_TEXT   0xfff
+
+#define Bannershow 0
+#define Bannerhide 1
+
+extern void WFE_ProgInfoBox(void);
+extern BOOL WFE_MainSaveSprite(char *fname, void *handle);
+extern BOOL WFE_MainSaveText(char *fname, void *handle);
+
+extern void WFE_ModeSetup(void);
+extern void WFE_PaletteSetup(void);
+extern void WFE_RedrawBox ( wimp_box *dest, int Xorg, int Yorg );
+
+extern void WFE_Banner(int);
+
+extern char *WFE_VersionString;
+

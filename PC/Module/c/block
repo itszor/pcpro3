@@ -1,0 +1,32 @@
+ /*!! this was an attempt to counter the problem of moving the heap area pages,
+  which goes wrong on SA  - should no longer be necessary*/
+  /*BodgeDynamicArea ( MemTable, PageSize, HEAParea );*/
+
+  freestart = -1;
+
+  for ( i=0; i < MemTblSize; i++ )
+  {
+
+    if ( i & 1 )
+      tt = MemTable[i >> 1] >> 4;
+    else
+      tt = MemTable[i >> 1] & 0xF;
+    if ( tt == PAGE_FREE )
+    {
+      if ( freestart < 0 ) 
+        freestart = i;     /* First free page */
+      continue;
+    }
+    else  if ( freestart >= 0 ) /* End of free block */
+    {
+      /* We no longer exit as soon as we have enough memory */
+      if((freestart * PageSize)<0x20000000)ProcessFreeMem ( freestart * PageSize, i*PageSize - 1 );
+      freestart = -1;
+    }
+  }
+  if ( freestart >= 0 ) /* free DRAM all the way to end of table */
+  {
+      if((freestart * PageSize)<0x20000000)ProcessFreeMem ( freestart * PageSize, i*PageSize - 1 );
+  }
+
+  printf("Optimising Blocks...\n");

@@ -1,0 +1,32 @@
+/*
+*    DivaPC ARM C source
+*
+*    SYS.H.WFES  - Externals for SYS.S.WFES
+*
+*    09-11-92 INH  Original
+*/   
+
+extern void  WFEs_SetParams(void);
+extern BYTE *WFEs_ScreenBase;
+extern int   WFEs_ScreenWidthBytes;
+extern int   WFEs_ScreenHeight;
+extern int   WFEs_Xshift;
+extern int   WFEs_Yshift;
+extern int   WFEs_WIMPbpp;
+
+
+
+
+
+
+extern void  WFEs_XlateLine ( BYTE *dst, BYTE *src );
+extern int   WFEs_AlignVal;
+extern BYTE *WFEs_XlatePtr;
+extern int   WFEs_LHmask;
+extern int   WFEs_RHmask;
+extern int   WFEs_MidCount;
+
+
+
+
+

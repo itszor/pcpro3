@@ -1,0 +1,27 @@
+; CMHG file for !PC Network NE2000 emulation support module
+; 
+; 26-01-93 INH  Original
+; 13-12-93      v1.23 for multicast support
+;               v1.67
+; 11-05-95      v1.77 with callbacks
+; 14-06-95      v1.83 DCI4-compliant
+; 20-07-95	v1.87 -B bodge option
+; Changed help string to PC_Card_NE2000
+; Rerelease 1.995 as 2.00 for simplicity
+
+help-string:  PC_Card_NE2000 2.00
+
+title-string: PCNE2
+
+initialisation-code: PCNE2_Init
+
+irq-handlers: PCNE2_ReceiveFn
+
+swi-handler-code:      PCNE2_SWI
+swi-chunk-base-number: 0x48C00
+swi-decoding-table:    PCNE2,
+   Initialise, Enable, Transmit, SetUserEvent, SetRxOptions
+
+command-keyword-table:  PCNE2_info_cmd
+                        NE2INFO(min-args:0, max-args:0,
+                                  help-text: "Displays PCNE2 module status")

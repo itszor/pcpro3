@@ -1,0 +1,19 @@
+/*
+*    DivaPC ARM C source
+*
+*    SYS.H.DEBUG - general debug support for !PC
+*
+* 3.01  1998.10.07 W      Created
+*/
+
+
+/* little header macro to compile in trace stuff if debug is on */
+
+/* put DEBUG 1 at the top of files you want debug output from */
+/* and DEBUG 0 at the top of others*/
+
+#if DEBUG
+#define debug(a) SYS_trace a
+#else
+#define debug(a)
+#endif

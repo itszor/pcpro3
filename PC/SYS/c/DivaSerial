@@ -1,6 +1,15 @@
+/* !PC source
+*
+*  SYS.C.DIVASERIAL - serial number generation and checking
+*
+* 2.34 1998.09.11 MB Original
+*/
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+
+#include "sys.h.divaserial"
 
 /**** Static variables ****/
 static int r250_index = 0;
@@ -99,7 +108,7 @@ static unsigned long seed=1;
 static unsigned myrand()
 {
 	seed = seed*0x015a4e35L + 1;
-	return (seed>>16)&0x7fff;
+	return (( (unsigned) seed>>16)&0x7fff);
 }
 
 /*	Initialize above linear congruent pseudorandom number generator */
@@ -139,7 +148,7 @@ extern unsigned int DivaSerial_frombase33(char *b)
 
 extern void DivaSerial_encode(unsigned int p, unsigned int s, unsigned int l, unsigned int *enc, unsigned int *chk)
 {
-  unsigned int w, seed, check, i;
+  unsigned int w, seed, check;
 
   w = p | (s<<8) | (l<<24);
 

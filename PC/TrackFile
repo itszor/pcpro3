@@ -1,0 +1,468 @@
+0: Revision 2 ASIC
+488: MCBR(0):ARMBase:1c000000 = PCaddr:0, size:800000
+488: MCBR(1):ARMBase:18400000 = PCaddr:800000, size:400000
+488: MCBR(2):ARMBase:18000000 = PCaddr:c00000, size:200000
+488: MCBR(3):ARMBase:2000000 = PCaddr:e00000, size:200000
+499: blk=22e00000
+499: Got 375K for Windows mode
+499: Win Drv: 640 x 480, 8 bpp, flags=2, size=307200, SSB_Start=76800, SSB_Size=
+16640
+499: blk=22e00000
+500: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+509: NE2000 present on Port 340 Int 5
+509: Net address: 00:C0:32:80:01:23
+511: !PC ver 2.30a (26 Jul 1998) on Risc PC x86 coprocessor card
+517: autocreate: ResetWin
+517: autocreate: SpeedWin
+517: autocreate: VideoWin
+517: autocreate: ToolsWin
+518: autocreate: ProgInfo
+518: autocreate: ResetWin
+518: autocreate: RestartMenu
+519: autocreate: IconMenu
+519: autocreate: Iconbar
+519: autocreate: SaveAsSpr
+519: autocreate: SaveAsTxt
+519: autocreate: SaveMenu
+519: autocreate: PortsMenu
+519: autocreate: ResetWin
+520: autocreate: MainMenu
+520: autocreate: PCScreen
+523: SYS_UpdateWindowPos
+523: error at line 819: Input focus window not found
+701: blk=22e00000
+701: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+705: SYS_UpdateWindowPos
+714: CRTC_VESARegisterChange( 32, 0 )
+714: blk=22e00000
+715: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+716: SYS_UpdateWindowPos
+728: Auto detect G2 wrback CPU
+1105: SYS_UpdateWindowPos
+1217: CRTC_VESARegisterChange( 32, 0 )
+1217: blk=22e00000
+1217: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+1217: VGA chain4 mode selected
+1218: VGA write mode 0 selected
+1234: VGA write mode 0 selected
+1249: blk=22e00000
+1249: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+1255: VGA write mode 0 selected
+1256: blk=22e00000
+1256: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+1262: VGA write mode 0 selected
+1299: VGA odd / even mode selected
+1299: VGA odd / even mode selected
+1505: VGA odd / even mode selected
+1505: CRTC_VESARegisterChange( 32, 0 )
+1505: blk=22e00000
+1505: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+1515: Auto detect G2 wrback CPU
+1704: CRTC_VESARegisterChange( 32, 0 )
+1704: blk=22e00000
+1704: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+1842: CRTC_VESARegisterChange( 32, 0 )
+1842: blk=22e00000
+1842: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+1848: VGA chain4 mode selected
+1849: VGA write mode 0 selected
+1858: blk=22e00000
+1858: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+1865: VGA write mode 0 selected
+1865: blk=22e00000
+1865: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+1872: VGA write mode 0 selected
+1909: VGA odd / even mode selected
+1909: VGA odd / even mode selected
+2591: VGA odd / even mode selected
+2591: CRTC_VESARegisterChange( 32, 0 )
+2591: blk=22e00000
+2591: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+3462: CRTC_VESARegisterChange( 32, 0 )
+3462: blk=22e00000
+3462: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+3468: VGA chain4 mode selected
+3470: VGA write mode 0 selected
+3470: blk=22e00000
+3470: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+3476: VGA write mode 0 selected
+3477: blk=22e00000
+3477: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+3484: VGA write mode 0 selected
+3515: VGA odd / even mode selected
+3516: VGA odd / even mode selected
+3516: blk=22e00000
+3516: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+3523: VGA odd / even mode selected
+3523: blk=22e00000
+3523: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+3530: VGA odd / even mode selected
+5866: CRTC_VESARegisterChange( 32, 0 )
+5867: blk=22e00000
+5867: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+5873: VGA odd / even mode selected
+5875: CRTC_VESARegisterChange( 32, 0 )
+5875: blk=22e00000
+5875: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+5882: VGA odd / even mode selected
+9255: VGA write mode 0 selected
+9255: VGA write mode 0 selected
+9255: CRTC_VESARegisterChange( 32, 0 )
+9255: blk=22e00000
+9256: ModeSet (8) 640,480 4bpp (360K mem 150K img)
+20555: VGA odd / even mode selected
+20555: VGA odd / even mode selected
+20556: CRTC_VESARegisterChange( 32, 0 )
+20556: blk=22e00000
+20556: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+20582: CRTC_VESARegisterChange( 32, 0 )
+20582: blk=22e00000
+20582: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+20598: CRTC_VESARegisterChange( 32, 0 )
+20598: blk=22e00000
+20598: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+20604: VGA chain4 mode selected
+20606: VGA write mode 0 selected
+20616: blk=22e00000
+20616: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+20623: VGA write mode 0 selected
+20623: blk=22e00000
+20623: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+20630: VGA write mode 0 selected
+20630: VGA chain4 mode selected
+20630: CRTC_VESARegisterChange( 32, 0 )
+20631: blk=22e00000
+20631: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+20637: VGA chain4 mode selected
+20639: VGA write mode 0 selected
+20639: blk=22e00000
+20639: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+20645: VGA write mode 0 selected
+20646: blk=22e00000
+20647: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+20653: VGA write mode 0 selected
+20948: VGA odd / even mode selected
+20948: VGA odd / even mode selected
+20948: CRTC_VESARegisterChange( 32, 0 )
+20948: blk=22e00000
+20948: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+20958: Auto detect G2 wrback CPU
+21349: CRTC_VESARegisterChange( 32, 0 )
+21349: blk=22e00000
+21349: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+21355: VGA chain4 mode selected
+21356: VGA write mode 0 selected
+21365: blk=22e00000
+21365: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+21372: VGA write mode 0 selected
+21372: blk=22e00000
+21372: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+21379: VGA write mode 0 selected
+21416: VGA odd / even mode selected
+21416: VGA odd / even mode selected
+22046: VGA odd / even mode selected
+22046: CRTC_VESARegisterChange( 32, 0 )
+22046: blk=22e00000
+22046: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+22257: CRTC_VESARegisterChange( 32, 0 )
+22257: blk=22e00000
+22257: ModeSet (16) 320,200 8bpp (360K mem 62K img)
+22264: VGA chain4 mode selected
+22265: VGA write mode 0 selected
+22265: blk=22e00000
+22265: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+22272: VGA write mode 0 selected
+22273: blk=22e00000
+22273: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+22279: VGA write mode 0 selected
+22311: VGA odd / even mode selected
+22311: VGA odd / even mode selected
+22312: blk=22e00000
+22312: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+22318: VGA odd / even mode selected
+22319: blk=22e00000
+22319: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+22326: VGA odd / even mode selected
+26763: CRTC_VESARegisterChange( 32, 0 )
+26763: blk=22e00000
+26763: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+26769: VGA odd / even mode selected
+26771: CRTC_VESARegisterChange( 32, 0 )
+26772: blk=22e00000
+26772: ModeSet (16) 320,400 8bpp (360K mem 125K img)
+26778: VGA odd / even mode selected
+31137: Unsupported: 8250 Loop mode
+31184: VGA odd / even mode selected
+31184: CRTC_VESARegisterChange( 32, 0 )
+31184: blk=22e00000
+31184: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+31199: CRTC_VESARegisterChange( 32, 0 )
+31199: blk=22e00000
+31199: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+31664: DebugB EE
+31664: DebugW BEEF
+31664: DebugW 3DE
+31664: DebugW 3B
+31664: DebugW 1
+31664: DebugW 106
+31664: DebugW 117
+31664: DebugW 0
+31664: DebugW 0
+31664: DebugW 1
+31664: DebugW 0
+31666: DebugW 215
+31666: DebugW 8
+31667: DebugW B00F
+32646: DebugW E4B1
+32646: DebugW 1
+32646: DebugW 472
+32646: DebugW 551
+32646: DebugW 551
+32646: DebugW FEED
+32646: DebugW E4B1
+32646: DebugW 0
+32646: DebugW F15E
+32646: DebugW 0
+32646: DebugW 531
+32646: DebugW 178
+32646: DebugW 0
+32646: DebugW 20
+32646: DebugW 4321
+32646: DebugW E0
+32646: DebugW 0
+32647: DebugW 1234
+32647: DebugW 2
+32647: DebugW 8
+32647: DebugW 536
+32647: DebugW 4F02
+32647: DebugW 8103
+32647: DebugW 14F
+32647: DebugW BAD
+32647: DebugW FEED
+32760: CRTC_VESARegisterChange( 32, 0 )
+32760: blk=22e00000
+32760: ModeSet (8) 640,480 4bpp (360K mem 150K img)
+35049: Unsupported: 8250 Loop mode
+42599: DebugB EE
+42599: DebugW BEEF
+42599: DebugW 3DE
+42599: DebugW 3B
+42599: DebugW 1
+42599: DebugW 106
+42599: DebugW 117
+42599: DebugW 0
+42599: DebugW 0
+42599: DebugW 1
+42599: DebugW 0
+42601: DebugW 215
+42601: DebugW 8
+42601: DebugW B00F
+42601: DebugW 626
+42601: DebugW 531
+42601: DebugW 650
+42601: DebugW 1234
+42601: DebugW 1
+42601: DebugW 8
+42603: DebugW 626
+42603: DebugW 531
+42603: DebugW 650
+42603: DebugW 1234
+42603: DebugW 2
+42603: DebugW 8
+42606: DebugW 626
+42606: DebugW 531
+42606: DebugW 650
+42606: DebugW 1234
+42606: DebugW 3
+42606: DebugW 8
+42610: DebugW 626
+42610: DebugW 531
+42610: DebugW 650
+42610: DebugW 1234
+42610: DebugW 1
+42610: DebugW 10
+42613: DebugW 626
+42613: DebugW 531
+42613: DebugW 650
+42613: DebugW 1234
+42613: DebugW 2
+42613: DebugW 10
+42616: DebugW 626
+42616: DebugW 531
+42616: DebugW 650
+42616: DebugW 1234
+42616: DebugW 3
+42616: DebugW 10
+42619: DebugW 626
+42619: DebugW 531
+42619: DebugW 650
+42619: DebugW 1234
+42619: DebugW 1
+42619: DebugW 18
+42622: DebugW 626
+42622: DebugW 531
+42622: DebugW 650
+42622: DebugW 1234
+42622: DebugW 2
+42622: DebugW 18
+42625: DebugW 626
+42625: DebugW 531
+42625: DebugW 650
+42625: DebugW 1234
+42625: DebugW 3
+42625: DebugW 18
+43276: DebugW 626
+43276: DebugW 531
+43276: DebugW 650
+43276: DebugW 1234
+43276: DebugW 2
+43276: DebugW 8
+45781: SYS_UpdateWindowPos
+45803: SYS_UpdateWindowPos
+46128: SYS_UpdateWindowPos
+46489: SYS_UpdateWindowPos
+48288: SYS_UpdateWindowPos
+50062: SYS_UpdateWindowPos
+50085: SYS_UpdateWindowPos
+50349: SYS_UpdateWindowPos
+51632: DebugB EE
+51632: DebugW BEEF
+51633: DebugW 3DE
+51633: DebugW 3B
+51633: DebugW 1
+51633: DebugW 106
+51633: DebugW 117
+51633: DebugW 0
+51633: DebugW 0
+51633: DebugW 1
+51633: DebugW 0
+51636: DebugW 215
+51636: DebugW 8
+51637: DebugW B00F
+51637: DebugW 626
+51637: DebugW 531
+51637: DebugW 650
+51637: DebugW 1234
+51637: DebugW 1
+51637: DebugW 8
+51640: DebugW 626
+51640: DebugW 531
+51641: DebugW 650
+51641: DebugW 1234
+51641: DebugW 2
+51641: DebugW 8
+51647: DebugW 626
+51647: DebugW 531
+51647: DebugW 650
+51647: DebugW 1234
+51647: DebugW 3
+51647: DebugW 8
+51655: DebugW 626
+51655: DebugW 531
+51655: DebugW 650
+51655: DebugW 1234
+51655: DebugW 1
+51655: DebugW 10
+51658: DebugW 626
+51658: DebugW 531
+51658: DebugW 650
+51658: DebugW 1234
+51658: DebugW 2
+51658: DebugW 10
+51661: DebugW 626
+51661: DebugW 531
+51661: DebugW 650
+51661: DebugW 1234
+51661: DebugW 3
+51661: DebugW 10
+51664: DebugW 626
+51664: DebugW 531
+51664: DebugW 650
+51664: DebugW 1234
+51664: DebugW 1
+51664: DebugW 18
+51667: DebugW 626
+51667: DebugW 531
+51667: DebugW 650
+51667: DebugW 1234
+51667: DebugW 2
+51668: DebugW 18
+51675: DebugW 626
+51675: DebugW 531
+51675: DebugW 650
+51675: DebugW 1234
+51675: DebugW 3
+51675: DebugW 18
+52240: DebugW 626
+52240: DebugW 531
+52240: DebugW 650
+52240: DebugW 1234
+52240: DebugW 2
+52240: DebugW 8
+52999: VGA odd / even mode selected
+52999: VGA odd / even mode selected
+52999: CRTC_VESARegisterChange( 32, 0 )
+52999: blk=22e00000
+52999: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+53456: SYS_UpdateWindowPos
+53480: SYS_UpdateWindowPos
+53751: SYS_UpdateWindowPos
+59572: CRTC_VESARegisterChange( 32, 0 )
+59572: blk=22e00000
+59572: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+59574: SYS_UpdateWindowPos
+59575: CRTC_VESARegisterChange( 32, 0 )
+59575: blk=22e00000
+59575: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+59582: SYS_UpdateWindowPos
+64575: Unsupported: 8250 Loop mode
+64621: CRTC_VESARegisterChange( 32, 0 )
+64621: blk=22e00000
+64621: ModeSet (1) 640,400 4bpp (360K mem 125K img)
+65131: DebugB EE
+65131: DebugW BEEF
+65131: DebugW 3DE
+65131: DebugW 3B
+65131: DebugW 1
+65131: DebugW 106
+65131: DebugW 117
+65131: DebugW 0
+65131: DebugW 0
+65131: DebugW 1
+65131: DebugW 0
+65134: DebugW 215
+65134: DebugW 8
+65134: DebugW B00F
+65892: SYS_UpdateWindowPos
+65916: SYS_UpdateWindowPos
+66182: SYS_UpdateWindowPos
+66633: DebugW E4B1
+66634: DebugW 1
+66634: DebugW 472
+66634: DebugW 551
+66634: DebugW 551
+66634: DebugW FEED
+66634: DebugW E4B1
+66634: DebugW 0
+66634: DebugW F15E
+66634: DebugW 0
+66634: DebugW 531
+66634: DebugW 178
+66634: DebugW 0
+66634: DebugW 20
+66634: DebugW 4321
+66634: DebugW E0
+66634: DebugW 0
+66634: DebugW 1234
+66634: DebugW 2
+66634: DebugW 8
+66634: DebugW 536
+66634: DebugW 4F02
+66634: DebugW 8103
+66634: DebugW 14F
+66634: DebugW BAD
+66634: DebugW FEED
+66789: CRTC_VESARegisterChange( 32, 0 )
+66789: blk=22e00000
+66789: ModeSet (8) 640,480 4bpp (360K mem 150K img)
+66798: SYS_UpdateWindowPos

@@ -1,9 +1,10 @@
 /*
  * PCConfig application
  *
- * Version: 0.46 Wed 23rd August 1995
+ * History: 
+ * original: 0.46 Wed 23rd August 1995
  *
- * © Dean Murphy / Matthew Bloch
+ * © Dean Murphy / Matthew Bloch / Wookey
  *
  */
 #include <stdlib.h>
@@ -37,6 +38,8 @@
 #include "booting.h"
 #include "saveconf.h"
 #include "loadconfig.h"
+#include "adv.h"
+#include "miscfile.h"
 
 #include "vars.h"
 #include "types.h"
@@ -50,13 +53,11 @@ extern  ObjectId       iconbar_icon = 0,
                        printing_window = 0,
                        serial_window = 0,
                        windows_window = 0,
-                       //start_up_window = 0,
                        aspi_window = 0,
                        switching_window = 0,
                        booting_window = 0,
                        memory_window = 0,
                        dcs_window = 0,
-                       //advanced_window = 0,
                        adv_window = 0,
                        network_window = 0,
                        update_window = 0,
@@ -82,7 +83,7 @@ extern  options        def_config = 0;
 
 extern  BOOL           configuration_changed  = FALSE;
 extern  BOOL           window_title_updated   = FALSE;
-extern  BOOL           asked_to_quit          = FALSE;
+static  BOOL           asked_to_quit          = FALSE;
 
 static  BOOL           update_window_open = FALSE;
 
@@ -98,12 +99,12 @@ void raise_error (_kernel_oserror *e);
  * the iconbar menu.
  */
 
-int quit_event(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+static int quit_event(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
-  event_code = event_code;
-  event = event;
-  id_block = id_block;
-  handle = handle;
+  NotUsed (event_code);
+  NotUsed (event);
+  NotUsed (id_block);
+  NotUsed (handle);
 
   if(configuration_changed)
   {
@@ -117,9 +118,10 @@ int quit_event(int event_code, ToolboxEvent *event, IdBlock *id_block,void *hand
   return(1);
 }
 
-int update_data_load_handler(WimpMessage *message, void *h)
+static int update_data_load_handler(WimpMessage *message, void *h)
 {
   char f[256];
+  NotUsed (h);
 
   if (message->data.data_load.file_type != 0x2000)
   /* Users this stupid don't deserve an error message */
@@ -133,11 +135,15 @@ int update_data_load_handler(WimpMessage *message, void *h)
   }
   raise_error(displayfield_set_value(0, update_window, UPDATE_PCPATH, message->data.data_save_ack.leaf_name));
   raise_error(gadget_set_flags(0, update_window, UPDATE_CONVERT, 0));
+  return (0);
 }
 
-int update_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+static int update_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
   char b[256];
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
 
   raise_error(displayfield_get_value(0, update_window, UPDATE_PCPATH, b, 256, NULL));
   if (id_block->self_component == UPDATE_CONVERT)
@@ -152,14 +158,15 @@ int update_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id
   configuration_changed = FALSE;
   multicfg_readlist();
   raise_error(toolbox_show_object(0, iconbar_icon, 0, NULL, 0, 0));
+  return(0);
 }
 
-int dcs_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+static int dcs_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
 {
-  event_code = event_code;
-  event = event;
-  id_block = id_block;
-  handle = handle;
+  NotUsed (event_code);
+  NotUsed (event);
+  NotUsed (id_block);
+  NotUsed (handle);
 
   switch(event_code)
   {
@@ -186,7 +193,7 @@ int dcs_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *han
 #define RENAME 1
 static int addrename_status;
 
-void open_addrename(int add_or_rename)
+static void open_addrename(int add_or_rename)
 {
   raise_error(stringset_get_selected(0,main_window,MAIN_CONFIGSEL,config.name,64,NULL));
   raise_error(writablefield_set_value(0, addrename_window, ADDRENAME_NAME, config.name));
@@ -205,7 +212,7 @@ void open_addrename(int add_or_rename)
   raise_error(toolbox_show_object(0, addrename_window, Toolbox_ShowObject_AtPointer, NULL, 0, 0));
 }
 
-int addrename_do_it(void)
+static int addrename_do_it(void)
 {
   char new[64];
 
@@ -214,10 +221,31 @@ int addrename_do_it(void)
 
   if (addrename_status == ADD)
     do_multicfg_saveasnew(new);
+  return (0);  
 }
 
-int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+static void revert_to_defaults()
 {
+  /*revert to default config and then update all the windows */
+  config = def_config; 
+  update_adv_window();
+  update_aspi_window();
+  update_booting_window();
+  update_discs_window();
+  update_memory_window();
+  update_network_window();
+  update_printing_window();
+  update_serial_window();
+  update_switching_window();
+  update_windows_window();
+}
+
+static int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+{
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+
   switch (id_block->self_component)
   {
     case HARD_DISC_OPTIONS:
@@ -240,10 +268,6 @@ int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void
     case WINDOWS_VIDEO_OPTIONS_T:
      setup_windows_window();
     break;
-//    case START_UP_OPTIONS:
-//    case START_UP_OPTIONS_T:
-//     setup_start_up_window();
-//    break;
     case ASPI_OPTIONS:
     case ASPI_OPTIONS_T:
      setup_aspi_window();
@@ -262,7 +286,6 @@ int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void
     break;
     case ADVANCED_OPTIONS:
     case ADVANCED_OPTIONS_T:
-     //open_advanced_configuration_window(0, NULL, NULL, NULL);
      setup_adv_window();
     break;
     case MAIN_SAVEASNEW:
@@ -274,6 +297,9 @@ int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void
     break;
     case MAIN_DELETE:
      do_multicfg_delete();
+    break;
+    case MAIN_DEFAULT:
+     revert_to_defaults();
     break;
     case MAIN_LAUNCH:
      still_running = FALSE;
@@ -287,8 +313,12 @@ int click_handler (int event_code, WimpPollBlock *event, IdBlock *id_block, void
   return(1);
 }
 
-int pointer_entering(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+static int pointer_entering(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
 {
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  NotUsed (event_code);
   /*_swix(256+7,0);*/
 
   /* Allow NULL events now */
@@ -307,8 +337,12 @@ int pointer_entering(int event_code, WimpPollBlock *event, IdBlock *id_block, vo
   return(1);
 }
 
-int pointer_leaving(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+static int pointer_leaving(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
 {
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  NotUsed (event_code);
   /*_swix(256+7,0);*/
 
   /* Mask out NULL events again */
@@ -332,6 +366,11 @@ int null_event_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, 
   ObjectId window;
   ComponentId component;
   WimpGetPointerInfoBlock p;
+  
+  NotUsed (handle);
+  NotUsed (id_block);
+  NotUsed (event);
+  NotUsed (event_code);
 
   raise_error(wimp_get_pointer_info(&p));
   //if(p.window_handle == advanced_window_wimp)
@@ -378,13 +417,6 @@ int null_event_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, 
       displayfield_set_value(0,main_window,0x25,lookup_token("windows_help"));
     break;
 
-/*    case START_UP_OPTIONS:
-    case START_UP_OPTIONS_T:
-
-    if(last_component != START_UP_OPTIONS && last_component != START_UP_OPTIONS_T)
-      displayfield_set_value(0,main_window,0x25,lookup_token("start_help"));
-    break;*/
-
     case SWITCHING_OPTIONS:
     case SWITCHING_OPTIONS_T:
 
@@ -418,19 +450,20 @@ int null_event_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, 
  */
 
 
-int quit_message(WimpMessage *message,void *handle)
+static int quit_message(WimpMessage *message,void *handle)
 {
   message = message;
-  handle = handle;
+  NotUsed (handle);
   still_running = FALSE;
   /*exit(0);*/
   return(1);
 }
 
-int external_edit_message(WimpMessage *message, void *handle)
+static int external_edit_message(WimpMessage *message, void *handle)
 {
   char *new_path_name = message->data.bytes+4;
   int   new_number = message->data.words[1];
+  NotUsed(handle);
 
   if (message->data.words[0] != 0x100 || message->data.words[0] != 0x101)
     return(1); /* Only this reason code requests an external edit */
@@ -454,8 +487,8 @@ int external_edit_message(WimpMessage *message, void *handle)
   multicfg_change_config();
 }
 
-int load_advanced_configuration_files(int event_code,ToolboxEvent  *event,IdBlock *id_block,void *handle)
-{/*
+/*int load_advanced_configuration_files(int event_code,ToolboxEvent  *event,IdBlock *id_block,void *handle)
+{
   WimpGetWindowStateBlock bl;
 
   bl.window_handle = advanced_window_wimp;
@@ -479,10 +512,10 @@ int load_advanced_configuration_files(int event_code,ToolboxEvent  *event,IdBloc
    return(1);
   pcdbox_initialise();
   advanced_config_loaded = TRUE;
-  return(1);*/
-}
+  return(1);
+}*/
 
-int main_data_load_handler(WimpMessage *message,void *handle)
+static int main_data_load_handler(WimpMessage *message,void *handle)
 {
     WimpGetPointerInfoBlock p;
 
@@ -502,24 +535,25 @@ int main_data_load_handler(WimpMessage *message,void *handle)
     //}
 }
 
-int set_version(int event_code,ToolboxEvent *event,IdBlock *id_block,void *handle)
+static int set_version(int event_code,ToolboxEvent *event,IdBlock *id_block,void *handle)
 {
-    BOOL d = FALSE, m = FALSE;
-    _kernel_swi_regs r;r.r[0] = 129;r.r[1] = 205;r.r[2] = 0xff;_kernel_swi(OS_Byte, &r,&r);
-    if((r.r[1] == 0xff) && (r.r[2] == 0xff)) d = TRUE;r.r[0] = 129;r.r[1] = 154;r.r[2] = 0xff;
-    _kernel_swi(OS_Byte,&r,&r);if((r.r[1] == 0xff) && (r.r[2] == 0xff)) m = TRUE;
-    if(d && m) proginfo_set_version(0,proginfo_window,"Written by Dean Murphy"); else
-    raise_error(proginfo_set_version(0,proginfo_window,lookup_token("Ver"))); return(1);
+  NotUsed (event_code);
+  NotUsed (event);
+  NotUsed (id_block);
+  NotUsed (handle);
+
+  raise_error(proginfo_set_version(0,proginfo_window,lookup_token("Ver"))); 
+  return(1);
 }
 
-void launch_help(void)
+static void launch_help(void)
 {
   int x;
 
   raise_error(wimp_start_task("Resources:$.Apps.!Help", &x));
 }
 
-void read_default_config(void)
+static void read_default_config(void)
 {
   IdBlock fake;
 
@@ -552,8 +586,7 @@ int main()
     int    toolbox_events = 0,
            wimp_messages = 0,
            event_code;
-    char   b[256];
-
+  
     //itemlist = 0;
 
 
@@ -585,7 +618,6 @@ int main()
     raise_error(toolbox_create_object(0,"Serial",&serial_window));
     raise_error(toolbox_create_object(0,"Windows",&windows_window));
     raise_error(toolbox_create_object(0,"Printing",&printing_window));
-    //raise_error(toolbox_create_object(0,"Start",&start_up_window));
     raise_error(toolbox_create_object(0,"SCSI",&aspi_window));
     raise_error(toolbox_create_object(0,"Switching",&switching_window));
     raise_error(toolbox_create_object(0,"Booting",&booting_window));
@@ -596,11 +628,7 @@ int main()
     raise_error(toolbox_create_object(0,"Update",&update_window));
     raise_error(toolbox_create_object(0,"AddRename",&addrename_window));
 
-    //raise_error(window_get_wimp_handle(0,advanced_window,&advanced_window_wimp));
-
-
-    /*setup_advanced_window();*/
-
+ 
     /*
      * initialise the event library.
      */
@@ -655,8 +683,6 @@ int main()
     do_printing_initialise();
     do_serial_initialise();
     do_network_initialise();
-    //do_start_up_initialise();
-    //do_aspi_initialise();
     do_switching_initialise();
     do_booting_initialise();
     //pcdbox_initialise(); advanced_config_loaded = TRUE;
@@ -673,8 +699,8 @@ int main()
     if (!file_exists("<PC_Config$Dir>.^.!PC.PCBits.Netlinks.Startup") &&
         !file_exists("<Diva$Dir>.PCBits.Netlinks.Startup"))
     {
-      gadget_set_flags(0, main_window, NETWORK_OPTIONS, 1<<31);
-      gadget_set_flags(0, main_window, NETWORK_OPTIONS_T, 1<<31);
+      gadget_set_flags(0, main_window, NETWORK_OPTIONS, 1u<<31);
+      gadget_set_flags(0, main_window, NETWORK_OPTIONS_T, 1u<<31);
     }
 
     if (do_aspi_initialise() ||
@@ -682,8 +708,8 @@ int main()
          !file_exists("<Diva$Dir>.PCBits.ARMASPI.Startup"))
        )
     {
-      gadget_set_flags(0, main_window, ASPI_OPTIONS, 1<<31);
-      gadget_set_flags(0, main_window, ASPI_OPTIONS_T, 1<<31);
+      gadget_set_flags(0, main_window, ASPI_OPTIONS, 1u<<31);
+      gadget_set_flags(0, main_window, ASPI_OPTIONS_T, 1u<<31);
     }
 
     broadcast_pc_message(0x44681, 0, config_dir); /* See 'Protocol' file */

@@ -1,0 +1,70 @@
+_TaskName:PCPro 3
+
+fesavebox:Could not open file '%s'
+feromfile:ROM File '%s' could not be found
+feromlen:ROM File '%s' wrong length: wanted %d bytes, got %d
+fehdfile:Hard drive %d (%s) could not be accessed
+fecfgfile:Configuration file '%s' could not be read
+
+cwcfgnum:Line ignored in CONFIG file: bad decimal number after '%s'
+cwcfgline:Line ignored in CONFIG file: did not recognise '%s'
+cenoparall:Direct-Parallel will not work on this hardware
+cenoserial:Direct-Serial will not work on this hardware
+cene2int:NE2000 emulation cannot use interrupt %d
+cemouint:Bus Mouse emulation cannot use interrupt %d
+
+sevidmem:Couldn't claim specified minimum amount (%dK) of display memory
+sene2ver:Incorrect version of PCNE2 network support module: need %s
+senopciop:PCIO module must be loaded for Direct Parallel support
+senopcios:PCIO module must be loaded for Direct Serial support
+sepcram:Unable to allocate PC RAM
+
+swVRAMsize:'VideoRAM' in CONFIG file set to less than 256K - line ignored
+swvalloc:Couldn't allocate memory for specified Windows driver mode; reverting to VGA.
+swdrve1:Bad Windows Driver Mode '%s' - reverting to VGA
+swdrve2:Windows Driver mode %s not available on this machine - reverting to VGA
+swdrve3:Windows Driver mode %s cannot be used by !PC - reverting to VGA
+swdrve4:Windows Driver mode needs at least %dK VideoRAM setting - reverting to VGA
+swdrve5:Not enough RISCOS screen RAM for given Windows Driver mode
+swnowin:Unable to use default Windows Driver mode (%s) - driver disabled
+
+henotfound:PC Card not found (or wrong type)
+henoreset:PC Card did not reset
+hecrashed:PC Card not responding - probably crashed
+
+ieparms2:Internal Error: %s given bad address range %X-%X
+iescreate:Internal Error: sprite_create failed
+ietemplate:The window template system has lost a template
+ieinitfail:Initialisation failed
+ienomem:Out of memory
+ieswix:Eek! -- %s
+iecorrupt:Integrity check failed; please reinstall !PC from the distribution disc, or contact Aleph One for advice.
+ielicensees:There are more copies of !PC running on this network than your license allows for.
+
+iwadfsswi:Internal Error: ADFS_Drives SWI returned error %Xh
+
+linearfb:The current PC application needs direct access to your display hardware and can only run in single-tasking mode. !PC will stay frozen until you switch over.
+vramyampy1:Panic!  Video image size bigger than available memory!  Things are about to go horribly wrong!
+vramyampy2:Only got %dK of video memory after saying we could get %dK!  Oh deary me...
+nofullscr:Couldn't find a %d x %d mode at %d bits per pixel; returning to windowed mode...
+enablefail:Windows driver failed to start; please try to free some more memory.  If you were running a DOS session just now, press ALT-TAB a few times to switch back to it; Windows is merely running 'blind'.
+devclaimed:This device is already being used by '%s'.
+extprob:Your !PC installation is corrupt; please re-install it or seek help from Aleph One.
+
+demotimeout:This demo version of !PC has timed out-- if you are interested in purchasing it, please contact Aleph One, The Old Courthouse, High Street, Bottisham, Cambridge, CB5 9BA (tel. 01223 811679).
+
+vmnone:???
+vmtext:Text
+vmcga:CGA
+vmvga:VGA
+vm256:VGA 256 colour
+vmwin:Windows
+vmwind:DirectDraw
+vmvesa:VESA 1.2
+vmvesad:VESA 2.0
+vc1:Black/White
+vc2:4 colours
+vc4:16 colours
+vc8:256 colours
+vc16:32 thousand
+vc32:16 million

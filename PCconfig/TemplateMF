@@ -5,7 +5,8 @@ Librarys	=					\
 			C:o.toolboxlib			\
 			C:o.wimplib			\
 			C:o.eventlib			\
-			o.file
+			C:o.files                       
+#			C:o.debugit
 
 Target		=	<PC_Config$Dir>.!RunImage
 

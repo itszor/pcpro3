@@ -6,6 +6,7 @@
 * 2.00  14/11/95       Redone for HPC.
 * 2.12  1997.09.24 RW  CD_read ARM-coded -> HPC_CD.s
 * 2.25  1997.10.14 RW  CD_Seek ARM-coded -> HPC_CD.s
+* 3.03  1999.05.31 W   Added WSS CDROMFS support
 */
 
 #include "kernel.h"
@@ -16,14 +17,11 @@
 #include "dev.h.hpc_cd"
 
 #define DEBUG 0
+#include "sys.h.debug"
+
 #define ASM_CDREAD 1  /* if set use assembler version in CD_ReadFN
                          (courtesy Robin watts) */
 
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
 
 /* CD & CDFS SWI calls ************************************************** */
 
@@ -68,6 +66,10 @@
 #define XCDFS_DescribeDisc               0x61E86
 #define XCDFS_WhereIsFile                0x61E87
 #define XCDFS_Truncation                 0x61E88
+
+#define XCDROMFS_ConvertDriveToDevice    0x529C0
+#define XCDROMFS_GetNumberOfDrives       0x529C3
+
 
 /* ***************************************** */
 
@@ -258,10 +260,13 @@ extern void CD_Init ( struct CD_INIT_PARAMS *pIn,
 
   if (SWI (XCDFS_GetNumberOfDrives) != NULL)
   {
-    debug(("No CDFS?"));
-    pOut->status = CDERR_OK;
-    pOut->ndrives = 0;
-    return;
+    if (SWI (XCDROMFS_GetNumberOfDrives) != NULL)
+    {
+      debug(("No CDFS or CDROMFS?"));
+      pOut->status = CDERR_OK;
+      pOut->ndrives = 0;
+      return;
+    }
   }
 
   max = SWIregs.r[0];
@@ -271,7 +276,11 @@ extern void CD_Init ( struct CD_INIT_PARAMS *pIn,
   for (i=0; i<max; i++)
   {
     SWIregs.r[0] = i;
-    if ( SWI (XCDFS_ConvertDriveToDevice) == NULL && SWIregs.r[1] >= 0 )
+    if ( SWI (XCDFS_ConvertDriveToDevice) != NULL)
+    {
+      if ( SWI (XCDROMFS_ConvertDriveToDevice) != NULL) continue;
+    }
+    if (SWIregs.r[1] >= 0 )
     {
       pDI->flags     = CD_WORKING;
       pDI->CmdBlk[0] = SWIregs.r[1] & 7;
@@ -284,6 +293,7 @@ extern void CD_Init ( struct CD_INIT_PARAMS *pIn,
       if ( ndrvs >= MAXDRIVES )
         break;
     }
+
   }
 
   debug(("CD_Init: %d drives found", ndrvs));
@@ -301,6 +311,7 @@ extern void CD_Read ( struct CD_READ_PARAMS *pIn,
   DRIVE *pDI = GetDrive ( pIn->drvnum );
   if ( pDI == NULL )
   {
+    debug(("Read: bad drive number"));
     pOut->status = CDERR_BADDRIVE;
     return;
   }
@@ -335,6 +346,7 @@ extern void CD_Read ( struct CD_READ_PARAMS *pIn,
   SWIregs.r[4] = BLOCKSIZE; /* EESOX fix, 17/6/96 */
   SWIregs.r[7] = (int) pDI->CmdBlk;
 
+
   if ( SWI ( XCD_ReadData ) != NULL )
   {
     debug(("Read error"));
@@ -342,7 +354,17 @@ extern void CD_Read ( struct CD_READ_PARAMS *pIn,
   }
   else
     pOut->status = CDERR_OK;
-    /*SYS_trace("Sector:%d Count:%d",pIn->sect_start,pIn->sect_count);*/
+
+  /*!! do it twice to see if this fixes ROS4 CD buffer problem */
+  /*if ( SWI ( XCD_ReadData ) != NULL )
+  {
+    debug(("Read error - 2nd read"));
+    pOut->status = CDERR_READERR;
+  }
+  else
+    pOut->status = CDERR_OK;*/
+
+  /*SYS_trace("Sector:%d Count:%d",pIn->sect_start,pIn->sect_count);*/
     /*!!!*/ /*SYS_tracedata(pOut->read_data,BLOCKSIZE);*/
 }
 #endif

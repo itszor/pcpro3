@@ -1,0 +1,205 @@
+
+#define MBCR(a) (0x03700000 + ((a)<<2))  /* Memory block control register */
+#define MBCR_regs 8
+
+/* Blocksize definitions */
+
+#define MBCR_256K  0x00
+#define MBCR_512K  0x01
+#define MBCR_1M    0x03
+#define MBCR_2M    0x07
+#define MBCR_4M    0x0F
+#define MBCR_8M    0x1F
+
+#define MBCR_PCADDR(a) (((a)>>10) & 0x7F00)
+#define MBCR_ARMADDR(a) ((a) & 0x1FFC0000)
+
+#define MMCR  0x03710000 /* Memory map control register */
+
+#define mMBOX   0
+#define mISA    1
+#define mRDONLY 2
+#define mRAM    3
+#define MMCR_A0xxx(a) (a)
+#define MMCR_A8xxx(a) ((a) << 2)
+#define MMCR_B0xxx(a) ((a) << 4)
+#define MMCR_B8xxx(a) ((a) << 6)
+#define MMCR_C0xxx(a) ((a) << 8)
+#define MMCR_C8xxx(a) ((a) << 10)
+#define MMCR_D0xxx(a) ((a) << 12)
+#define MMCR_D8xxx(a) ((a) << 14)
+#define MMCR_E0xxx(a) ((a) << 16)
+#define MMCR_E8xxx(a) ((a) << 18)
+#define MMCR_F0xxx(a) ((a) << 20)
+#define MMCR_F8xxx(a) ((a) << 22)
+#define MMCR_HighROM(a) ((a) << 24)
+
+#define IOMCR   0x03720000 /* I/O Map Control register  */
+
+#define IOMCR_DMA_mbox   0
+#define IOMCR_DMA_real   1
+
+#define IOMCR_HDD_mbox   0
+#define IOMCR_HDD_ISA    2
+
+#define IOMCR_Page1_mbox 0
+#define IOMCR_Page1_ISA  4
+
+#define IOMCR_COM2_mbox  0
+#define IOMCR_COM2_ISA   8
+
+#define IOMCR_Page2_mbox 0
+#define IOMCR_Page2_ISA  0x10
+
+#define IOMCR_Page3_mbox 0
+#define IOMCR_Page3_ISA  0x20
+
+#define IOMCR_340h_mbox  0
+#define IOMCR_340h_ISA   0x40
+
+#define IOMCR_LPT2_mbox  0      /* Port at 0378h */
+#define IOMCR_LPT2_ISA   0x80
+
+#define IOMCR_LPT1_mbox  0      /* Port at 03BCh */
+#define IOMCR_LPT1_ISA   0x100
+
+#define IOMCR_FDD_mbox   0
+#define IOMCR_FDD_ISA    0x200
+
+#define IOMCR_COM1_mbox  0
+#define IOMCR_COM1_ISA   0x400
+
+#define IOMCR_8259_mbox  0      /* Interrupt controllers */
+#define IOMCR_8259_ISA   0x800
+#define IOMCR_8259_real  0x4000
+
+#define IOMCR_8254_mbox  0      /* Timer */
+#define IOMCR_8254_ISA   0x1000
+#define IOMCR_8254_real  0x8000
+
+#define MASR 0x03730000 /* Mailbox address/status register */
+
+#define MASR_ACCESS 0x80000000
+#define MASR_WORD   0x40000000
+#define MASR_WRITE  0x20000000
+#define MASR_MEM    0x10000000
+#define MASR_DMAC   0x08000000
+#define MASR_AMASK  0x000FFFFF
+
+#define MDR  0x03730004 /* Mailbox Data register */
+
+#define PICR 0x03740000 /* Processor / Interrupt Control Register */
+
+#define PICR_IRQ1       1
+#define PICR_IRQ3       2
+#define PICR_IRQ4       4
+#define PICR_IRQ5       8
+#define PICR_IRQ6       0x10
+#define PICR_IRQ7       0x20
+#define PICR_IRQ8       0x40
+#define PICR_IRQ9       0x80
+#define PICR_IRQ10      0x100
+#define PICR_IRQ11      0x200
+#define PICR_IRQ12      0x400
+#define PICR_IRQ14      0x800
+#define PICR_IRQ15      0x1000
+
+#define MISCR 0x03750000 /* Miscellaneous control reg, Read/Write */
+
+#define MISCRwr_PWRGOOD   1
+#define MISCRwr_BREQ      2
+#define MISCRwr_ENFDIRQ   4
+#define MISCRwr_ENFDFIQ   8
+#define MISCRwr_ENKBSIM   0x10
+#define MISCRwr_A20GATE   0x20
+#define MISCRwr_FASTRESET 0x40
+#define MISCRwr_ENWRFIFO  0x100 /* Enable FIFO write-buffer */
+#define MISCRwr_ENCACHE   0x200 /* Enable 2ndary cache */
+#define MISCRwr_ENMBOXIRQ 0x400
+#define MISCRwr_ENMBOXFIQ 0x800
+
+#define MISCRrd_HLDA      1
+#define MISCRrd_ISABUS    2
+
+
+#define CFGR 0x03760000 /* Configuration register */
+
+#define CFGR_MEM_1M   1
+#define CFGR_MEM_2M   2
+#define CFGR_MEM_3M   3
+#define CFGR_MEM_4M   4
+#define CFGR_MEM_5M   5
+#define CFGR_MEM_6M   6
+#define CFGR_MEM_7M   7
+#define CFGR_MEM_8M   8
+#define CFGR_MEM_10M  9
+#define CFGR_MEM_12M  10
+#define CFGR_MEM_14M  11
+#define CFGR_MEM_16M  12
+#define CFGR_MEM_20M  13
+#define CFGR_MEM_24M  14
+#define CFGR_MEM_28M  15
+#define CFGR_MEM_32M  0
+
+#define CFGR_CACHE_32K  0
+#define CFGR_CACHE_128K 16
+
+#define CFGR_RAM_CACHED    32
+#define CFGR_RDONLY_CACHED 64
+#define CFGR_UMB_CACHED    128
+
+
+#define XREG 0x03770000 /* External register */
+
+#define GPIO(a) (0x03780000 + ((a) << 2) ) /* General purpose IOdecode 0..3 */
+#define GPIO_regs 4
+
+#define GPIO_PCADDR(a)  (((a)>>2) & 0xFF)
+#define GPIO_PCAMASK(a) (((a)<<6) & 0xFF00)
+#define GPIO_ENABLE  0x10000
+
+#define FDDATA 0x03790000 /* Floppy disk data reg, Read/Write */
+
+#define FDCTRL 0x03790004 /* Floppy disk ctrl/status register, write */
+#define FDCTRL_DREQ   1
+
+#define FDSTAT 0x03790004 /* Floppy disk ctrl/status register, read */
+#define FDSTAT_REQ    1
+#define FDSTAT_DACKRD 2
+#define FDSTAT_DACKWR 4
+#define FDSTAT_DMATC  8   /* Terminal count */
+
+#define TESTR 0x037F0000  /* Test register */
+
+#define TESTR_TEST1    1
+#define TESTR_TMRTEST  2
+#define TESTR_ENDMA    4
+#define TESTR_TMG1     0x10
+#define TESTR_TMG2     0x20
+#define TESTR_TEST2    0x40
+#define TESTR_TEST3    0x80
+
+
+/* Additions for Gemini-II ASIC */
+
+#define REV2R 0x037A0000
+
+#define REV2R_WBMODE   1
+#define REV2R_WBTMG    2
+#define REV2R_FAEN     4
+#define REV2R_KBMODE   8
+#define REV2R_FIFO16   0x10
+#define REV2R_WBCPU    0x20
+#define REV2R_RMUADV   0x40
+#define REV2R_SUSP     0x80
+#define REV2R_ENRMUBUF 0x100
+#define REV2R_INVONHIT 0x200
+#define REV2R_WRBRST   0x400
+#define REV2R_ENL2FL   0x800
+#define REV2R_ENCLKO   0x1000
+#define REV2R_CYRIXWB  0x2000
+#define REV2R_INTELWB  0x4000
+#define REV2R_REV2     0x8000
+
+#define MASR_REV2MASK  0x07F00000
+

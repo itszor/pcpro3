@@ -9,6 +9,8 @@
 *         24-11-93       Messages look-up
 *         16-05-95       Add time to trace function
 * 2.15  1997.10.14 RJW   Callback fns ARMcoded -> SYSs.s
+*       1998.09    MB    Added tracker option and compressedtrace feature
+* 2.33  1998.09.03 W     Added DebugT option to SYStrace.
 */
 
 #include <stdio.h>
@@ -81,6 +83,7 @@ static void SYS__CloseTracker(void)
 
 static char last_traced[256]="\0";
 static int  times_traced=0;
+static int  debugT=0;
 
 void SYS_trace   ( char *s, ... )
 {
@@ -97,10 +100,16 @@ void SYS_trace   ( char *s, ... )
     times_traced++; return;
   }
 
+  //if (strcmp(stringbuf, "DebugT:" ) == 0)  /*this is DebugT info*/
+   // debugT = 1;
+  //if (strcmp(last_traced, "DebugT:") == 0)  /*2nd or later debugT chars */
+    //debugT = 2;
+
   switch (TraceDestination)
   {
     case TraceFile    :
       if (times_traced) printf(" (x%d)\n", times_traced+1);
+      //if (debugT == 1)
       printf("%d: %s\n", SYS_GetTime(), stringbuf);
       break;
     case TraceSerial  :
@@ -170,6 +179,7 @@ void SYS_tracedata ( BYTE *s, int len )
 
 }
 
+#if 0 /* moved into PCMEM module - not yet needed elsewhere */
 /* Do OSCLI command */
 
 void OScommand ( char * command )
@@ -184,6 +194,7 @@ void OScommand ( char * command )
      SYS_trace("Error giving command:%s:%s", command, err->errmess );
     }
 }
+#endif
 
 /* **************** */
 
@@ -649,12 +660,14 @@ bool SYS_Init (void)
 /* **************** */
 
 
-extern log_callback(int r0, int r1, int r2, int r3)
+extern void log_callback(int r0, int r1, int r2, int r3)
 {
+  NotUsed(r2);
+
   SYS_trace("cb @ %08x r0=%08x r12=%08x", r1, r0, r3);
 }
 
-extern about_to_call_swi(void)
+extern void about_to_call_swi(void)
 {
   SYS_trace("about to call SWI (last cb successful");
 }

@@ -11,6 +11,7 @@
 #include "utils.h"
 #include "debugit.h"
 #include "ctype.h"
+#include "loadconfig.h"
 
 #include "gadgets.h"
 
@@ -20,7 +21,7 @@ static int floppysize[5]={0,360,720,1200,1440};
 
 char *conf_lines[MAX_LINES];
 
-int total_config_lines = 0;
+static int total_config_lines = 0;
 
 static int atoi_h(char *s)
 {
@@ -392,6 +393,12 @@ static void set_busmouseint(char *opt)
   tmp_config.adv.busmouseint = config.adv.busmouseint = atoi_h(opt);
 }
 
+static void set_scaletofit(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.adv.scaletofit = config.adv.scaletofit = (strncmp(opt, "on", 2) == NULL);
+}
+
 static void set_ne2000int(char *opt)
 {
   opt = strip_header(opt);
@@ -485,7 +492,7 @@ static void set_config_option(char *opt)
   if(strstr(opt, "aspiignore") != NULL)        { set_aspiignore(opt); return;       }
   if(strstr(opt, "aspireserve") != NULL)       { set_aspireserve(opt); return;      }
   if(strstr(opt, "aspiforce") != NULL)         { set_aspiforce(opt); return;        }
-  if(strstr(opt, "aspibuffer") != NULL)        { set_aspibuffer(opt); return;        }
+  if(strstr(opt, "aspibuffer") != NULL)        { set_aspibuffer(opt); return;       }
   if(strstr(opt, "l1cache") != NULL)           { set_l1cache(opt); return;          }
   if(strstr(opt, "l2cache") != NULL)           { set_l2cache(opt); return;          }
   if(strstr(opt, "l2size") != NULL)            { set_l2size(opt); return;           }
@@ -493,6 +500,7 @@ static void set_config_option(char *opt)
   if(strstr(opt, "retraceemulation") != NULL)  { set_retraceemulation(opt); return; }
   if(strstr(opt, "busmouseint") != NULL)       { set_busmouseint(opt); return;      } // 'busmouse' is a substring of 'busmouseint' !
   if(strstr(opt, "busmouse") != NULL)          { set_busmouse(opt); return;         }
+  if(strstr(opt, "scaletofit") != NULL)        { set_scaletofit(opt); return;       }  
   if(strstr(opt, "ne2000int") != NULL)         { set_ne2000int(opt); return;        }
   if(strstr(opt, "ne2000advanced") != NULL)    { set_ne2000advanced(opt); return;   }
   if(strstr(opt, "floppy0") != NULL)           { set_floppy(0, opt); return;        }

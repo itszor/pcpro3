@@ -15,13 +15,12 @@
 
 #include "DivaSrc:sys.h.DivaSerial"
 
-MessagesFD   msg_block;
-IdBlock      id_block;
-ObjectId     MainWin;
-int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
-char         directory[32] = "<DivaCode$Dir>";
-void         *sprite_area;
-void         *er;
+static MessagesFD   msg_block;
+static IdBlock      id_block;
+static ObjectId     MainWin;
+static int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
+static char         directory[32] = "<DivaCode$Dir>";
+static void         *sprite_area;
 
 #define ER(x) if (x != NULL) wimp_report_error((void*) x, 0, "DivaCode")
 
@@ -35,7 +34,7 @@ void         *er;
 #define RADIO_STAMP 0x11
 #define RADIO_READ  0x12
 
-void werr(int fatal, char* format, ...)
+static void werr(int fatal, char* format, ...)
 {
    va_list va;
    _kernel_oserror e;
@@ -48,7 +47,7 @@ void werr(int fatal, char* format, ...)
    if (fatal) quit = TRUE;
 }
 
-_kernel_oserror * xosclif(char* format, ...)
+static _kernel_oserror * xosclif(char* format, ...)
 {
    va_list va;
    char cmd[256];
@@ -59,16 +58,31 @@ _kernel_oserror * xosclif(char* format, ...)
    return(_swix(OS_CLI, _IN(0), cmd));
 }
 
-void quit_handler(void)
+static void quit_handler(void)
 {
   quit=1;
 }
 
-int dataload_handler(WimpMessage *message,void *handle)
+/* Called when user presses '-' key in the reg. code window */
+static int regcode2_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+{
+  handle=handle; /*for compiler*/
+  id_block=id_block;
+  event=event;
+  event_code=event_code;
+
+  ER(gadget_set_focus(0, MainWin, 1));
+  //ER(void());
+  return(1);
+}
+
+static int dataload_handler(WimpMessage *message,void *handle)
 {
   int sel;
   unsigned int p, s, l, w0, w1, w2;
   char b1[8], b2[8];
+
+  handle=handle; /*for compiler*/
 
   if (message->data.data_load.file_type == 0x2000) {
     message->data.data_load.file_type = 0xFF8;
@@ -139,10 +153,14 @@ int dataload_handler(WimpMessage *message,void *handle)
   return(1);
 }
 
-int convert(int e, ToolboxEvent *event, IdBlock *id, void *h)
+static int convert(int event_code, ToolboxEvent *event, IdBlock *id, void *handle)
 {
   char b1[16], b2[16];
   unsigned int p, s, l, enc, chk;
+
+  handle=handle; /*for compiler*/
+  event=event;
+  event_code=event_code;
 
   switch(id->self_component)
   {
@@ -179,6 +197,8 @@ _kernel_oserror* DivaCode_SWI(int swi_no, _kernel_swi_regs *r, void *pw)
 {
   unsigned int enc, chk;
 
+  pw=pw;
+
   switch (swi_no)
   {
     case 0:
@@ -200,8 +220,13 @@ _kernel_oserror *DivaCode_CLI(void)
 
 extern int Image__RO_Base;
 
-void service_handler(int number, _kernel_swi_regs *r, void *pw) {
-  switch (number) {
+void service_handler(int number, _kernel_swi_regs *r, void *pw)
+{
+
+  pw=pw;
+
+  switch (number)
+  {
     case Service_Memory:
       if (r->r[2] == (int)Image__RO_Base)
         //debug((0, "Service_Memory %d\n", r->r[0]));
@@ -215,8 +240,6 @@ int main(void)
 {
   int              event_code;
   WimpPollBlock    poll_block;
-  char             conf_default[256];
-  int              mem;
 
   if (task_handle != 0)
     return(1);
@@ -230,6 +253,7 @@ int main(void)
   ER(event_register_message_handler(Wimp_MDataLoad, dataload_handler, 0));
   ER(event_register_toolbox_handler(-1, 0x100, (ToolboxEventHandler*) quit_handler, NULL));
   ER(event_register_toolbox_handler(-1, Adjuster_Clicked, convert, NULL));
+  ER(event_register_toolbox_handler(-1, 0x240, regcode2_handler, NULL));
 
   ER(toolbox_create_object(0, "Main", &MainWin));
   ER(toolbox_show_object(0, MainWin, Toolbox_ShowObject_Centre, NULL, 0, 0));

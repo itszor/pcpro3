@@ -1,9 +1,0 @@
-If "%0"="" Then Echo MakeMake |<buildtype> [|<library directory>]
-If "%0"="" Then Obey
-
-<Obey$Dir>._EnsureLib %1
-
-Echo Makatic.MakeLMake started for '<Makatic$LibDir>'.
-Makatic.Makatic2 -d <Makatic$LibDir> -t %0.TemplateAl -o %0.All -F -f Libraries.*.c++.* ^.*2.%0.o.#0 Libraries.*.c.* ^.*2.%0.o.#0 Libraries.*.s.* ^.*2.%0.o.#0
-Unset Makatic$LibDir
-Echo Makatic.MakeLMake finished.

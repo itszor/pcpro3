@@ -12,25 +12,37 @@
 
 #include "misc.h"
 
-MessagesFD   msg_block;
-IdBlock      id_block;
-ObjectId     choose_window, banner_window;
-int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
-char         directory[32] = "<ChooseCfg$Dir>";
-char         config_dir[32] = "<Choices$Dir>.PC.v";
-void         *sprite_area;
-void         *er;
+static MessagesFD   msg_block;
+static IdBlock      id_block;
+static ObjectId     choose_window, banner_window;
+static int          task_handle = 0, current_wimp = 0, interested = 0, quit = 0;
+static char         directory[32] = "<ChooseCfg$Dir>";
+static char         config_dir[32] = "<Choices$Dir>.PC.v";
+static void         *sprite_area;
+/*static void         *er;*/
 
-int          num_configs=0;
+static int          num_configs=0;
 
-struct {
+static struct {
   char fname[11];
   char long_name[64];
 } config_list[32];
 
 #define ER(x) if (x != NULL) wimp_report_error((void*) x, 0, "ChooseCfg")
+#define NotUsed(name)  (void) name;  //this is used to stop compiler warnings
 
-void show_window_centred(ObjectId window)
+/* generate a filename for the 'Last' file from current config_dir */
+static char * get_lastname(void)
+{
+  static char config_lastfile[128];
+  static char last[8] = ".^.Last";
+
+  strcpy(config_lastfile, config_dir);
+  strcat(config_lastfile, last);
+  return (config_lastfile);
+}
+
+static void show_window_centred(ObjectId window)
 {
   WimpGetWindowOutlineBlock outline;
   int                       screen_x, screen_y, top_left[2];
@@ -45,7 +57,7 @@ void show_window_centred(ObjectId window)
   ER(toolbox_show_object(0, window, 2, top_left, NULL, NULL));
 }
 
-void whinge(char *msg)
+static void whinge(char *msg)
 {
   _kernel_oserror    err;
 
@@ -54,14 +66,15 @@ void whinge(char *msg)
   wimp_report_error(&err, 0, "ChooseCfg");
 }
 
-int quit_handler(WimpMessage *message, void *handle)
+static int quit_handler(WimpMessage *message, void *handle)
 {
+  NotUsed(handle);  NotUsed(message);
   quit = 1;
   return(1);
 }
 
               /* A bloody mess, but does the job */
-void broadcast_pc_message(int msg_num, int reason, char *file)
+static void broadcast_pc_message(int msg_num, int reason, char *file)
 {
   int pc_msg[64];
 
@@ -74,7 +87,7 @@ void broadcast_pc_message(int msg_num, int reason, char *file)
   wimp_send_message(17, pc_msg, 0, 0, 0);
 }
 
-void read_version(void)
+static void read_version(void)
 {
   FILE   *fh;
   char   line[256], ver[8], *vdir, *l;
@@ -97,12 +110,12 @@ void read_version(void)
     quit = TRUE;
     return;
   }
-  ver[1] = ver[0]; vdir = ver+1;
+  ver[1] = ver[0]; vdir = ver+1; /*remove the dot from version number */
   strcat(config_dir, vdir);
   fclose(fh);
 }
 
-extern void read_list(void)
+static void read_list(void)
 {
   FILE *fh;
   int  count=0, x;
@@ -137,7 +150,8 @@ extern void read_list(void)
     strcat(stringset, ",");
   }
 
-  fh = fopen("<ChooseCfg$Dir>.Last", "rb");
+  /*open 'Last' file in config dir*/
+  fh = fopen(get_lastname(), "rb");
   x = 0;
   if (fh != NULL)
   {
@@ -152,18 +166,21 @@ extern void read_list(void)
   ER(stringset_set_selected(1, choose_window, 0, (char*) x));
 }
 
-int run_handler(int chosen)
+static int run_handler(int chosen)
 {
   FILE *fh;
   char cmd[256], config_fullpath[256];
-  int  startup_msg[64];
 
   if (chosen != 0)
     ER(stringset_get_selected(1, choose_window, 0, &chosen));
 
-  fh = fopen("<ChooseCfg$Dir>.Last", "wb");
-  fwrite(&chosen, 4, 1, fh);
-  fclose(fh);
+  /*open 'Last' file in config dir*/
+  fh = fopen(get_lastname(), "wb");
+  if (fh != NULL)
+  {
+    fwrite(&chosen, 4, 1, fh);
+    fclose(fh);
+  }
 
   sprintf(config_fullpath, "%s.%s",  config_dir, config_list[chosen].fname);
   sprintf(cmd, "Set Diva$ConfigFile %s", config_fullpath);
@@ -175,7 +192,7 @@ int run_handler(int chosen)
   return(1);
 }
 
-int edit_handler(void)
+static int edit_handler(void)
 {
   int  chosen, child;
   char sysvar[256];
@@ -185,7 +202,7 @@ int edit_handler(void)
   system(sysvar);
   if (file_exists("<ChooseCfg$Dir>.^.^.!PCConfig.!Run"))
   {
-    ER(wimp_start_task("Run <ChooseCfg$Dir>.^.^.!PCConfig", &child));
+    ER(wimp_start_task("Run <ChooseCfg$Dir>.^.^.!PCConfig", &child)); /* needs to filer_run instead to avoid Toolbox problem with Pre-filters ebing run twice and ChooseCFG task dieing messily */
   }
   else
   {
@@ -201,7 +218,7 @@ int main(void)
 {
   int              event_code;
   WimpPollBlock    poll_block;
-  char             conf_default[256];
+  /*char             conf_default[256];*/
 
   event_initialise(&id_block);
   ER(toolbox_initialise(0, 310, &interested, &interested, directory, &msg_block,

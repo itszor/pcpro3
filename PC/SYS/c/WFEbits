@@ -43,19 +43,22 @@
 #include "sys.h.FEstate"
 #include "sys.h.WFEbits"
 #include "sys.h.sys"
+#if 0
 #include "sys.h.version"
+#endif
 #include "sys.h.config"
 #include "sys.h.wfes"
 #include "sys.h.cpu"      /* For Hardware ID field */
 
 /* Field number of version string within "info" box */
 
+#if 0
 #define InfoBox_VersionField    4
 #define InfoBox_HardwareField   10
 #define InfoBox_SerialNumField  12
 
 char *WFE_VersionString = VERSION_STRING;
-
+#endif
 
 /* Window Redrawing Routines ***************************************** */
 
@@ -445,15 +448,11 @@ void WFE_ModeSetup( void )
 
 }
 
-
-
-
-
-
-
 /* ProgInfoBox function **************************** */
 
 #if 0
+static int serial_number[2] = {'DvSr', 0x00000000};
+
 void WFE_ProgInfoBox(void)
 {
   dbox  d;  /* Dialogue box handle */
@@ -551,18 +550,19 @@ static BOOL WritePixelData ( int handle )
 
 /* ------------------------------------ */
 
-static int Mode28Palette[16] =
+/* this is no longer used */
+/*static int Mode28Palette[16] =
 {
    0x00000000,  0x10101000,  0x20202000,  0x30303000,
    0x00004000,  0x10105000,  0x20206000,  0x30307000,
    0x40000000,  0x50101000,  0x60202000,  0x70303000,
    0x40004000,  0x50105000,  0x60206000,  0x70307000
-};
+};*/
 
 /* Translated from Nickoese 16/5/96 */
 static BOOL WriteSpriteHeader ( int handle )
 {
-  int temp[3], sprite_type;
+  int temp[3];
   int mypal[512];
   sprite_header sh;
 

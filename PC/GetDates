@@ -1,0 +1,21 @@
+copy Sys.h.version filelist ~v
+echo Headers ------ { >> filelist }
+info SYS.h.* { >> filelist }
+info CPU.h.* { >> filelist }
+info DEV.h.* { >> filelist }
+info VID.h.* { >> filelist }
+info Module.h.*    { >> filelist }
+echo C code ------ { >> filelist }
+info SYS.c.* { >> filelist }
+info CPU.c.* { >> filelist }       
+info DEV.c.* { >> filelist }
+info VID.c.* { >> filelist }
+info Module.c.*    { >> filelist }
+echo Assembler ----- { >> filelist }
+info SYS.s.* { >> filelist }
+info CPU.s.* { >> filelist }
+info VID.s.* { >> filelist }
+info Module.s.*    { >> filelist }  
+
+
+

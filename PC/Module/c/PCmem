@@ -1,4 +1,4 @@
-#define VERSION_STRING "1.90 (18-Oct-97)"
+#define VERSION_STRING "3.06 (2000.06.07)"
 /*
 *    !PC C source code
 *
@@ -12,6 +12,10 @@
 *  1997.10.20 2.15 RJW    VESA RAM block on end of list if possible
 *  1998.03.05      MB     Fiddled so we've got the option of adding the VRAM
 *                           block on the end if we want
+*  1999.06.24 3.03 W      Allocate ram on 256Mb machine (or 128 in 2nd slot)
+*  2000.01.15 3.04 W      Workaround ROS4 256Mb RAM bug
+*  2000.02.01 3.05 W      Turning off SA cache moved from c.CPU_g and fixed for ROS 3.71
+*  2000.06.07 3.06 JB/W   Fettled to ensure Castle Kinetic SDRAM is not allocated
 */
 
 #include <stdio.h>
@@ -35,7 +39,7 @@
 
    However we now have a problem with SA when RISCOS moves its heap pages but
    only flushes the data cache, not the instruction cache. Stuff goes wrong
-   at this point.
+   at this point. Workaround for this to turn the data cache off whilst allocating RAM.
 */
 
 /* Changes from RJW:
@@ -49,6 +53,8 @@
    than ending up with 1 or 2 small blocks at the end of our list that could
    more easily be amalgamated.
 */
+
+#define DEBUG 0
 
 #define VRAM_EXCLUDE_SIZE (1024*1024)
 
@@ -118,6 +124,9 @@ static int   AreaNo;
 static int   AreaLogBase;  /* Logical base of area */
 
 static char *debugmsg = "<no message>";
+
+static int   SAworkaround;  /* set to 1 if StrongARM and RISCOS 3.7x detected */
+
 
 /* Memory-block tiling routines ----------------------------------- */
 
@@ -364,6 +373,10 @@ static bool ProcessFreeMem ( int first, int last )
 {
   int size;
 
+  /* if memory is in kinetic SDRAM area then don't allocate it*/
+  /*perhaps better done by bit-checking in memtable? */
+  if ( first >= 0x20000000 ) return false;
+
   if ( last < first ) return false;  /* OOPS! */
 
   /* Find block size which will take us to next
@@ -554,11 +567,15 @@ static void ShowInfo ( void  )
   for ( i=0; i<MAX_BLKS; i++)
   {
     if ( MemBlks[i].bsize != 0 )
-      printf("Base: %8X size: %8X page # %X\n",
+      printf("Base: %8Xh size: %8X page # %Xh\n",
         MemBlks[i].bbase, MemBlks[i].bsize, MemBlks[i].pageno );
   }
 
-  printf("Total memory: %X\n\n", MemSize );
+  printf("Total PC memory allocated: %Xh\n", MemSize );
+  printf("VRAM detected: %Xh at:%Xh\n", VRAMSize, VRAMBase );
+
+
+  printf("Pagesize:%Xh Memory Table entries:%Xh\n\n", PageSize, MemTblSize);
 
   printf("Dynamic area #%d\n", AreaNo );
 
@@ -567,7 +584,7 @@ static void ShowInfo ( void  )
   if ( _kernel_swi ( OS_DynamicArea, &R, &R ) )
     printf("Cannot read current area info\n");
   else
-     printf("Area logical base %X, size %X\n", R.r[3], R.r[2] );
+     printf("Area logical base %Xh, size %Xh\n", R.r[3], R.r[2] );
 
   printf("Debug message: %s\n", debugmsg );
 
@@ -575,8 +592,7 @@ static void ShowInfo ( void  )
 
 /* ------------------------------------------- */
 
-#define PAGE_FREE 0x1
-
+#if 0
 static void BodgeDynamicArea ( char *table, int pgsize, int area )
 {
   _kernel_swi_regs R;
@@ -630,8 +646,10 @@ static void BodgeDynamicArea ( char *table, int pgsize, int area )
   }
 
 }
-
+#endif
 /* ------------------------------------------- */
+#define PAGE_FREE 0x1
+
 static _kernel_oserror *AllocPages ( int totsize )
 {
   _kernel_swi_regs R;
@@ -657,7 +675,6 @@ static _kernel_oserror *AllocPages ( int totsize )
   freestart = -1;
 
   /*!!printf("Scanning memory...\n");*/
-  /*SYS_BannerText("Scanning memory");*/
   for ( i=0; i < MemTblSize; i++ )
   {
     if ( i & 1 )
@@ -679,13 +696,16 @@ static _kernel_oserror *AllocPages ( int totsize )
       freestart = -1;
     }
   }
+  if ( freestart >= 0 ) /* free DRAM all the way to end of table */
+  {
+      ProcessFreeMem ( freestart * PageSize, i*PageSize - 1 );
+  }
+
   /*!!printf("Optimising Blocks...\n");*/
-  /*SYS_BannerText("Optimising blocks");*/
 
   OptimiseBlocks();
 
   /*!!printf("Sorting Blocks...\n");*/
-  /*SYS_BannerText("Sorting blocks");*/
   SortBlocks();
 
   /*!!printf("CurrentMemSize...\n");*/
@@ -725,10 +745,15 @@ static _kernel_oserror * SetMemSize ( int size )
   the ROM moves the page it uses info from the pysical address rather than the
   logical address which is now out of date, and things go wrong...*/
 
-  /*!!printf("changing dyn area by %x\n", size);*/
+  #if DEBUG
+  printf("SetMemSize:changing dyn area by %x\n", size);
+  #endif
   err =  _kernel_swi ( OS_ChangeDynamicArea, &R, &R );
   if ( err != NULL )
+  {
+    debugmsg = "unable to shrink/grow dynamic area";
     return err;
+  }
 
   return NULL;
 }
@@ -768,10 +793,12 @@ static _kernel_oserror *SetAreaCacheable ( int base, int size, int code )
   struct pblk p;
   _kernel_swi_regs R;
   _kernel_oserror *err;
-
+  #if DEBUG
+  printf("Setting area %scacheable: From %x, size:%x\n",((code==SET_NONCACHEABLE)?"non":""),base,size);/*!!*/
+  #endif
   for ( i=0; i < size; i += PageSize )
   {
-/*!!*/
+    /*!!*/
     p.logaddr = base + i;
     R.r[0] = CVT_FROM_LOGADDR | code;
     R.r[1] = (int) &p;
@@ -779,10 +806,13 @@ static _kernel_oserror *SetAreaCacheable ( int base, int size, int code )
 
     err = _kernel_swi ( OS_Memory, &R, &R );
     if ( err != NULL )
-      {
-      /*!!printf("RelAddr:%x\nAbsAddr:%x",i,base+i);!!*/
+    {
+      #if DEBUG
+      printf("Error at: RelAddr:%x, AbsAddr:%x\n",i,base+i);
+      #endif
       return err;
-      }
+    }
+
   }
 
   return NULL;
@@ -869,59 +899,113 @@ static _kernel_oserror *AddVRAMBlock(void )
   return NULL;
 }
 
+
+
+/* Function to do the guts of PCMEM_SetMem -
+ separated off to make it easy to turn strongARM data cache off around it */
+
+static _kernel_oserror *Do_PCMem_SetMem (_kernel_swi_regs *R)
+{
+  _kernel_oserror *err;
+  int             includevram_flag = 0;
+
+  /* Release non-cacheable bits on pages */
+  if ( MemSize > 0 )
+    SetAreaCacheable ( AreaLogBase, MemSize, SET_CACHEABLE );
+
+  includevram_flag = R->r[1];
+
+  /* R0 = # of bytes */
+  /*!!printf("Seting memory size to zero\n");*/
+  err = SetMemSize ( 0 );  /* Shrink area to zero size, free pages */
+  if ( R->r[0] == 0 ) /* No dynamic area set up */
+  {
+    MemSize = 0;
+    return NULL;
+  }
+
+  if ( err != NULL )
+    return err;
+
+  /* Allocate pages */
+  if (includevram_flag)
+  {
+    #if DEBUG
+    printf("Allocating memory, excluding VRAM\n");
+    #endif
+    err = AllocPages ( R->r[0] - VRAMSize );
+  }
+  else
+  {
+    /*!!printf("Allocating memory\n");*/
+    err = AllocPages ( R->r[0] );
+  }
+  if ( err != NULL )
+    return err;
+  #if DEBUG
+  printf("Allocated Pages for: %Xh\n", MemSize);
+  #endif
+  /* Now add the VRAM to the end of the block list */
+  if (includevram_flag)
+  {
+    #if DEBUG
+    printf("Allocating VRAM\n");
+    #endif
+    err = AddVRAMBlock();
+  }
+  if ( err != NULL )
+    return err;
+
+  #if DEBUG
+  printf("Growing mem\n");
+  #endif
+  err = GrowMemToSize(); /* Create area again */
+  if ( err != NULL )
+    return err;
+
+  #if DEBUG
+  printf("Setting noncacheable\n");
+  #endif
+  err = SetAreaCacheable (AreaLogBase, MemSize, SET_NONCACHEABLE);
+
+  R->r[0] = VRAMSize; /* Tell !PC the VRAM size so it knows by how
+                         much to lie to the BIOS */
+  return err;
+}
+
+
+/* Do OSCLI command */
+
+static void OScommand ( char * command )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+    R.r[0] = (int) command ;
+    err = _kernel_swi ( OS_CLI, &R, &R );
+}
+
 /* Main dispatch routine --------------------------- */
 
 extern _kernel_oserror *PCMem_SWI (int SWIno, _kernel_swi_regs *R, void *pw )
 {
   _kernel_oserror *err;
-  int             includevram_flag = 0;
+
+  #define SADataCacheOff "cache iw"
+  #define SADataCacheOn  "cache idw"
 
   NotUsed(pw);
 
   switch (SWIno+PCMEM_SWIBASE)
   {
     case PCMem_SetMem:
-      /* Release non-cacheable bits on pages */
-      if ( MemSize > 0 )
-        SetAreaCacheable ( AreaLogBase, MemSize, SET_CACHEABLE );
+      if (SAworkaround) OScommand (SADataCacheOff);
 
-      includevram_flag = R->r[1];
+      err = Do_PCMem_SetMem(R);
 
-      /* R0 = # of bytes */
-      SetMemSize ( 0 );  /* Shrink area to zero size, free pages */
-      if ( R->r[0] == 0 )
-      {
-        MemSize = 0;
-        return NULL;
-      }
+      if (SAworkaround) OScommand (SADataCacheOn);
 
-      /* Allocate pages */
-      if (includevram_flag)
-        err = AllocPages ( R->r[0] - VRAMSize );
-      else
-        err = AllocPages ( R->r[0] );
-      if ( err != NULL )
-        return err;
-
-      /* Now add the VRAM to the end of the block list */
-      if (includevram_flag)
-        err = AddVRAMBlock();
-      if ( err != NULL )
-        return err;
-
-      /*!!printf("Growing mem\n");*/
-      err = GrowMemToSize(); /* Create area again */
-      if ( err != NULL )
-        return err;
-
-      /*!!printf("Setting cacheable\n");*/
-      err = SetAreaCacheable (AreaLogBase, MemSize, SET_NONCACHEABLE);
-      /*!!printf("setareacacheable returned\n");*/
-      R->r[0] = VRAMSize; /* Tell !PC the VRAM size so it knows by how
-                             much to lie to the BIOS */
       return err;
-      /* we should never get here */
-      break;
 
     case PCMem_FillPTE:  /* Fills in page-table entries */
       /* This is called by the PreGrow routine when it is asked
@@ -989,6 +1073,44 @@ static void shutdown(void)
 }
 
 
+/* test for presence of StrongARM */
+
+static int CheckForSA()
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  R.r[0] = 0;
+  err = _kernel_swi ( 0x6D /*OS_PlatformFeatures*/, &R, &R );
+  /* SA present if SWI recognised & bits 0-4 set - but ROS 3.71 returns 1B instead!*/
+  if ( (err == NULL) && ((R.r[0] & 0x1B) == 0x1B) )
+  {
+    return 1;
+  }
+  else
+
+  return 0;
+
+}
+
+static int GuessRISCOSversion() /* returns 3 for RISCOS 3, 4 for ROS 4 */
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = 129;
+  R.r[1] = 0;
+  R.r[2] = 255;
+  _kernel_swi ( OS_Byte, &R, &R );
+
+  if ( R.r[1] >= 0xA8 )
+    return 4;
+  if ( R.r[1] >= 0xA3 )
+    return 3;
+
+  return 2;
+}
+
+
 /* init() *********************************************************** */
 
 
@@ -1006,22 +1128,44 @@ extern _kernel_oserror *init ( char *cmd_tail, int podule_base, int pw )
   NotUsed(cmd_tail);
   NotUsed(podule_base);
 
+  if ( CheckForSA() && GuessRISCOSversion() == 3 )
+  {
+    SAworkaround = 1;
+    debugmsg = "StrongARM+RISCOS 3.7 detected - cache-control operating";
+  }
+
   R.r[0] = 6;  /* Get mem-table size */
   if ( _kernel_swi ( OS_Memory, &R, &R ) != NULL )
   {
-    printf("OSMemory 6 barfed!\n");
     return &ErrorBlk;
   }
 
   size = R.r[1];
   PageSize = R.r[2];
+  /* Bodge to workaround ROS 4 bug in OS_Memory 7 */
+  /* for ROS 4 need to use &28000 bytes instead of the reported &10000
+  in case 256Mb RAM present */
+
+  if (size <= 0x10000) /*allow for later hardware having bigger RAM */
+  {
+    /* OSmodule20 = enumrate module number r[1]: 0 is utilitymodule */
+    R.r[0]=20;
+    R.r[1]=0;
+    R.r[2]=-1;
+    if ( _kernel_swi ( OS_Module, &R, &R ) != NULL )
+    {
+      return &ErrorBlk;
+    }
+    /* top 16 bits are major version number */
+    if ((R.r[6] >> 16) == 0x4) size = 0x28000;
+  }
+
   MemTblSize = (size << 1);
 
   MemTable = (char *) malloc(size);
 
   if ( MemTable == NULL )
   {
-    printf("Could not allocate %d bytes for table\n", size);
     return &ErrorBlk;
   }
 

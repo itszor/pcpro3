@@ -1,0 +1,1155 @@
+;************************************************
+;
+;    DivaPC ARM Assembler source
+;
+;    VID.S.VGAS  - Assembler for VGA handlers
+;
+;
+;    24-01-92  INH  Original
+;    07-02-92       VGA Read16 cured
+;    01-03-92       VGA WriteMode1 cured
+;    05-03-92       VGA_Memory added, Write Mode 0 Fast 2 added
+;    25-03-92       VGAS_DrawPointer renamed, Rd8Ptr & Wr8Ptr initialised
+;    26-03-92       Mode 13 palette lookup
+;    08-06-92       VGA256 mode handlers added
+;    04-09-92       Fast Read Mode returns FF
+;    19-01-96       Extensive rewrite for v2.00
+;    26-06-96       Robin's suggestions added, VESA handlers added
+;************************************************
+
+     GET SYS.S.STDDEFS
+
+     AREA |C$$Code|, CODE, READONLY
+
+
+     ; Read Handlers for 16-colour VGA modes
+
+     EXPORT  VGAS_Read8
+     EXPORT  VGAS_ReadEOR
+     EXPORT  VGAS_ReadORR
+
+     ; Write Handlers for 16-colour VGA modes
+	; There are four main flavours of these, corresponding to VGA
+	; write modes 0-3. Write modes 0, 2 and 3 also have 'GrOp'
+	; variants, for use when a graphics operation code is specified.
+	; The GrOp routines need to do either an AND, OR or XOR between the
+	; CPU data D and the latch data L. This is programmed via the
+        ; two variables Sa and So, which are either all ones or all zeros.
+
+	; The GrOp routines calculate
+	; D' := (D & L & Sa) ^ ((D | L) & So)
+	; When Sa = 1 and So = 0, this is the AND function. When Sa = 0 and
+	; So = 1, this is the OR function. When Sa = 1 and So = 1, this is
+	; the XOR function.
+
+
+     EXPORT  VGAS_Wm0Write8
+     EXPORT  VGAS_GrOp_Wm0Write8
+
+     EXPORT  VGAS_Wm1Write8
+
+     EXPORT  VGAS_Wm2Write8
+     EXPORT  VGAS_GrOp_Wm2Write8
+     EXPORT  VGAS_Wm3Write8
+     EXPORT  VGAS_GrOp_Wm3Write8
+
+     EXPORT  VGAS_GrOp_Sa
+     EXPORT  VGAS_GrOp_So
+
+     ; Plotting variables
+
+     EXPORT  VGAS_SetResMask
+     EXPORT  VGAS_8to32Table
+     EXPORT  VGAS_RotateVal
+     EXPORT  VGAS_SetResValue
+     EXPORT  VGAS_BitMask
+     EXPORT  VGAS_AddrMask
+     EXPORT  VGAS_Latches
+     EXPORT  VGAS_PlaneMask
+     EXPORT  VGAS_MemoryBlk
+     EXPORT  VGAS_DisplayStart
+     EXPORT  VGAS_DisplayLength
+     EXPORT  VGAS_DrawPointer
+
+
+     EXPORT  VGAS_VGAOddEvenRead8
+     EXPORT  VGAS_VGAOddEvenWrite8
+     EXPORT  VGAS_ConvertToByte
+     EXPORT  VGAS_ConvertToInterleaved
+
+     ; 'Byte' mode handlers
+
+     EXPORT  VGAS_OddEvenRead8
+     EXPORT  VGAS_OddEvenRead16
+     EXPORT  VGAS_Chain4Read8
+     EXPORT  VGAS_Chain4Read16
+     EXPORT  VGAS_ByteModeRead8
+
+     EXPORT  VGAS_ByteReadEOR
+     EXPORT  VGAS_ByteReadORR
+     EXPORT  VGAS_AddrMask2
+     EXPORT  VGAS_MemoryBlk2
+     EXPORT  VGAS_BytePlaneMask
+     EXPORT  VGAS_256ClrXlate
+
+     EXPORT  VGAS_256ClrWm0Write8
+     EXPORT  VGAS_256ClrWm1Write8
+     EXPORT  VGAS_256ClrChain4Write8
+     EXPORT  VGAS_256ClrChain4Write16
+     EXPORT  VGAS_256ClrOddEvenWrite8
+
+     EXPORT  VGAS_256ClrNXWm0Write8
+     EXPORT  VGAS_256ClrNXWm1Write8
+     EXPORT  VGAS_256ClrNXChain4Write8
+     EXPORT  VGAS_256ClrNXChain4Write16
+
+	; VESA-related exports
+
+	EXPORT	VGAS_VESAMemOffset
+	EXPORT	VGAS_VESADrawPointer
+	EXPORT	VGAS_VESAScreenFirst
+	EXPORT	VGAS_VESAScreenLength
+
+	EXPORT	VGAS_VESARead8
+	EXPORT	VGAS_VESARead16
+	EXPORT	VGAS_VESAWrite8
+	EXPORT	VGAS_VESAWrite16
+	EXPORT	VGAS_VESAXlatWrite8
+	EXPORT	VGAS_VESAXlatWrite16
+
+
+; Memory rearrangement routines *****************************************
+
+; These are called when we change from VGA to non-VGA mode, and the
+; arrangement of memory changes from interleaved format to byte
+; format.
+
+VGAS_ConvertToInterleaved  ; Byte->Interleaved
+	STMFD	SP!, {R4-R7, LR}	; Save loads of regs
+	LDR     R0, VGAS_MemoryBlk	; R0 = Src/dest pointer
+	MOV	R1, # &10000		; R1 = word count
+	LDR	R2, VGAS_8to32Table	; R2 = translate table
+	LDR     R3, Const1111		; R3 = 1111 mask
+        MOV     R4, # &FF		; R4 = byte mask
+VGAS_CTI_Loop
+	LDR	R5, [R0]		; Get word
+	CMP	R5, #0			; Shortcut: 0 maps to 0
+	BEQ	VGAS_CTI_Zero
+        AND     R6, R4, R5		; R6 = byte 0
+        LDR     R6, [R2, R6, LSL #2]    ; R6 = expanded data
+	AND	R7, R6, R3		; R7 = plane bits, plane 0
+        AND     R6, R4, R5, LSR #8	; R6 = byte 1
+        LDR     R6, [R2, R6, LSL #2]    ; R6 = expanded data
+	AND	R6, R6, R3		; R6 = plane bits
+	ORR	R7, R7, R6, LSL #1	; R7 = plane0+1 bits
+        AND     R6, R4, R5, LSR #16	; R6 = byte 2
+        LDR     R6, [R2, R6, LSL #2]    ; R6 = expanded data
+	AND	R6, R6, R3		; R6 = plane bits
+	ORR	R7, R7, R6, LSL #2	; R7 = plane0+1+2 bits
+        AND     R6, R4, R5, LSR #24	; R6 = byte 3
+        LDR     R6, [R2, R6, LSL #2]    ; R6 = expanded data
+	AND	R6, R6, R3		; R6 = plane bits
+	ORR	R5, R7, R6, LSL #3	; R5 = plane0+1+2+3 bits
+VGAS_CTI_Zero
+	STR	R5, [R0], #4		; Store data, move on
+	SUBS	R1, R1, #1
+	BNE	VGAS_CTI_Loop		; Loop
+	LDMFD	SP!, {R4-R7, PC}^
+
+VGAS_ConvertToByte  ; Interleaved->Byte
+	STMFD	SP!, {R4-R5, LR}	; Save loads of regs
+	LDR     R0, VGAS_MemoryBlk	; R0 = Src/dest pointer
+	MOV	R1, # &10000		; R1 = word count
+	LDR     R2, Const4444		; R2 = 4444 mask
+
+VGAS_CTB_Loop
+	LDR	R3, [R0]		; R3 = source word
+	CMP	R3, #0			; Shortcut - skip zeros
+	ADDEQ	R0, R0, #4
+	BEQ	VGAS_CTB_Zero
+
+	AND	R4, R2, R3, LSL #2	; Plane 0 bits into R4
+        ORR     R4, R4, R4, LSL #5  ; R4=ba00cb00 dc00ed00 fe00gf00 hg000h00
+	ORR	R4, R4, R4, LSR #10 ; R4=ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+	AND	R5, R4, # &00F00000 ; R5=00000000 dcba0000 00000000 00000000
+	AND	R4, R4, # &000000F0 ; R4=00000000 00000000 00000000 hgfe0000
+	ORR	R4, R4, R5, LSR #20 ; R4=00000000 00000000 00000000 hgfedcba
+	STRB	R4, [R0], #1		; Store plane 0, move on
+	AND	R4, R2, R3, LSL #1	; Plane 1 bits into R4
+        ORR     R4, R4, R4, LSL #5  ; R4=ba00cb00 dc00ed00 fe00gf00 hg000h00
+	ORR	R4, R4, R4, LSR #10 ; R4=ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+	AND	R5, R4, # &00F00000 ; R5=00000000 dcba0000 00000000 00000000
+	AND	R4, R4, # &000000F0 ; R4=00000000 00000000 00000000 hgfe0000
+	ORR	R4, R4, R5, LSR #20 ; R4=00000000 00000000 00000000 hgfedcba
+	STRB	R4, [R0], #1		; Store plane 1, move on
+	AND	R4, R2, R3		; Plane 2 bits into R4
+        ORR     R4, R4, R4, LSL #5  ; R4=ba00cb00 dc00ed00 fe00gf00 hg000h00
+	ORR	R4, R4, R4, LSR #10 ; R4=ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+	AND	R5, R4, # &00F00000 ; R5=00000000 dcba0000 00000000 00000000
+	AND	R4, R4, # &000000F0 ; R4=00000000 00000000 00000000 hgfe0000
+	ORR	R4, R4, R5, LSR #20 ; R4=00000000 00000000 00000000 hgfedcba
+	STRB	R4, [R0], #1		; Store plane 2, move on
+	AND	R4, R2, R3, LSR #1	; Plane 3 bits into R4
+        ORR     R4, R4, R4, LSL #5  ; R4=ba00cb00 dc00ed00 fe00gf00 hg000h00
+	ORR	R4, R4, R4, LSR #10 ; R4=ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+	AND	R5, R4, # &00F00000 ; R5=00000000 dcba0000 00000000 00000000
+	AND	R4, R4, # &000000F0 ; R4=00000000 00000000 00000000 hgfe0000
+	ORR	R4, R4, R5, LSR #20 ; R4=00000000 00000000 00000000 hgfedcba
+	STRB	R4, [R0], #1		; Store plane 0, move on
+VGAS_CTB_Zero
+	SUBS	R1, R1, #1
+	BNE	VGAS_CTB_Loop
+	LDMFD	SP!, {R4-R5, PC}^
+
+ ; Main VGA Handlers *****************************************************
+
+     ; The read and write handlers below form the basis of all the other
+     ; VGA modes. In general, only 8-bit operations are meaningful: the
+     ; 16 bit ones use the generic handlers in VID.S.VIDS
+
+
+
+     ; VGA Read Handlers *****************************************
+
+     ; The result returned by a VGA read handler is calculated as follows:
+
+     ; 32 bits (8 pixels * 4 bits) of data from the relevant screen location
+     ; is read. Each 4-bit pixel is compared by EORing it with VGAS_ReadEOR
+     ; and the ORRing with VGAS_ReadORR. The result will be 1111b if
+     ; a 'match' has occurred: if so, the corresponding bit in the result
+     ; will be set. Note that ARM data bits 0..3 corresponds to PC bit 7,
+     ; bits 4..7 to PC bit 6, and so on.
+
+     ; The "VGA latches" are also loaded by a read: often this is the only
+     ; purpose of doing a read; the actual data returned is ignored. In such
+     ; a case we can use the 'fast' Read8 routine.
+
+     ; Read data variables
+     ALIGN 16
+
+VGAS_ReadEOR	DCD 0
+VGAS_ReadORR	DCD 0
+VGAS_Mask4444	DCD  &44444444
+
+     ; 'Full' Read8 handler ******************
+
+VGAS_Read8 ; Enter R0 = address
+
+     LDR    R2, VGAS_AddrMask
+     AND    R0, R2, R0, LSL #2
+     LDR    R2, VGAS_MemoryBlk
+
+     LDR    R0, [R2, R0]          ; Read pixel data into R0
+     STR    R0, VGAS_Latches      ; Save in 'latches' for future write op
+
+     ADR    R1, VGAS_ReadEOR
+     LDMIA  R1, {R1-R3}           ; R1=ReadEOR, R2=ReadORR, R3=44444444h
+
+     EOR    R0, R0, R1            ; Do Colour Compare
+     ORR    R0, R0, R2            ; Mask in 'don't care' bits
+     AND    R0, R0, R0, LSR #1    ; bit0 = bit0 AND bit1
+                                  ; bit2 = bit2 AND bit3
+                                  ; ditto bits 4, 6, 8..30
+
+     AND    R0, R0, R0, LSR #2    ; bit0 = bit0 AND bit1 AND bit2 AND bit3
+                                  ; ditto bits 4, 8 ..28
+
+     AND    R0, R3, R0, LSL #2    ; R0 now contains, in binary
+                                  ; 0a000b00 0c000d00 0e000f00 0g000h00
+                                  ; where a..h are 1 if corresponding pixels
+                                  ; match. This will eventually give a
+                                  ; PC result of  hgfedcba.
+
+     ORR    R0, R0, R0, LSL #5    ; R0 = ba00cb00 dc00ed00 fe00gf00 hg000h00
+     ORR    R0, R0, R0, LSR #10   ; R0 = ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+     AND    R2, R0, # &00F00000   ; R2 = 00000000 dcba0000 00000000 00000000
+     AND    R0, R0, # &000000F0   ; R0 = 00000000 00000000 00000000 hgfe0000
+     ORR    R0, R0, R2, LSR #20   ; R0 = 00000000 00000000 00000000 hgfedcba
+     MOVS   PC, LR
+
+
+
+     ; VGA Write8 Handlers *****************************************
+
+
+     ; Write Mode 0 *********************************
+
+VGAS_Wm0Write8	; Enter with R0 = address, R1 = data
+		; No Graphics ops
+
+     STMFD   SP!, {R4,R5,R6,LR}
+
+     ADR     R12, VGAS_SetResMask
+     LDMIA   R12!, { R2, R3, R4, R5 } ; R2 = SetResMask
+                                     ; R3 = 8to32Table
+                                     ; R4 = RotateVal
+                                     ; R5 = SetResValue
+
+     LDR     R1, [R3, R1, LSL #2]    ; Expand write data
+     BIC     R1, R1, R2              ; Mask off bits to be set/reset
+     AND     R5, R5, R2
+     ORR     R1, R5, R1, ROR R4      ; & set/reset appropriate bits
+
+     LDMIA   R12!, { R2, R3, R4, R5 } ; R2 = Bit Mask
+                                     ; R3 = PC Address mask
+                                     ; R4 = Latches value
+                                     ; R5 = Plane Mask
+
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R1, R2              ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; R1 = graphics result
+
+     AND     R0, R3, R0, LSL #2      ; R0 = frame buffer offset
+                                     ; (R1=CPU data, R5 = plane mask)
+     LDMIA   R12, {R2, R3, R4, R6}   ; R2 = Memory pointer
+                                     ; R3 = Display Start
+                                     ; R4 = Display Length
+				     ; R6 = Draw pointer
+     LDR     R12, [R2, R0]           ; Get memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3              ; Get offset from display start
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]            ; Write to screen if so
+
+     LDMFD   SP!, {R4,R5,R6,PC}^
+
+     ; -----------------
+
+VGAS_GrOp_Wm0Write8	; Enter with R0 = address, R1 = data
+		; AND/OR/XOR graphics ops
+
+     STMFD   SP!, {R4,R5,R6,LR}
+
+     ADR     R12, VGAS_SetResMask
+     LDMIA   R12!, { R2, R3, R4, R5 } ; R2 = SetResMask
+                                     ; R3 = 8to32Table
+                                     ; R4 = RotateVal
+                                     ; R5 = SetResValue
+
+     LDR     R1, [R3, R1, LSL #2]    ; Expand write data
+     BIC     R1, R1, R2              ; Mask off bits to be set/reset
+     AND     R5, R5, R2
+     ORR     R1, R5, R1, ROR R4      ; & set/reset appropriate bits
+
+     LDMIA   R12!, { R2, R3, R4, R5 } ; R2 = Bit Mask
+                                     ; R3 = PC Address mask
+                                     ; R4 = Latches value
+                                     ; R5 = Plane Mask
+
+     AND     R0, R3, R0, LSL #2      ; R0 = frame buffer offset, free up R3
+
+     LDR     R6, VGAS_GrOp_So
+     ORR     R3, R1, R4			; R3 = D | L
+     AND     R3, R3, R6			; R3 = (D | L) & So
+     LDR     R6, VGAS_GrOp_Sa
+     AND     R1, R1, R4                 ; R1 = D & L
+     AND     R1, R1, R6			; R1 = (D & L) & Sa
+     EOR     R1, R1, R3                 ; R1 = composite CPU data
+
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R1, R2              ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; R1 = graphics result
+
+                                     ; (R1=CPU data, R5 = plane mask)
+     LDMIA   R12, {R2, R3, R4, R6}   ; R2 = Memory pointer
+                                     ; R3 = Display Start
+                                     ; R4 = Display Length
+				     ; R6 = Draw pointer
+     LDR     R12, [R2, R0]           ; Get memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3              ; Get offset from display start
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]            ; Write to screen if so
+
+     LDMFD   SP!, {R4,R5,R6,PC}^
+
+     ; Write Mode 1 handler ****************************
+
+VGAS_Wm1Write8 ; Enter with R0 = address, R1 = data
+               ; Data is ignored, however; we simply write data from
+               ; the VGA latches to the current screen address, taking
+               ; account of the Plane Mask.
+
+
+     ADR     R1, VGAS_AddrMask
+     LDMIA   R1, { R1, R2, R3, R12 } ; R1 = Address mask value
+                                     ; R2 = Latches value
+                                     ; R3 = PlaneMask value
+                                     ; R12 = memory pointer
+
+     AND     R0, R1, R0, LSL #2      ; R0 = frame buffer offset
+     LDR     R1, [R12, R0]          ; R1= memory data
+     AND     R2, R2, R3              ; '1' in plane mask = latch data
+     BIC     R1, R1, R3              ; '0' in plane mask = memory data
+     ORR     R1, R1, R2              ; R1 = composite data
+     STR     R1, [R12, R0]           ; Put back in memory
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}        ; R2 = DisplayStart
+                                     ; R3 = DisplayLength
+                                     ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                  ; Check it's in range
+     STRLO   R1, [R12, R0]            ; & write to screen
+     MOVS    PC, LR
+
+     ; Write Mode 2 Handler *************************************
+
+VGAS_Wm2Write8 ; Enter with R0 = address, R1 = data
+               ; No graphics ops
+
+     STMFD   SP!, {R4, R5, R6, LR}
+
+     AND     R1, R1, # &F         ; This time, data bits 0..3 are colour
+     ORR     R1, R1, R1, LSL # 4  ; Duplicate into all bit positions
+     ORR     R1, R1, R1, LSL # 8
+     ORR     R1, R1, R1, LSL # 16
+
+     ADR     R2,  VGAS_BitMask
+     LDMIA   R2, { R2, R3, R4, R5 }  ; R2 = Bit Mask
+                                     ; R3 = AddressMask
+                                     ; R4 = Latches value
+                                     ; R5 = PlaneMask value
+
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R1, R2              ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; R1 = graphics result
+
+     AND     R0, R3, R0, LSL #2      ; R0 = frame buffer offset
+
+     ADR     R2, VGAS_MemoryBlk
+     LDMIA   R2, {R2, R3, R4, R6}    ; R2 = MemoryBlock
+				     ; R3 = DisplayStart
+				     ; R4 = DisplayLength
+				     ; R5 = plane mask
+				     ; R6 = DrawPointer
+
+     LDR     R12, [R2, R0]           ; Get memory data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]	     ; If so, write to screen
+
+     LDMFD   SP!, {R4, R5, R6, PC}^
+
+     ; -----------------
+
+VGAS_GrOp_Wm2Write8 ; Enter with R0 = address, R1 = data
+                    ; AND/OR/XOR graphics ops
+
+     STMFD   SP!, {R4, R5, R6, LR}
+
+     AND     R1, R1, # &F         ; This time, data bits 0..3 are colour
+     ORR     R1, R1, R1, LSL # 4  ; Duplicate into all bit positions
+     ORR     R1, R1, R1, LSL # 8
+     ORR     R1, R1, R1, LSL # 16
+
+     ADR     R2,  VGAS_BitMask
+     LDMIA   R2, { R2, R3, R4, R5 }  ; R2 = Bit Mask
+                                     ; R3 = AddressMask
+                                     ; R4 = Latches value
+                                     ; R5 = PlaneMask value
+
+     AND     R0, R3, R0, LSL #2      ; R0 = frame buffer offset, free R3
+
+     LDR     R6, VGAS_GrOp_So
+     ORR     R3, R1, R4			; R3 = D | L
+     AND     R3, R3, R6			; R3 = (D | L) & So
+     LDR     R6, VGAS_GrOp_Sa
+     AND     R1, R1, R4                 ; R1 = D & L
+     AND     R1, R1, R6			; R1 = (D & L) & Sa
+     EOR     R1, R1, R3                 ; R1 = composite CPU data
+
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R1, R2              ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; R1 = graphics result
+
+
+     ADR     R2, VGAS_MemoryBlk
+     LDMIA   R2, {R2, R3, R4, R6}    ; R2 = MemoryBlock
+				     ; R3 = DisplayStart
+				     ; R4 = DisplayLength
+				     ; R5 = plane mask
+				     ; R6 = DrawPointer
+
+     LDR     R12, [R2, R0]           ; Get memory data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]	     ; If so, write to screen
+
+     LDMFD   SP!, {R4, R5, R6, PC}^
+
+     ; Write Mode 3 *******************
+
+     ; Hooray! IBM getting something right for once. Write Mode 3
+     ; is in fact really useful. (But nobody uses it, of course).
+
+
+VGAS_Wm3Write8 ; Enter with R0 = address, R1 = data
+               ; No graphics ops
+
+     STMFD   SP!, {R4,R5,R6,LR}
+
+     ADR     R2, VGAS_8to32Table
+     LDMIA   R2!, {R3, R6, R12}      ; R3 = 8to32Table
+                                     ; R6 = RotateVal
+                                     ; R12 = SetResValue = colour for op
+
+     LDR     R1, [R3, R1, LSL #2]    ; R1 = Expanded write data
+
+
+     LDMIA   R2, { R2, R3, R4, R5 }  ; R2 = Bit Mask
+                                     ; R3 = Address mask
+                                     ; R4 = Latches value
+                                     ; R5 = Plane Mask
+     AND     R2, R2, R1, ROR R6      ; AND CPU data into bitmask
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R12, R2             ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; Get CPU data
+
+     AND     R0, R3, R0, LSL #2      ; R0 = buffer offset, R1 = data,
+				     ; R5 = plane mask
+
+     ADR     R2, VGAS_MemoryBlk
+     LDMIA   R2, {R2, R3, R4, R6}    ; R2 = Memory Pointer
+				     ; R3 = DisplayStart
+				     ; R4 = DisplayLength
+				     ; R6 = DrawPointer
+
+     LDR     R12, [R2, R0]           ; Get memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3              ; Get display start offset
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]
+
+     LDMFD   SP!, {R4, R5, R6, PC}^
+
+     ; ---------------
+
+VGAS_GrOp_Wm3Write8 ; Enter with R0 = address, R1 = data
+               ; AND/OR/XOR graphics ops
+
+     STMFD   SP!, {R4,R5,R6,LR}
+
+     ADR     R2, VGAS_8to32Table
+     LDMIA   R2!, {R3, R6, R12}      ; R3 = 8to32Table
+                                     ; R6 = RotateVal
+                                     ; R12 = SetResValue = colour for op
+
+     LDR     R1, [R3, R1, LSL #2]    ; R1 = Expanded write data
+
+
+     LDMIA   R2, { R2, R3, R4, R5 }  ; R2 = Bit Mask
+                                     ; R3 = Address mask
+                                     ; R4 = Latches value
+                                     ; R5 = Plane Mask
+
+     AND     R0, R3, R0, LSL #2      ; R0 = buffer offset, free up R3
+
+     AND     R2, R2, R1, ROR R6      ; AND CPU data into bitmask
+
+     LDR     R6, VGAS_GrOp_So
+     ORR     R3, R12, R4		; R3 = D | L
+     AND     R3, R3, R6			; R3 = (D | L) & So
+     LDR     R6, VGAS_GrOp_Sa
+     AND     R1, R12, R4		; R1 = D & L
+     AND     R1, R1, R6			; R1 = (D & L) & Sa
+     EOR     R1, R1, R3                 ; R1 = composite CPU data
+
+     BIC     R4, R4, R2              ; '0' in bit mask = latch data
+     AND     R1, R1, R2              ; '1' in bit mask = CPU data
+     ORR     R1, R1, R4              ; R1 = data, R5 = plane mask
+
+     ADR     R2, VGAS_MemoryBlk
+     LDMIA   R2, {R2, R3, R4, R6}    ; R2 = Memory Pointer
+				     ; R3 = DisplayStart
+				     ; R4 = DisplayLength
+				     ; R6 = DrawPointer
+
+     LDR     R12, [R2, R0]           ; Get memory data
+     AND     R1,  R1,  R5            ; '1' in plane mask = CPU data
+     BIC     R12, R12, R5            ; '0' in plane mask = memory data
+     ORR     R1,  R1,  R12
+     STR     R1,  [R2, R0]           ; Put back in memory
+
+     SUB     R0, R0, R3              ; Get display start offset
+     CMP     R0, R4                  ; Check it's in range
+     STRLO   R1, [R6, R0]
+
+     LDMFD   SP!, {R4, R5, R6, PC}^
+
+
+     ; VGA Variables **********************************************
+
+     ; Plotting variables: DO NOT ALTER THE ORDERING OF THESE!
+
+     ALIGN 16   ; For fast LDMIA's
+
+VGAS_SetResMask      DCD  0      ; in R2
+VGAS_8to32Table      DCD  0      ; in R3
+VGAS_RotateVal       DCD  0      ; in R4
+VGAS_SetResValue     DCD  0      ; in R5
+
+VGAS_BitMask         DCD  0      ; in R2
+VGAS_AddrMask        DCD  0      ; in R3
+VGAS_Latches         DCD  0      ; in R4
+VGAS_PlaneMask       DCD  0      ; in R5
+
+VGAS_MemoryBlk       DCD  0      ; in R2 - Pointer to copy of VGA memory
+VGAS_DisplayStart    DCD  0      ; in R3 - Offset in bytes of screen start in
+				 ; frame buffer
+VGAS_DisplayLength   DCD  0      ; in R4 - Length of screen in bytes
+VGAS_DrawPointer     DCD  0      ; in R6 - Pointer to the real screen
+
+VGAS_GrOp_So	DCD 0		; GrOp routine OR mask
+VGAS_GrOp_Sa	DCD 0		; GrOp routine AND mask
+
+
+; VGA Odd/Even handlers ************************************************
+
+; These are used when the memory is in 'interleaved' (VGA) format, and
+; odd/even mode is set. The Windows 3.1 VGA grabber uses this format to
+; save memory in text modes (why? you may well ask).
+
+VGAS_VGAOddEvenRead8
+        ; Even PC addresses read plane 0, odd ones read plane 1
+	LDR	R1, VGAS_AddrMask
+	AND	R1, R1, R0, LSL #2      ; R1 = frame buf offset
+        BIC     R1, R1, #4              ; Force even word.
+        LDR     R2, VGAS_MemoryBlk      ; R2->Memory
+        LDR     R1, [R2, R1]            ; R1 = data word
+
+        LDR     R2, Const4444           ; R2 = 010001000100 etc.
+        TST     R0, #1			; Was PC address even?
+        ANDEQ   R0, R2, R1, LSL #2      ; If so, read plane 0 data
+        ANDNE   R0, R2, R1, LSL #1      ; Else, read plane 1 data
+
+        ; R0 now contains 0a000b00 0c000d00 0e000f00 0g000h00
+     ORR    R0, R0, R0, LSL #5    ; R0 = ba00cb00 dc00ed00 fe00gf00 hg000h00
+     ORR    R0, R0, R0, LSR #10   ; R0 = ba00cb00 dcbaedcb fedcgfed hgfe0hgf
+     AND    R2, R0, # &00F00000   ; R2 = 00000000 dcba0000 00000000 00000000
+     AND    R0, R0, # &000000F0   ; R0 = 00000000 00000000 00000000 hgfe0000
+     ORR    R0, R0, R2, LSR #20   ; R0 = 00000000 00000000 00000000 hgfedcba
+     MOVS   PC, LR
+
+Const4444 DCD &44444444
+
+
+VGAS_VGAOddEvenWrite8
+	; Even PC addresses write plane 0, odd ones write plane 1
+	; This is here for completeness. Windows doesn't use it.
+        ; Even PC addresses read plane 0, odd ones read plane 1
+	LDR	R2, VGAS_8to32Table
+        LDR     R1, [R2, R1, LSL #2]    ; R1 = expanded write data
+
+        LDR     R2, Const1111           ; R2 = plane mask
+        TST     R0, #1                  ; Is it even?
+        MOVNE   R2, R2, LSL #1          ; If so, make mask 22222222
+
+	LDR	R3, VGAS_AddrMask
+	AND	R0, R3, R0, LSL #2      ; R0 = frame buf offset
+        BIC     R0, R0, #4              ; Force even word.
+
+        LDR     R3, VGAS_MemoryBlk
+        ADD     R3, R3, R0              ; R3->memory word
+        LDR     R0, [R3]                ; R1 = data word
+        BIC     R0, R0, R2              ; Mask off old data
+        AND     R1, R1, R2              ; Mask in new data
+        ORR     R0, R0, R1
+        STR     R1, [R3]		; Put it back
+	MOVS	PC, LR
+
+Const1111 DCD &11111111
+
+
+; 'Byte' mode read handlers *********************************************
+
+     ; These are for use when in text or 256-colour modes (video memory
+     ; is organised as one-byte-per-plane for both of these, so we can
+     ; use the same set of handlers). There are basically three variants
+     ;
+     ; 'normal' (like VGA reading. Can use read mode 0 or 1)
+     ; 'odd/even' (the default for text modes. Even PC addresses read
+     ;               plane 0, odd ones read plane 1)
+     ; 'chain4' (for mode 13h. The LS 2 bits of the PC address select
+     ;               planes 0..3)
+
+
+; Odd/Even read (standard for text modes) -------------------
+;
+; Given PC address in R0
+; returns data in R0
+; may trash R0-R3
+
+VGAS_OddEvenRead8
+	LDR    R1, VGAS_AddrMask2
+	LDR    R2, VGAS_MemoryBlk2
+	AND    R0, R1, R0, LSL #2   ; Reduce to appropriate range
+	TST    R0, #4		    ; If R0 ends xxx100
+	SUBNE  R0, R0, #3           ; Make R0 end xxx001
+        LDRB   R0, [R2, R0]	    ; Get byte from RAM
+        MOVS   PC, LR
+
+VGAS_OddEvenRead16
+	LDR    R1, VGAS_AddrMask2
+	LDR    R2, VGAS_MemoryBlk2
+	AND    R0, R1, R0, LSL #2   ; Reduce to appropriate range
+        LDR    R0, [R2, R0]	    ; Get word from RAM, return
+        MOVS   PC, LR		    ; bytes 0 and 1 as significant
+
+; 'Chain4' read (standard for mode 13h) ------------------
+
+; Note we shift AddrMask down by 2 for this (to avoid having to
+;   specially set it in VID_SetMemHandlers() ).
+; Given PC address in R0
+; returns data in R0
+; may trash R0-R3
+
+VGAS_Chain4Read8
+	LDR    R1, VGAS_AddrMask2
+	LDR    R2, VGAS_MemoryBlk2
+	AND    R0, R0, R1, LSR #2   ; Reduce to appropriate range
+        LDRB   R0, [R2, R0]	    ; Get byte from RAM
+        MOVS   PC, LR
+
+VGAS_Chain4Read16
+	LDR    R1, VGAS_AddrMask2
+	LDR    R2, VGAS_MemoryBlk2
+	AND    R0, R0, R1, LSR #2   ; Reduce to appropriate range
+        LDRB   R1, [R2, R0]!	    ; Get LSB from RAM, get R2 = comp address
+        LDRB   R0, [R2, #1]         ; Get MSB from RAM
+        ORR    R0, R1, R0, LSL #8   ; Form word
+        MOVS   PC, LR
+
+; 'Normal' byte-mode read handlers ----------------------
+
+; This allows use of read modes 0 and 1. This will normally read just
+; one plane, but you never know, some people are weird. There's no
+; real point in a Read16 handler.
+
+VGAS_ByteModeRead8
+	ADR    R1, VGAS_ByteReadEOR
+        LDMIA  R1, {R1, R2, R3, R12}	; R1 = Read EOR value
+					; R2 = Read ORR value
+					; R3 = address mask
+					; R12 = memory block
+        AND    R0, R3, R0, LSL #2       ; R0 = frame buffer offset
+        LDR    R0, [R12, R0]            ; R0 = data
+        STR    R0, VGAS_Latches         ; For mode 1 writes
+
+        EOR    R0, R0, R1               ; Do Colour Compare
+        ORR    R0, R0, R2               ; Mask in 'don't care' bits
+                                        ; bits are '1' if the corresponding
+                                        ; plane bits match their colour
+                                        ; values - we need to AND
+                                        ; bits n, n+8, n+16 and n+24 to
+                                        ; get result bit n (n=0 to 7)
+        AND    R0, R0, R0, LSR #16      ; bit n = n & n+16, bits 16..31=0
+        AND    R0, R0, R0, LSR #8       ; bit n = (n & n+16) & (n+8 & n+24)
+                                        ; bits 7..24 = 0
+        MOVS   PC, LR
+
+VGAS_ByteReadEOR   DCD  0  ; Used to achieve read modes 0 & 1. We only
+VGAS_ByteReadORR   DCD  0  ; bother with these for 'normal' reads.
+VGAS_AddrMask2     DCD  0
+VGAS_MemoryBlk2    DCD  0
+VGAS_BytePlaneMask DCD  0
+VGAS_256ClrXlate   DCD  0
+
+; 256 Colour Byte Mode Write handlers ************************************
+
+; We currently have 3 variants of these -
+;  Chain4 mode
+;  Normal, Write mode 0
+;  Normal, Write mode 1
+;  Odd/Even mode (bizarrely; used by Windows 95 startup)
+;
+; All except the 'odd/even' ones provide "no-translation" (NX) variants,
+; which are used when a full-screen 256-colour palette is available
+
+VGAS_256ClrWm0Write8 ; ************************
+     STMFD   SP!, {R4, LR}
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3, R4, R12}	; R2 = AddrMask2
+					; R3 = MemoryBlk2
+					; R4 = BytePlaneMask
+					; R12 = 256ClrXlate
+     AND     R0, R2, R0, LSL #2		; R0 = frame buffer offset
+
+     LDRB    R2, [R12, R1]              ; R2 = translated data
+
+     ORR     R1, R1, R1, LSL #8         ; R1 = data expanded to all planes
+     ORR     R1, R1, R1, LSL #16
+
+     LDR     R12, [R3, R0]              ; Get frame buffer contents
+     BIC     R12, R12, R4               ; '0' bits in plane mask = original
+     AND     R1,  R1,  R4               ; '1' bits is mask = new data
+     ORR     R1,  R1,  R12              ; R1 = composite data
+     STR     R1, [R3, R0]               ; Put it back in frame buffer
+
+     ADR     R1, VGAS_DisplayStart
+     LDMIA   R1, {R1, R3, R12}          ; R1 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R1
+     CMP     R0, R3                     ; Is address on-screen?
+     LDMHSFD SP!, {R4, PC}^             ; If not, return
+                                        ; Else, insert translated data
+     ORR     R2, R2, R2, LSL #8
+     ORR     R2, R2, R2, LSL #16        ; R2 = translated data, expanded
+
+     LDR     R1, [R12, R0]              ; Get original data
+     BIC     R1, R1, R4                 ; R4 = plane mask still
+     AND     R2, R2, R4
+     ORR     R1, R1, R2                 ; Merge with R1
+     STR     R1, [R12, R0]              ; Put it back on screen
+     LDMFD   SP!, {R4, PC}^              ; Restore regs & exit
+
+VGAS_256ClrNXWm0Write8 ; ************************
+
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3, R12}		; R2 = AddrMask2
+					; R3 = MemoryBlk2
+					; R12 = BytePlaneMask
+     AND     R0, R2, R0, LSL #2		; R0 = frame buffer offset
+
+     ORR     R1, R1, R1, LSL #8         ; R1 = data expanded to all planes
+     ORR     R1, R1, R1, LSL #16
+
+     LDR     R2, [R3, R0] 		; Get frame buffer contents
+     BIC     R2, R2, R12 		; '0' bits in plane mask = original
+     AND     R1, R1, R12                ; '1' bits is mask = new data
+     ORR     R2,  R2, R1                ; R2 = composite data
+     STR     R2, [R3, R0]               ; Put it back in frame buffer
+
+     ADR     R1, VGAS_DisplayStart
+     LDMIA   R1, {R1, R3, R12}          ; R1 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R1                 ; R0 = screen offset
+     CMP     R0, R3                     ; Is address on-screen?
+     STRLO   R2, [R12, R0]              ; Put it back on screen
+     MOVS    PC, LR
+
+     ; ************************
+
+VGAS_256ClrWm1Write8
+     ; A number of games seem to use write mode 1
+     ; in VGA256 mode, to block-copy data around.
+
+     ; R0 = address, R1 = data(ignored)
+     ADR     R1, VGAS_AddrMask2
+     LDMIA   R1, {R1, R2, R3}	        ; R1 = AddrMask2
+					; R2 = MemoryBlk2
+					; R3 = BytePlaneMask
+     AND     R0, R1, R0, LSL #2		; R0 = frame buffer offset
+     LDR     R1, VGAS_Latches           ; R1 = data to write
+     LDR     R12, [R2, R0]              ; R12 = old data
+     BIC     R12, R12, R3
+     AND     R1, R1, R3
+     ORR     R1, R1, R12                ; Merge in to R1
+     STR     R1, [R2, R0]               ; Put in frame buffer
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     MOVHSS  PC, LR                     ; Return if not
+
+     LDR     R3, VGAS_256ClrXlate       ; Else, write data to screen
+                                     ; R1 = data aabbccdd
+     LDRB    R2, [R3, R1, LSR #24]   ; R2 = 000000AA
+     ORR     R1, R2, R1, LSL #8      ; R1 = bbccddAA
+     LDRB    R2, [R3, R1, LSR #24]   ; R2 = 000000BB
+     ORR     R1, R2, R1, LSL #8      ; R1 = ccddAABB
+     LDRB    R2, [R3, R1, LSR #24]   ; R2 = 000000CC
+     ORR     R1, R2, R1, LSL #8      ; R1 = ddAABBCC
+     LDRB    R2, [R3, R1, LSR #24]   ; R2 = 000000DD
+     ORR     R1, R2, R1, LSL #8      ; R1 = AABBCCDD
+
+     STR     R1, [R12, R0]           ; Write to screen
+     MOVS    PC, LR
+
+     ; ************************
+
+VGAS_256ClrNXWm1Write8
+     ; R0 = address, R1 = data(ignored)
+     ADR     R1, VGAS_AddrMask2
+     LDMIA   R1, {R1, R2, R3}	        ; R1 = AddrMask2
+					; R2 = MemoryBlk2
+					; R3 = BytePlaneMask
+     AND     R0, R1, R0, LSL #2		; R0 = frame buffer offset
+     LDR     R1, VGAS_Latches           ; R1 = data to write
+     LDR     R12, [R2, R0]              ; R12 = old data
+     BIC     R12, R12, R3
+     AND     R1, R1, R3
+     ORR     R1, R1, R12                ; Merge in to R1
+     STR     R1, [R2, R0]               ; Put in frame buffer
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     STRLO   R1, [R12, R0]           ; Write to screen
+     MOVS    PC, LR
+
+     ; ********************
+
+VGAS_256ClrChain4Write8
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3}	        ; R2 = AddrMask2
+					; R3 = MemoryBlk2
+     AND     R0, R0, R2, LSR #2         ; R0 = offset
+     STRB    R1, [R3, R0]               ; Store data
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     MOVHSS  PC, LR                     ; Return if not
+
+     LDR     R3, VGAS_256ClrXlate       ; Else, write data to screen
+     LDRB    R1, [R3, R1]               ; R1 = translated data
+     STRB    R1, [R12, R0]              ; Write to screen
+     MOVS    PC, LR
+     ; ------------------
+
+VGAS_256ClrNXChain4Write8
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3}	        ; R2 = AddrMask2
+					; R3 = MemoryBlk2
+     AND     R0, R0, R2, LSR #2         ; R0 = offset
+     STRB    R1, [R3, R0]               ; Store data
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     STRLOB  R1, [R12, R0]              ; Write to screen
+     MOVS    PC, LR
+
+     ; ---------------------
+
+VGAS_256ClrChain4Write16
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3}	        ; R2 = AddrMask2
+					; R3 = MemoryBlk2
+     AND     R0, R0, R2, LSR #2         ; R0 = offset
+     STRB    R1, [R3, R0]!               ; Store data LSB
+     MOV     R1, R1, ROR #8             ; Get R1 = LL0000MM
+     STRB    R1, [R3, #1]
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     MOVHSS  PC, LR                     ; Return if not
+
+     LDR     R3, VGAS_256ClrXlate       ; Else, write data to screen
+     AND     R2, R1, # &FF              ; R2 = 000000MM
+     LDRB    R2, [R3, R2]               ; R2 = MSB of data, translated
+     LDRB    R1, [R3, R1, LSR #24]      ; R1 = LSB of data, translated
+     STRB    R1, [R12, R0]!             ; Put LSB to screen
+     STRB    R2, [R12, #1]
+     MOVS    PC, LR                     ; Put MSB to screen
+
+     ; ---------------------
+
+VGAS_256ClrNXChain4Write16
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3}	        ; R2 = AddrMask2
+					; R3 = MemoryBlk2
+     AND     R0, R0, R2, LSR #2         ; R0 = offset
+     MOV     R2, R1, LSR #8		; R2 = MSB of data
+     STRB    R1, [R3, R0]!              ; Store data LSB
+     STRB    R2, [R3, #1]
+
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     MOV     R2, R1, LSR #8		; R2 = MSB of data
+     STRLOB  R1, [R12, R0]!             ; Put LSB to screen
+     STRLOB  R2, [R12, #1]
+     MOVS    PC, LR                     ; Put MSB to screen
+
+     ; ********************
+
+VGAS_256ClrOddEvenWrite8
+     ADR     R2, VGAS_AddrMask2
+     LDMIA   R2, {R2, R3}	        ; R2 = AddrMask2
+					; R3 = MemoryBlk2
+     AND     R0, R2, R0, LSL #2         ; R0 = offset
+     TST     R0, #4		        ; If R0 ends xxx100
+     SUBNE   R0, R0, #3                 ; Make R0 end xxx001
+
+     STRB    R1, [R3, R0]               ; Store data
+     ADR     R2, VGAS_DisplayStart
+     LDMIA   R2, {R2, R3, R12}          ; R2 = DisplayStart
+                                        ; R3 = DisplayLength
+                                        ; R12 = DrawPointer
+     SUB     R0, R0, R2
+     CMP     R0, R3                     ; Is address on-screen?
+     MOVHSS  PC, LR                     ; Return if not
+
+     LDR     R3, VGAS_256ClrXlate       ; Else, write data to screen
+     LDRB    R1, [R3, R1]               ; R1 = translated data
+     STRB    R1, [R12, R0]              ; Put to screen
+     MOVS    PC, LR
+
+; VESA mode handlers ****************************************
+
+; All VESA modes have a 1:1 mapping between PC RAM and video RAM. These
+; handlers read directly and write either directly or via a translate
+; table (for 8bpp modes on older VIDCs).
+;
+; All the various pointers are defined by the following values
+;
+; Handler Base - PC physical address where handlers start, usually A0000h
+; Page Address - offset into video ram of currently selected PC memory page
+; Display Start - offset into video ram of first displayed byte
+;
+; The 16-bit handlers assume that all the above addresses (and the screen
+; length) are all multiples of 2, so that if the first byte is on-screen,
+; the second one will be as well. In fact, in the current code these are
+; all multiples of 4.
+
+VGAS_VESAMemOffset DCD 0		; Base of ARM video RAM minus
+					; Handler Base plus Page Address
+VGAS_VESADrawPointer  DCD 0		; Base of Screen RAM
+VGAS_VESAScreenFirst  DCD 0		; First PC memory address which is
+					; onscreen (i.e. DisplayStart +
+					; Handler Base - Page Address)
+VGAS_VESAScreenLength DCD 0             ; Length of onscreen data in bytes
+
+	; Read routines --------------
+
+VGAS_VESARead8
+	LDR	R1, VGAS_VESAMemOffset
+	LDRB	R0, [R1, R0]
+	MOVS	PC, LR
+
+VGAS_VESARead16
+	LDR	R1, VGAS_VESAMemOffset
+	LDRB	R0, [R1, R0]!		; Get LSB
+	LDRB    R1, [R1, #1]	        ; Get MSB
+	ORR	R0, R0, R1, LSL #8      ; Combine
+	MOVS	PC, LR
+
+	; Write routines --------------
+
+VGAS_VESAWrite8				; Write byte without translation
+	LDR	R2, VGAS_VESAMemOffset
+	STRB	R1, [R2, R0]		; Store it
+	ADR     R2, VGAS_VESADrawPointer
+	LDMIA   R2, {R2, R3, R12}	; R2 = DrawPointer,
+					; R3 = ScreenFirst
+					; R12 = ScreenLength
+	SUB	R0, R0, R3		; R0 = (address-handlerbase) +
+					;     page address - displaystart
+					; = offset into display
+	CMP	R0, R12			; Is it on-screen?
+	STRLOB	R1, [R2, R0]		; If so, draw it
+	MOVS	PC, LR
+
+VGAS_VESAWrite16			; Write word without translation
+	LDR	R2, VGAS_VESAMemOffset
+	MOV	R3, R1, LSR #8
+	STRB	R1, [R2, R0]!		; Store LSB, get R2 = address
+	STRB    R3, [R2, #1]		; Store MSB
+
+	ADR     R2, VGAS_VESADrawPointer
+	LDMIA   R2, {R2, R3, R12}	; R2 = DrawPointer,
+					; R3 = ScreenFirst
+					; R12 = ScreenLength
+	SUB	R0, R0, R3		; R0 = (address-handlerbase) +
+					;     page address - displaystart
+					; = offset into display
+	MOV	R3, R1, LSR #8          ; R3 = MSB of data
+
+	CMP	R0, R12			; Is it on-screen?
+	STRLOB	R1, [R2, R0]!		; If so, draw LSB
+	STRLOB  R3, [R2, #1]		; then MSB
+	MOVS	PC, LR
+
+	; Translated write routines ----------------
+
+VGAS_VESAXlatWrite8			; Write byte with translation
+	LDR	R2, VGAS_VESAMemOffset
+	STRB	R1, [R2, R0]		; Store it
+
+	ADR     R2, VGAS_VESADrawPointer
+	LDMIA   R2, {R2, R3, R12}	; R2 = DrawPointer,
+					; R3 = ScreenFirst
+					; R12 = ScreenLength
+	SUB	R0, R0, R3		; R0 = (address-handlerbase) +
+					;     page address - displaystart
+					; = offset into display
+	CMP	R0, R12			; Is it on-screen?
+	MOVHSS	PC, LR			; If not, return
+
+	LDR	R3, VGAS_256ClrXlate
+	LDRB	R1, [R3, R1]		; Translate colour
+	STRB	R1, [R2, R0]		; Put it on screen
+	MOVS	PC, LR
+
+VGAS_VESAXlatWrite16			; Write word with translation
+	LDR	R2, VGAS_VESAMemOffset
+	MOV	R3, R1, LSR #8
+	STRB	R1, [R2, R0]!		; Store LSB, get R2 = address
+	STRB    R3, [R2, #1]		; Store MSB
+
+	ADR     R2, VGAS_VESADrawPointer
+	LDMIA   R2, {R2, R3, R12}	; R2 = DrawPointer,
+					; R3 = ScreenFirst
+					; R12 = ScreenLength
+	SUB	R0, R0, R3		; R0 = (address-handlerbase) +
+					;     page address - displaystart
+					; = offset into display
+	CMP	R0, R12			; Is it on-screen?
+	MOVHSS  PC, LR			; If not, return
+
+        LDR     R12, VGAS_256ClrXlate
+	AND	R3, R1, # &FF           ; R3 = LSB
+	LDRB    R1, [R12, R1, LSR #8]	; R1 = translated MSB
+	LDRB    R3, [R12, R3]		; R3 = translated LSB
+	STRB	R3, [R2, R0]!		; If so, draw LSB
+	STRB	R1, [R2, #1]		; then MSB
+	MOVS	PC, LR
+
+  ; The end ----------------------------
+
+  END

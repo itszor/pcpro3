@@ -1,8 +1,8 @@
 ; CMHG file for !PC (Gemini) memory manager module
-; 
+;
 ; 22-11-94 INH  Original
 
-help-string:  Gemini_Mem_Mgr 2.23
+help-string:  Gemini_Mem_Mgr 3.06
 
 title-string: PCMem
 

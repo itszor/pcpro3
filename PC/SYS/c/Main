@@ -29,6 +29,7 @@
 * 2.34  1998.10.11 W  Added SingleTaskRequest
 *                  MB Added new serial number checking and new window-
 *                       in-the-corner for LFB modes.
+* 3.05  2000.02.01 W  Moved SApresent check to PCMEM
 *
 */
 
@@ -41,7 +42,6 @@
 #include <stdlib.h>   /* For system */
 
 #include "swis.h"
-#include "version.h"
 
 #ifndef wimp_MWINDOWINF
 #define wimp_MWINDOWINF 0x400cc           /* Borris, 19-05-95 */
@@ -73,6 +73,7 @@
 #include "sys.h.WFEbits"
 #include "sys.h.ext"
 #include "sys.h.veneers"
+#include "sys.h.version"
 #include "dev.h.multi_io"
 
 #include "module.h.pcsupport"
@@ -96,7 +97,7 @@ static int same_copies_on_network = 0;
 /* Menu items */
 
 int RISCOSlevel = 3;
-bool SApresent;       /* StrongARM detected if true. Used for memory allocation*/
+char *WFE_VersionString = VERSION_STRING;
 
 /* WIMP variables *********************************************** */
 
@@ -114,6 +115,7 @@ static void *spr_area;
 
 static BOOL window_is_open = false, ToolsWin_is_attached = false;
 
+/* these are here for in-executable serial number storage */
 static int   serial_marker = 'xxxx';
 static char  serial_string[16]="\0";
 static int*  serial_ptr = (int*) &serial_number;
@@ -134,13 +136,34 @@ static int LFBWarnAck_handler(void);
   else \
   { \
     if (same_copies_on_network == 0) ; \
-    if (REG_PRODUCT != 0 && REG_PRODUCT != 1) \
+    if (REG_PRODUCT != 0 && REG_PRODUCT != 1 && REG_PRODUCT != 3 && REG_PRODUCT != 4 ) \
       SYS_error(true, "iecorrupt"); \
     if (REG_LICENSEES < same_copies_on_network) \
       SYS_error(true, "ielicensees"); \
   } \
 }
 
+/* Find Version of RISCOS in use ******************************** */
+
+static int GuessRISCOSversion() /* returns 3 for RISCOS 3 */
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = 129;
+  R.r[1] = 0;
+  R.r[2] = 255;
+  _kernel_swi ( OS_Byte, &R, &R );
+
+  if ( R.r[1] >= 0xA8 )
+    return 4;
+  if ( R.r[1] >= 0xA3 )
+    return 3;
+
+  return 2;
+}
+
+/* this code no longer needed - moved to PCMEM module */
+#if 0
 /* test for presence of StrongARM */
 
 static bool CheckForSA()
@@ -161,6 +184,7 @@ static bool CheckForSA()
   return FALSE;
 
 }
+#endif
 /* Device modules functions ***************************************** */
 
 #define Service_PCDevice 0x77
@@ -1010,7 +1034,10 @@ static int Quit_handler(int event)
   SYS_FEState.QuitRequest = true;
 
   if (event == FE_QuitR)
-    system("Filer_Run <Diva$Dir>.!Run");
+    /*system("Filer_Run <Diva$Dir>.!Run"); DOESN'T WORK - 'unknown operand' error*/
+    system("Set Diva$Restart Yes");
+
+
 
   if (event == FE_QuitC)
     system("Filer_Run <Diva$Dir>.^.!PCConfig");
@@ -1339,8 +1366,8 @@ int main (int argc, char **argv)
   if ( !SYS_Init() )
     return 1;
 
-  /* See if we are running on SA */
-  SApresent = CheckForSA();
+   /* Find version of RISCOS for those bits that care (FDD, Video, RTC) */
+  RISCOSlevel = GuessRISCOSversion();  /* set global */
 
   /* Start up system */
 
@@ -1380,7 +1407,8 @@ int main (int argc, char **argv)
   SYS_BannerText("Ready to go");
   WFE_Banner(Bannerhide);       /* bin the banner - we're ready to go */
 
-  SYS_trace("!PC ver %s on %s", WFE_VersionString, CPU_HardwareID );
+
+  SYS_trace("!PC ver %s on %s", WFE_VersionString , CPU_HardwareID );
 
   SYS_FEState.ResetRequest = true;
   SYS_FEState.QuitRequest = false;

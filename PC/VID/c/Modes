@@ -29,11 +29,8 @@
 
 #define  DUMPREGS  0
 #define  DEBUG 0
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
+#include "sys.h.debug"
+
 #include <stdio.h>        /* For sscanf() */
 #include <stdlib.h>       /* For malloc() */
 #include <ctype.h>
@@ -796,9 +793,6 @@ static void VID_SelectArmMode( void )
   SYS_FEState.Ypixels = VID_PCYtotal;
   SYS_FEState.PCbpp   = VID_PCbpp;
 
-#if DEBUG
-SYS_trace("Wrote FEstate.PCBpp=%d",VID_PCbpp);
-#endif
 
   if ( VID_ModeType & MODE_TEXT )
     SYS_FEState.GetTextFn = VID_GetScreenText;
@@ -1149,9 +1143,6 @@ static bool ModesStopWinFE()
 
 int VID_GetVESAModeCaps(void)
 {
-  /* Find riscos version by asking the "scan keyboard" function with
-     funny parameters. You really couldn't make this up, could you?
-  */
 
   return MC_REAL_PAL | MC_8BPP | MC_16BPP | MC_24BPP;
 }
@@ -1175,7 +1166,7 @@ extern bool VID_AllocVidMem ( int size )
     return false;
 
   *(int*)blk = VID_MemorySize = size;   /*Size in bytes*/
-  SYS_trace("blk=%08x", blk);
+  debug(("blk=%08x", blk));
 
   if (first_alloc_done) return(true);
   first_alloc_done = 1;

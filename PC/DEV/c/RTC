@@ -17,27 +17,24 @@
 *1997.03.25  W    gets millenium
 *1998.01.28  W    Added sensible Status register defaults and tracing
 *1998.01.31  MB   Added MC146818 periodic int support (calls on PCSupport)
+*1999.05.26  W    Fettled millenium to use ROS3 stuff (OK for ROS4)
 */
 
-#define DEBUG 0
-/* #define NOBBLE_TIMER1_CODE YesPlease*/
-
-#if DEBUG
-#define debug(a) SYS_trace a
-#else
-#define debug(a)
-#endif
 
 #include "kernel.h"
 #include "swis.h"
-#include "stdlib.h"
-#include "math.h"
+#include <stdlib.h>
+//#include "math.h"
 
 #include "sys.h.stdtypes"
 #include "sys.h.sys"
 #include "sys.h.config"
 #include "dev.h.rtc"
 #include "module.h.PCSupport"
+
+#define DEBUG 0
+#include "sys.h.debug"
+/* #define NOBBLE_TIMER1_CODE YesPlease*/
 
 #define    CMOS_Size      0x40
 #define    CMOS_SizeMask  0x3F
@@ -134,7 +131,7 @@ static BYTE bcd (BYTE n)
 
   quotrem = div (n,10);       /* split n base 10 */
 
-  return ((BYTE) quotrem.quot & 0xF) << 4 & ((BYTE) quotrem.rem & 0xF); /* put in bcd form */
+  return ((BYTE) quotrem.quot & 0xF) << 4 | ((BYTE) quotrem.rem & 0xF); /* put in bcd form */
 
 }
 
@@ -148,7 +145,7 @@ static BYTE bcd (BYTE n)
 
 static void RTC_ReadRealTime()
 {
-  if (1/*RISCOSlevel==2*/)
+  if (RISCOSlevel==2)
   {
   _kernel_swi_regs regs;
   BYTE RTCblk [7];
@@ -183,27 +180,22 @@ static void RTC_ReadRealTime()
     _kernel_swi ( OS_Word, &regs, &regs ); /* returns 5-byte time */
 
   /* compare each byte to see if more than 31536e11 centiseconds have passed */
-  /* that's 0x496CEBB800 */
+  /* that's 0x497947c800 */
   if ((RTCblk[4] > 0x49)
-  || ((RTCblk[4] == 0x49) && (RTCblk[3] > 0x6C))
-  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x6C) && (RTCblk[2] > 0xEB))
-  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x6C) && (RTCblk[2] == 0xEB) && (RTCblk[1] > 0xB8)))
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] > 0x79))
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x79) && (RTCblk[2] > 0x47))
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x79) && (RTCblk[2] == 0x47) && (RTCblk[1] > 0xC8)))
    {
      CMOS_Data [CMOS_century] = 0x20;   /* 21stC in BCD. fixed for another 100 years :-) */
    }
   }
-  else  /* RISCOS 3 or later  - this code not used, and doesn't work */
+  else  /* RISCOS 3 or later   */
   {
 
   _kernel_swi_regs regs;     /* get UTC time */
 
   BYTE UTCblk [5];           /* space to return UTC time */
   BYTE Ordinals [36];        /* should be word aligned */
-  char * TimeFormat = "%CE"; /* just the century, zero terminated */
-  char * ConvTime[TMBUFSIZE];/* buffer for converted time */
-  char * endptr;             /* strtoul end pointer */
-
-  SYS_trace("RISCOS 3 set time- shouldn't be here!");
 
   regs.r[0] = 14;            /* OSWord 14: time services */
   regs.r[1] = (int) UTCblk;  /* Pointer to param block */
@@ -211,34 +203,27 @@ static void RTC_ReadRealTime()
   UTCblk[0] = 3;             /* Reason code 3: Read RTC soft time */
                              /* Always UTC - summertime not included */
 
-    _kernel_swi ( OS_Word, &regs, &regs );
+  _kernel_swi ( OS_Word, &regs, &regs );
+
 
    /* convert to ordinals including territory adjustment */
-  regs.r[0] = -1;            /* use current territory */
-                             /* r1 points to UTC time block */
+  regs.r[0] = -1;             /* use current territory */
+  regs.r[1] = (int) UTCblk;   /* r1 points to UTC time block */
   regs.r[2] = (int) Ordinals; /* return block */
 
   _kernel_swi (Territory_ConvertTimeToOrdinals, &regs, &regs );
-
-  CMOS_Data [CMOS_year] = bcd (Ordinals [24]); /* Year in BCD */
+  {
+    div_t year;
+    year = div(Ordinals [24]+1792,100);
+    CMOS_Data [CMOS_century] = bcd (year.quot); /* Century in BCD */
+    CMOS_Data [CMOS_year] = bcd (year.rem); /* Year in BCD */
+  }
   CMOS_Data [8] = bcd (Ordinals [20]); /* Month in BCD */
   CMOS_Data [7] = bcd (Ordinals [16]); /* Date in BCD */
   CMOS_Data [6] = bcd (Ordinals [28]); /* Day of week 0-6 */
   CMOS_Data [4] = bcd (Ordinals [12]); /* Hours in BCD */
   CMOS_Data [2] = bcd (Ordinals [8]);  /* Mins in BCD */
   CMOS_Data [0] = bcd (Ordinals [4]);  /* Secs in BCD */
-
-  /* now find out the century */
-  regs.r[0] = -1;                  /* use current territory */
-                                   /* r1 still points to UTC time block */
-  regs.r[2] = (int) ConvTime;      /* return block */
-  regs.r[3] = TMBUFSIZE;           /* length of buffer */
-  regs.r[4] = (int) TimeFormat;    /* format string */
-
-  _kernel_swi (Territory_ConvertDateAndTime, &regs, &regs );
-        /* result should be century as a string in buffer */
-        /* convert it to number and then BCD */
-  CMOS_Data [CMOS_century] = bcd  (strtoul ((char *)ConvTime, &endptr ,10));
   }
 }
 

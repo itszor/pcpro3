@@ -129,3 +129,35 @@ Changes log for PCConfig
   V0.76 (4th September 1998)
 
 * Added SwitchLFB option 
+
+  v0.80 (1998.12.01)
+  
+* fettled MKdosdisc so it gets new partitions correct (old one had FAT16
+offset from correct position)
+
+  v0.81 (1998.12.04)
+
+* Fettled printing window so that you can't select turbodriver bodge without
+  directparallel
+    
+* Fettled Disc window so that draggin a disc on actually updates the config 
+
+  v0.82 (1999.01.07) 
+  
+* Put in new SCSI card host recognition code from Andreas 
+
+  v0.83 (1999.01.14)
+  
+* Added Scaletofit option back in.
+* Made Asicoptions options correct
+* Added some help text
+* Added 'revert to defaults' button
+
+  v0.84 (1999.01.26)
+  
+* Update from Andreas so that number of SCSI cards is correct (even if you
+  have none)
+* Latest MKDOSDisc (1999.01.26) that can create new partitions OK.
+
+  v0.85 (2000.02.04)
+* Uses 'Last' file in <Choices$dir>.PC now. To match !choosecfg

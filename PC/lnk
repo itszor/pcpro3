@@ -1,4 +1,6 @@
 echo ** Linking via %0
 | add -debug for a debug image
-drlink -o tmp -via %0
+|drlink -o tmp -via %0
+|link -o tmp -debug -via %0 -LIST linkMap -MAP -XREF
+link -o tmp -via %0 -LIST linkMap -MAP -XREF
 Settype tmp ff8

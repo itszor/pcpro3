@@ -15,13 +15,13 @@
 
 static int floppysize[5]={0,360,720,1200,1440};
 
-int all_lines;
-char *config_lines[400];
+static int all_lines;
+static char *config_lines[400];
 extern small_mode_structure modes[100];
 
 extern ObjectId windows_window;
 
-void dump_config_to_file(void)
+static void dump_config_to_file(void)
 {
   char txt[256];
   int handle,x;
@@ -73,21 +73,11 @@ void copy_text_to_ptr(char *main_text,int value_to_add,char *buffer[])
 
 void build_configuration(void)
 {
-  int x = 0, n;
+  int x = 0;
   char buffer[300];
   char colours[10];
 
   config_lines[x++] = "\0";
-  /*
-  config_lines[x++] = "# Level 1 Cache settings: 0 - Cache disabled, 1 - Write through cache, 2 - Write back cache\0";
-  copy_text_to_ptr("L1CACHE",config.advanced.l1_cache,&config_lines[x++]);
-  config_lines[x++] = "\0";
-
-  config_lines[x++] = "# Level 2 Cache settings: 0 - Cache disabled, 1 - Write through cache, 2 - Write back cache\0";
-  copy_text_to_ptr("L2CACHE",config.advanced.l2_cache,&config_lines[x++]);
-  config_lines[x++] = "\0";
-  */
-  //raise_error(stringset_get_selected(0,main_window,MAIN_CONFIGNAME,config.name,64,NULL));
   raise_error(displayfield_get_value(0,main_window,MAIN_CONFIGNAME,config.name,64,NULL));
 
   config_lines[x++] = "Trace On\0";
@@ -206,13 +196,9 @@ void build_configuration(void)
 
   config_lines[x++] = "# This should be on if you have a monitor capable of displaying VGA (RISCOS mode 27)\0";
   if(config.advanced.vga_attached) config_lines[x++] = "VGAAttached On\0"; else
-                                   config_lines[x++] = "VGAAttached Off\0";
-  config_lines[x++] = "\0";
-  config_lines[x++] = "# Allows you to view the whole PC screen when multi-tasking at the expense of some clarity\0";
-  if(config.advanced.scale_to_fit) config_lines[x++] = "ScaleToFit On\0"; else
-                                   config_lines[x++] = "ScaleToFit Off\0";
-  config_lines[x++] = "\0";
-
+                                   config_lines[x++] = "VGAAttached Off\0";                                
+  config_lines[x++] = "\0";*/
+  /*
   config_lines[x++] = "# Allows multi-tasking operation, as well as single-tasking operation\0";
   if(config.advanced.use_window_fe) config_lines[x++] = "UseWindowFE On\0"; e  if(config.advanced.use_window_fe) config_lines[x++] = "UseWindowFE On\0"; else
 lse
@@ -331,7 +317,7 @@ lse
   copy_text_to_ptr("L2Size",config.adv.l2size,&config_lines[x++]);
   config_lines[x++] = "\0";
 
-  config_lines[x++] = "# ASIC buffers disable (0 = neither, 1 = small, 2 = large, 3 = both)";
+  config_lines[x++] = "# ASIC buffers disable (0 = Enabled, 1 = No FIFO, 2 = Disable large FIFO, 3 = No FIFO)";
   copy_text_to_ptr("ASICOptions",config.adv.asicoptions,&config_lines[x++]);
   config_lines[x++] = "\0";
 
@@ -370,6 +356,10 @@ lse
   copy_text_to_ptr("PreserveVidMem", config.adv.preservevidmem,&config_lines[x++]);
   config_lines[x++] = "\0";
 
+  config_lines[x++] = "# Sqaushes PC screen to fit RISCOS screen when multi-tasking at the expense of some clarity\0";
+  if(config.adv.scaletofit) config_lines[x++] = "ScaleToFit On\0"; else
+                            config_lines[x++] = "ScaleToFit Off\0";
+  config_lines[x++] = "\0";
   all_lines = x;
 
   dump_config_to_file();
