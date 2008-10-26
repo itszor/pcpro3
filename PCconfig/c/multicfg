@@ -29,7 +29,7 @@ int  external_edit = 0;
 static int current_config=0;
 
 char config_path_name[256] = "<Diva$Dir>.Config\0"; // These two are
-char config_dir[128] = "<Boot$Dir>.Choices.PC.v";  // corrected at run-time
+char config_dir[128] = "<Choices$Write>.PC.v";  // corrected at run-time
 char config_new[16] = "\0";
 
 configpair     config_list[32]; /* Memory schmemory */
@@ -194,7 +194,7 @@ extern void multicfg_reimport_all(void)
   char line[256];
   int  e=0;
 
-  while( e=read_entry(config_dir, line, e, NULL) != -1 && line[0] != 0 )
+  while( (e = read_entry(config_dir, line, e, NULL)) != -1 && line[0] != 0 )
   {
     sprintf(config_path_name, "%s.%s", config_dir, line);
     load_config_file();
@@ -295,12 +295,12 @@ extern BOOL do_multicfg_initialise(void)
 
   if (!file_exists(config_dir) || read_entry(config_dir, line, 0, NULL) == -1)
   {
-    if (read_entry("<Boot$Dir>.Choices.PC", line, 0, NULL) == -1)
+    if (read_entry("<Choices$Write>.PC", line, 0, NULL) == -1)
       return(FALSE);
     xx=0;
-    while ((xx=read_entry("<Boot$Dir>.Choices.PC", line, xx, NULL)) != -1);
+    while ((xx=read_entry("<Choices$Write>.PC", line, xx, NULL)) != -1);
     multicfg_zero_last();
-    sprintf(line+128, "Copy <Boot$Dir>.Choices.PC.%s %s ~A~C~DF~L~N~P~QRS~T~V", line, config_dir);
+    sprintf(line+128, "Copy <Choices$Write>.PC.%s %s ~A~C~DF~L~N~P~QRS~T~V", line, config_dir);
     if (cancel_ok(lookup_token("config_import"), "Import,Use default"))
       system(line+128);
     else

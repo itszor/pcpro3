@@ -1,0 +1,182 @@
+--17478557-857024317-909167462=:1275829876
+Content-Type: TEXT/Plain; NAME="procdos.awk"
+Content-Transfer-Encoding: QUOTED-PRINTABLE
+
+
+# Cmd-line variables are not set until after BEGIN has happened
+# This makes this script more convoluted than is ideal.
+# config is set if this file in config.sys
+# autoexec is set if this file is autoexec.bat
+# cd, aspi, mouse are set if that driver is needed.
+# lstdrvln, blasterln, cdln, aspiln, mousln are set if the relevant line ha=
+s=20
+# been added to the file (so each is only added once)
+
+#first needed lines are added at start of file, then each remaining line is
+processed to remove unwanted ones.
+
+BEGIN { lstdrvln=3D0; blasterln=3D0; cdln=3D0; aspiln=3D0; mouseln=3D0 }
+
+# put in needed new lines at the start =20
+{
+  if (config   && !lstdrvln)=20
+      { print "LASTDRIVE=3DZ"; lstdrvln=3D1; }
+  if (autoexec && !blasterln)=20
+      { print "SET BLASTER=3DA220 I7 D1 H5 P330 T6"; blasterln=3D1; }
+  if (autoexec && cd && !cdln)=20
+      { print "C:\\PCP3_DRV\\CDROM\\NWCDEX.EXE /D:MSCD000 /L:M"; cdln=3D1  =
+}
+  if (config && cd && !cdln)
+      { print "DEVICE=3DC:\\PCP3_DRV\\CDROM\\HPC_CD.SYS"; cdln=3D1 }
+  if (autoexec && mouse && !mouseln)
+      { print "C:\\PCP3_DRV\\MOUSE\\AMOUSE.COM"; mouseln=3D1 }
+  if (config && aspi && !aspiln)=20
+      { print "DEVICE=3DC:\\PCP3_DRV\\ASPI\\HPCASPI.SYS"; aspiln=3D1 }
+}
+
+# assume the line is okay...
+{ snipped =3D 0 }
+
+# take out any lines referring to stuff we care about
+/Aleph One empty file/           { snipped =3D1 }
+/.*CDEX.*/          { if (autoexec) snipped=3D1 }
+/.*AMOUSE.*/        { if (autoexec) snipped=3D1 }
+/SET BLASTER.*/     { if (autoexec) snipped=3D1 }
+
+/DEVICE.*=3D.*A1CD.*/   { if (config) snipped=3D1 }
+/DEVICE.*=3D.*HPC_CD.*/ { if (config) snipped=3D1 }
+/DEVICE.*=3D.*ASPI.*/   { if (config) snipped=3D1 }
+/LASTDRIVE.*/         { if (config) snipped=3D1 }
+
+
+# output if we haven't snipped it
+{ if (snipped =3D=3D 0) print }
+
+
+--17478557-857024317-909167462=:1275829876
+Content-Type: TEXT/Plain; NAME="setup.bat"
+Content-Transfer-Encoding: QUOTED-PRINTABLE
+
+@echo off
+
+echo PCPro 3 device driver installation
+
+set TEST=3D=3Dnot_
+goto %TEST%a_shit_dos
+:a_shit_dos
+echo ** Your DOS seems to have a problem with this installation script; eit=
+her
+echo ** boot off this disc and install the drivers from there, or do it by =
+hand.
+goto end
+:=3Dnot_a_shit_dos
+set TEST=3D
+
+set A1_OPTS=3D
+
+set WINLOC=3D%1
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DC:\WINDOWS
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DC:\WFWG
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DC:\WIN3
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DC:\WIN311
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DC:\WIN310
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DD:\WINDOWS
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DD:\WFWG
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DD:\WIN3
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DD:\WIN311
+if NOT EXIST %WINLOC%\system\vshare.386 SET WINLOC=3DD:\WIN310
+if EXIST %WINLOC%\system\vshare.386 goto no_win3_prompt
+echo ** I Couldn't find a Windows 3 installation-- if you do have one, pres=
+s
+echo ** Ctrl+C now, and re-launch this setup program with your Windows dire=
+ctory
+echo ** as an argument, e.g.=20
+echo **=20
+echo **     A:\SETUP C:\WINDOZE
+echo **=20
+echo ** Otherwise, to install or remove DOS drivers, just press a key to ca=
+rry on.
+pause
+:no_win3_prompt
+
+echo ** Creating directories...
+if NOT DIREXIST c:\PCP3_DRV       md C:\PCP3_DRV
+if NOT DIREXIST c:\PCP3_DRV\ASPI  md C:\PCP3_DRV\ASPI
+if NOT DIREXIST c:\PCP3_DRV\CDROM md C:\PCP3_DRV\CDROM
+if NOT DIREXIST c:\PCP3_DRV\MOUSE md C:\PCP3_DRV\MOUSE
+
+echo. =20
+echo ** For each question 'y' will install/keep the driver, 'n' will skip/r=
+emove it
+echo. =20
+echo ** DOS drivers:=20
+
+choice Install CD-ROM driver?
+if ERRORLEVEL =3D=3D 2 goto no_a1_cd
+set A1_OPTS=3D%A1_OPTS%cd=3D1=20
+copy A:\PCP3_DRV\CDROM\*.* C:\PCP3_DRV\CDROM
+:no_a1_cd
+
+choice Install ASPI driver?
+if ERRORLEVEL =3D=3D 2 goto no_a1_aspi
+set A1_OPTS=3D%A1_OPTS%aspi=3D1=20
+copy A:\PCP3_DRV\ASPI\*.* C:\PCP3_DRV\ASPI
+:no_a1_aspi
+
+choice Install mouse driver?
+if ERRORLEVEL =3D=3D 2 goto no_a1_mouse
+set A1_OPTS=3D%A1_OPTS%mouse=3D1=20
+copy A:\PCP3_DRV\MOUSE\*.* C:\PCP3_DRV\MOUSE
+:no_a1_mouse
+
+:try_win
+if NOT EXIST %WINLOC%\system\vshare.386 goto process
+
+echo. =20
+echo ** Windows 3.xx drivers=20
+
+choice Install fast display driver?
+if ERRORLEVEL =3D=3D 2 goto no_a1_armdrv
+set A1_OPTS=3D%A1_OPTS%armdrv=3D1=20
+copy A:\WIN3VID\ARMDRV.DRV %WINLOC%\SYSTEM\ARMDRV.DRV
+:no_a1_armdrv
+
+choice Install sound drivers?
+if ERRORLEVEL =3D=3D 2 goto no_a1_winsnd
+set A1_OPTS=3D%A1_OPTS%winsnd=3D1=20
+copy A:\WINSOUND\SBE16*.DRV %WINLOC%\SYSTEM
+copy A:\WINSOUND\VSBPD.386 %WINLOC%\SYSTEM\VSBPD.386
+:no_a1_winsnd
+
+echo ** Processing SYSTEM.INI...
+awk procwin.awk %A1_OPTS% <%WINLOC%\system.ini >%WINLOC%\system.a1
+if EXIST %WINLOC%\system.a1o  del %WINLOC%\system.a1o
+ren %WINLOC%\system.ini system.a1o
+ren %WINLOC%\system.a1 system.ini
+
+:process
+echo ** Processing AUTOEXEC.BAT...
+if NOT EXIST c:\autoexec.bat  echo Aleph One empty file >c:\autoexec.bat
+awk procdos.awk %A1_OPTS% autoexec=3D1 <c:\autoexec.bat >c:\autoexec.a1
+if EXIST c:\autoexec.a1o      del c:\autoexec.a1o
+ren c:\autoexec.bat autoexec.a1o
+ren c:\autoexec.a1 autoexec.bat
+
+echo ** Processing CONFIG.SYS...
+if NOT EXIST c:\config.sys  echo Aleph One empty file >c:\config.sys
+awk procdos.awk %A1_OPTS% config=3D1 <c:\config.sys >c:\config.a1
+if EXIST c:\config.a1o        del c:\config.a1o
+ren c:\config.sys config.a1o
+ren c:\config.a1 config.sys
+
+set WINLOC=3D
+set A1_OPTS=3D
+
+echo. =20
+echo Done!  Now remove the boot disc and reset !PC to load the new drivers.
+:end
+
+--17478557-857024317-909167462=:1275829876--
+
+
+

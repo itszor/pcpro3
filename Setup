@@ -1,0 +1,5 @@
+dir <Obey$dir>
+
+set testPC$dir ADFS::Rainbird.$.Programs.TestPC
+set DDT$dir <obey$dir>
+

@@ -1,0 +1,85 @@
+Protected Mode CDROM driver for PC Cards
+----------------------------------------
+
+This driver is a protected mode (aka '32-bit') SCSI miniport driver for
+Windows 95/98. It replaces the real-mode DOS CDROM driver HPC_CD.SYS, for
+Windows 95/98 and for DOS boxes within windows.
+
+The old DOS driver is still needed for CDROM access under Windows 3.1 or DOS.
+It is also used when you use !MkBootDisc to create a start-up disc to install
+Windows95/98 from CD.
+
+Requirements:
+This driver needs !PC v2.00 or greater - ie 'PCPro', to operate.
+
+Installation:
+This driver uses the same resources (the PC Card's 'HPC' interface), as other
+drivers:
+CD_HPC.SYS     Aleph One real mode (DOS) CDROM driver
+ARMASPI.SYS    Andreas Walter's ASPI driver
+ARMEDIT.SYS    Alexander Thoukidides' ARMEdit driver
+
+If these drivers are installed then Windows95/98 will usually complain about
+'device conflicts', but be able to give you no help with resolving them. It
+may be easier to REM out these drivers in your CONFIG.SYS file before
+starting !PC and installing this driver.
+
+If you leave these drivers in then everything will still work if you follow
+the instuctions below carefully.
+
+The installer will remove lines mentionning CD_HPC.SYS and MSCDEX from your
+CONFIG.SYS and AUTOEXEC.BAT automatically (unless they are already REMmed
+out).
+
+1) unzip archive into C:\DRIVERS\CDROM. If you can't easily do this (e.g due
+to this being on a Direct SCSI drive you cannot access from the desktop) then
+unzip them onto another drive or a floppy disk - and change references to
+C:\DRIVERS\CDROM below accordingly.
+
+2) Start !PC and Windows95
+
+3) Go to Control Panel. Double click on 'Add new hardware' to start the
+wizard.
+
+4) Select 'No' in aswer to 'Do you want windows to search for your new
+hardware?' Click 'Next'.
+
+5) Scroll down the window to select 'SCSI controllers'. Click 'Next'.
+
+6) Click 'Have Disk', and either browse to, or type in C:\DRIVERS\CDROM and
+click 'OK'. 'Aleph One RISCOS-hosted devices controller' should be listed.
+click 'Next'.
+
+7) If there is no conflict found you will a window showing the settings the
+device is using. Click 'Next'. The driver will be installed. Click 'Finish'.
+If there is a conflict you will see "You are using other hardware that
+conflicts with the hardware you are trying to install". Follow the
+instructions below.
+
+8) Next time you restart the computer the new CDROM driver will be installed.
+
+In case of conflict:
+
+You get a message saying that 
+"You are using other hardware that conflicts with the hardware you are
+trying to install" ( this happened with or without DOS CDROM driver active )
+It gives some choices and I continued to install.
+( On one occasion I tried the trouble shooting but found nothing.)
+
+So then I had to ran the Control Panel, System. Then selected the Device 
+Manager and the SCSI controllers with the "RISCOS-hosted CDROM driver" which
+was not functioning. Looking at the Properties and within the General window
+the "Original Configuration (Current)" was not ticked so I made it so. I did
+not restart the computer at this point and went back to the Properties and
+Resources. I then then selected the Set Configuration Manually button.
+The information was all correct and no conflicts were shown in the conflict
+device list window. So after selecting OK and resetting the system the 
+driver worked.
+
+
+
+
+
+
+
+

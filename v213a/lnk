@@ -1,4 +1,0 @@
-|echo ************* LINKING via %0
-|link -D -o tmp -via %0
-|$.Tools.Cv5.bin.link -v -o tmp -via %0
-link508 -o tmp -via %0

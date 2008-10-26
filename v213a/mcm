@@ -1,3 +1,0 @@
-echo ************* COMPILING Module.c.%0
-Cbin:cc -c -I<Obey$Dir> -zM -fah module.c.%0 -o o.%0
-

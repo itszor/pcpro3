@@ -60,8 +60,10 @@
      GET SYS.S.STDDEFS
 
 OS_ReadVduVariables    EQU  &31
+XOS_ReadVduVariables   EQU  (XOS_bit + &31)
 OS_WriteC              EQU  &0
 OS_WriteI              EQU  &100
+OS_Byte                EQU  &06
 OS_Word                EQU  &07
 OS_RemoveCursors       EQU  &36
 XOS_CheckModeValid     EQU  (XOS_bit + &3F)
@@ -840,6 +842,63 @@ VIDS_CheckModeValid
      MOVVS   R0, # -1		    ; If SWI error, call it bad mode
      LDMFD   SP!, {PC}^             ; else -1 = bad mode, -2 = no memory
 
+
+;***************************************************************
+
+; VIDS_GetVRAMDetails
+
+; Fetches address of video RAM and its size in a hopefully OS
+; version independent way. Needed for RISC OS 6 mess.
+; RISC OS 6 PRM says use OS_ReadVduVariables 148, 149 and 150 as
+; old screen area dynamic area is unsupported. Old dynamic area
+; is still there BUT all ROL have done is make ReadDynamicArea
+; return a stupid address and unreliable size details. Documented
+; approach does not return address of VRAM but the address of the
+; top left-hand corner of the screen which ain't the same.
+
+; Returns:
+;   R0 = VRAM address
+;   R1 = VRAM size
+; All other registers preserved
+
+VIDS_GetVRAMDetails
+     STMFD   SP!,{R2, LR}
+
+; Find the OS version. &A9 means RISC OS 4.39, 4.42 or 6.x
+
+     MOV     R0,#129			;Find OS Version
+     MOV     R1,#0
+     MOV     R2,#255
+     SWI     OS_Byte
+     CMP     R1,#&A9			;Version returned in R1
+     BLT     VIDS_GetVRAMDets_10	;Branch if not 4.39 plus
+     SUB     SP,SP,#16			;Grab some workspace
+     MOV     R1,SP
+     MOV     R0,#149			;Get address of display memory
+     STR     R0,[R1, #0]
+     MOV     R0,#150			;Get current screen size
+     STR     R0,[R1, #4]
+     MVN     R0,#0
+     STR     R0,[R1, #8]
+     MOV     R0,R1
+     SWI     XOS_ReadVduVariables
+     BVS     VIDS_GetVRAMDets_bad	;Handle failed call
+     LDR     R0,[R1, #0]		;R0 points vaguely at screen
+     LDR     R1,[R1, #4]		;R1 contains screen size
+     ADD     SP,SP,#16			;
+     LDMFD   SP!,{R2, PC}^		;Go home
+
+VIDS_GetVRAMDets_10
+     MOV     R0,#2			;Screen dynamic area number
+     SWI     XOS_ReadDynamicArea	;Fetch details
+     BVS     VIDS_GetVRAMDets_bad	;Handle failed call
+     LDMFD   SP!,{R2, PC}^		;Go home
+
+VIDS_GetVRAMDets_bad
+     MVN     R0,#0			;Return -1 as screen address
+     MOV     R1,#0			;Return size as 0 bytes
+     LDMFD   SP!,{R2, PC}^		;Go home
+
      ;***************************************************************
 
      ; void VIDS_EnsureRAMSize(int size)
@@ -850,10 +909,9 @@ VIDS_CheckModeValid
 VIDS_EnsureRAMsize
      STMFD   SP!, {R4-R9, LR}
      MOV     R3, R0                 ; R3 = screen size
-
-     MOV     R0, #2                 ; Read screen RAM size
-     SWI     XOS_ReadDynamicArea    ; Return R1 = size of area
-     BVS     ramsize_exit	    ; If error, give up
+     BL      VIDS_GetVRAMDetails	;Returns screen size in R1
+     CMN     R0,#1			;Call worked?
+     BEQ     ramsize_exit		;Screen address = -1 so no
 
      SUBS    R1, R3, R1             ; R1 = desired - actual size
      LDMLSFD SP!, {R4-R9, PC}^       ; If <=0, we're OK
@@ -924,7 +982,7 @@ VIDS_ChangeAreaSize
 	MOV	R0,R1
 	LDMFD	R13!,{R1}
 	SUB	R1,R1,R2
-	SWI	&2A | 1<<17 ; XOS_ChangeDynamicArea
+	SWI	XOS_ChangeDynamicArea
 	MOVVS	R0,#0
 	MOVVC	R0,R3	; return base
 	LDMFD	R13!,{R4-R8,PC}^

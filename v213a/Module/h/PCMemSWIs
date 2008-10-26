@@ -1,6 +1,0 @@
-/* SWI numbers for PCmem ( Gemini support module ) */
-#define PCMEM_SWIBASE  0x4B4C0
-#define PCMem_SetMem    PCMEM_SWIBASE + 0
-#define PCMem_FillPTE   PCMEM_SWIBASE + 1
-#define PCMem_GetMemTbl PCMEM_SWIBASE + 2
-#define PCMem_ShowInfo  PCMEM_SWIBASE + 3

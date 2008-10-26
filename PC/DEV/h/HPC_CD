@@ -309,7 +309,7 @@ extern void CD_TrackInfo ( struct CD_TRACKINFO_PARAMS *pIn,
 extern void CD_QChannel ( struct CD_QCHANNEL_PARAMS *pIn,
                           struct CD_QCHANNEL_RESULT *pOut );
 
-extern void CD_Control ( struct CD_CONTROL_PARAMS *pIn,
+extern void CD_Kontrol ( struct CD_CONTROL_PARAMS *pIn,
                          struct CD_CONTROL_RESULT *pOut );
 
 extern int CD_PhysToMMSSFF ( int addr );

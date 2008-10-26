@@ -1,6 +1,0 @@
-amu bin.!RunImageE
-copy bin.!RunImageE <testPC$dir>.!pc.!RunImage
-copy sys.h.version <testPC$dir>.!PC.version
-GetDates
-
-

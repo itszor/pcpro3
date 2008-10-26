@@ -46,6 +46,16 @@
 
 //#include "pcdbox.h"
 
+/* Not in bog-standard toolbox.h */
+
+#ifndef Toolbox_ShowObject_Centre
+#define Toolbox_ShowObject_Centre 3
+#endif
+
+#ifndef Toolbox_ShowObject_AtPointer
+#define Toolbox_ShowObject_AtPointer 4
+#endif
+
 extern  ObjectId       iconbar_icon = 0,
                        main_window = 0,
                        discs_window = 0,

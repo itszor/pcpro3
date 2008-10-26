@@ -643,9 +643,11 @@ extern void CD_QChannel ( struct CD_QCHANNEL_PARAMS *pIn,
 
 /* ------------------------ */
 
-extern void CD_Control ( struct CD_CONTROL_PARAMS *pIn,
+extern void CD_Kontrol ( struct CD_CONTROL_PARAMS *pIn,
                          struct CD_CONTROL_RESULT *pOut )
 {
+/* Renamed as CD_Kontrol as name clashes with SWI name CD_Control */
+
   _kernel_oserror *err;
 
   DRIVE *pDI = GetDrive ( pIn->drvnum );
@@ -813,7 +815,7 @@ static void CD_HPCdispatch ( BYTE *buf )
       break;
 
     case HPC_CD_CONTROL:
-      CD_Control ( &(pB->in.Control), &(pB->out.Control) );
+      CD_Kontrol ( &(pB->in.Control), &(pB->out.Control) );
       break;
 
     default:

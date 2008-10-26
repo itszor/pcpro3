@@ -1,0 +1,68 @@
+[Version]
+Signature=$CHICAGO$
+Class=SCSIAdapter
+Provider=%Mfg%
+
+[ClassInstall]
+
+[DestinationDirs]
+DefaultDestDir=12
+dev.copy=12
+
+[Manufacturer]
+%Mfg_name%=Mfg.section
+
+[Mfg.section]
+%Dev_name%=dev.install,ALE1234
+
+[dev.install]
+UpdateInis=dev.Safedrivers
+UpdateCfgSys=dev.configsys
+UpdateAutobat=dev.autoexec
+CopyFiles=dev.copy
+AddReg=IOS,Poll,CDHPCReg
+LogConfig=dev.config
+
+[dev.copy]
+CDHPC.mpd
+
+[IOS]
+HKR,,DevLoader,0,*IOS
+HKR,,Polling,0,1
+
+[Poll]
+
+[CDHPCReg]
+HKR,,PortDriver,0,CDHPC.mpd
+
+[dev.config]
+ConfigPriority=HARDWIRED
+IOConfig=300-307(3ff::)
+;MemConfig=e8000-ebfff
+
+[dev.Safedrivers]
+%10%\IOS.INI,SafeList,,"hpc_cd.sys	; Aleph One real-mode CD-ROM driver",0
+%10%\IOS.INI,SafeList,,"armaspi.sys	; Andreas Walter's DOS ARMASPI driver",0
+%10%\IOS.INI,SafeList,,"armedit.sys	; Alexander Thoukidides' ARMedit driver",0
+
+[dev.configsys]
+DevDelete=HPC_CD.SYS
+
+[dev.autoexec]
+CmdDelete=MSCDEX
+
+[ControlFlags]
+
+[SourceDisksNames]
+1=%DiskID%,,
+
+[SourceDisksFiles]
+CDHPC.mpd=1
+
+[Strings]
+Mfg="Aleph One Ltd"
+Mfg_name="Aleph One"
+Dev_name="Aleph One RISCOS-hosted devices controller"
+DiskID="Aleph One 32-bit drivers disk"
+
+

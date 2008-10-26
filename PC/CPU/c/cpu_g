@@ -22,6 +22,7 @@
  *  2.35  1998.09.20 MB   Added serial number checking.
  *  3.02  1998.12.08 W    Fixed VRAM logic so that size iscorrect for <16Mb Main RAM
  *  3.05  2000.02.01 W    Turning off SA cache during RAM allocation moved to PCMEM module
+ *  3.08  2008.09.22 DD   Various changes for RISC OS 6
  */
 
 #include "kernel.h"
@@ -59,20 +60,6 @@
 /* special fake SCAMP register */
 #define scampF0 0
 
-#ifdef PC_DEMO
-static char demotimeout[12]={0xb2,0x40,0x8c,0xff,0x02,0x54,
-                             0xbd,0x6e,0x32,0x83,0xe7,0x5f};
-
-#define DEMOTIMEOUT \
-    { \
-      int i; \
-      for (i=0, srand('Diva'); i!=12; i++) \
-        demotimeout[i] = demotimeout[i] ^ rand()%0xff; \
-      SYS_error( true, demotimeout ); \
-      exit(1); \
-    }
-#endif
-
 /* Globals **************************************************** */
 
 static int   CPU_MemSize, CPU_VRAMSize;
@@ -87,6 +74,9 @@ static int   CPU_HWType;      /* Card type */
 /* PC addresses of available block of shared memory */
 static uint  CPU_SharedMemStart; /* First byte */
 static uint  CPU_SharedMemEnd;   /* Last byte PLUS ONE for convenience */
+
+static char *MemTable;		/* Pointer to copy of physical memory table */
+static int MemTableSize;	/* Size of memory table in bytes */
 
 #define HW_GEMINI1 0
 #define HW_GEMINI2 1
@@ -242,8 +232,9 @@ static void SetHold(bool OnNotOff)
 
     for ( i=0; i < 200; i++ )
     {
-      if ( CPUS_Read(MISCR) & MISCRrd_HLDA )
+      if ( CPUS_Read(MISCR) & MISCRrd_HLDA ) {
         return;
+}
     }
 
     SYS_trace("HLDA didn't enable");
@@ -347,6 +338,25 @@ extern void CPU_FrameVideoAccess ( bool copy_on_switch )
                        MMCR_HighROM(mRDONLY) );
 }
 
+static int GuessRISCOSversion() /* returns 3 for RISCOS 3, 4 for ROS 4 */
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = 129;
+  R.r[1] = 0;
+  R.r[2] = 255;
+  _kernel_swi ( OS_Byte, &R, &R );
+
+  if ( R.r[1] >= 0xA9 )		/* 4.39, 4.42 and 6 return &A9 */
+    return 6;
+  if ( R.r[1] >= 0xA8 )
+    return 4;
+  if ( R.r[1] >= 0xA3 )
+    return 3;
+
+  return 2;
+}
+
 static bool HardwareInit ( int RAMsize )
 {
   _kernel_swi_regs R;
@@ -354,8 +364,11 @@ static bool HardwareInit ( int RAMsize )
 
   struct adrblk blocks[MBCR_regs];
   int i, s, ctlword, pcaddr, ramsize_index;
+  int pblock[3];
 
   /* Hardware type determination */
+
+  SYS_BannerText("Initialise H/W");
 
   REV2R_val = 0;
 
@@ -434,15 +447,52 @@ static bool HardwareInit ( int RAMsize )
 
   /* Now sort out RAM size; if < 1M, use 1M */
 
+  SYS_BannerText("");
+  SYS_BannerText("Decide RAM size");
+
   ramsize_index = RoundSize ( RAMsize );
 
   /* Attempt to allocate this much RAM ---------- */
   /* We need to turn off the SA data cache whilst doing this to work round an
      interrupt hole in RISCOS/SA - this is now done in module */
 
+  if (GuessRISCOSversion() == 6) {	/*RISC OS 4.39 or 6 */
+    SYS_BannerText("");
+    SYS_BannerText("Read memory table");
+    R.r[0] = 6;  /* Get mem-table size */
+    err = _kernel_swi ( OS_Memory, &R, &R );
+    if (err != NULL ) {
+      SYS_trace("Error from OS_Memory 6: %s", err->errmess );
+      return false;
+    }
+    MemTableSize = R.r[1];
+    MemTable = malloc(MemTableSize * 10);
+    if (MemTable == NULL) {
+      SYS_trace("Cannot get memory for memory table");
+      return false;
+    }
+    R.r[0] = 7;
+    R.r[1] = (int) MemTable;
+
+  /* Fill in memory table */
+
+    err = _kernel_swi ( OS_Memory, &R, &R );
+    if (err != NULL ) {
+      SYS_trace("Error from OS_Memory 7: %s", err->errmess );
+      return false;
+    }
+    R.r[2] = (int) MemTable;
+    R.r[3] = MemTableSize * 2;
+  }
+  else {
+    R.r[2] = R.r[3] = 0;
+  }
+
   R.r[0] = ramsizes[ramsize_index].val;
+
   if (CFG.IncludeVRAM) R.r[1] = 1; /* 'include VRAM in this size' flag */
   else R.r[1] = 0;
+
   err = _kernel_swi ( PCMem_SetMem, &R, &R );
   if ( err != NULL )
   {
@@ -453,16 +503,43 @@ static bool HardwareInit ( int RAMsize )
   if (CFG.IncludeVRAM) /* SetMem returns allocated size of VRAM in R0 */
     CPU_VRAMSize = R.r[0];
 
+  SYS_BannerText("");
+  SYS_BannerText("RAM - GetMemTbl");
 
   /* Now read what memory we have actually got ------ */
 
   R.r[0] = (int) blocks;
   err = _kernel_swi ( PCMem_GetMemTbl, &R, &R );
+
   if ( err != NULL )
   {
     SYS_trace("Error from GetMemTbl SWI: %s", err->errmess );
     return false;
   }
+
+#if 0
+for (i = 0; i < MBCR_regs; i++) {
+_kernel_swi_regs RR;
+if (blocks[i].armbase == 0) continue;
+pblock[2] = blocks[i].armbase;
+RR.r[0] = 1024 + 2048 + 4096;
+RR.r[1] = (int) pblock;
+RR.r[2] = 1;
+err = _kernel_swi(OS_Memory, &RR, &RR);
+fprintf(stderr, "start = %x  size = %x  ",
+blocks[i].armbase, blocks[i].blksize);
+if (err == NULL) {
+  RR.r[0] = 24;
+  RR.r[1] = pblock[1];
+  RR.r[2] = pblock[1] + 8;
+  _kernel_swi(OS_Memory, &RR, &RR);
+fprintf(stderr, "page = %x  logical addr = %x  acc = %x\n",
+ pblock[0], pblock[1], RR.r[1]);
+}
+else
+fprintf(stderr, "%s\n", err->errmess);
+}
+#endif
 
   CPU_MemoryBase = (BYTE *)R.r[1];  /* Logical addr of memory */
   RAMsize = R.r[2];
@@ -700,9 +777,6 @@ static void CPU_SetA20_Rev2 ( int OnNotOff )
 
 
 //static unsigned int mark=0x646D7450;
-#ifdef PC_DEMO
-static time_t inst_time;
-#endif
 
 static bool CPU_SetConfig(void)
 {
@@ -721,17 +795,12 @@ static bool CPU_SetConfig(void)
   if ( !HardwareInit ( CFG.PCRAM << 20 ) )
     SYS_error ( true, "sepcram" );
   SYS_BannerText("");
-
   SYS_BannerText("Loading BIOS");
   ROM_load("<Diva$Dir>.ROM", ROM_First, ROM_Length);
-#ifdef PC_DEMO
-  /* Ti*mes out one week after installation */
-  if ( difftime(time(NULL), inst_time) > (7*24*60*60) )
-    DEMOTIMEOUT;
-#endif
   /*SYS_BannerText("Loading ATIem ROM");
   ROM_load("<Diva$Dir>.ATIem", 0xC0000, 58);*/
   SYS_BannerText("");
+  SYS_BannerText("Starting...");
 
   /* New A20 Gate option */
 
@@ -757,37 +826,36 @@ static void trace_cb_list( Callback** _cb )
 
   while (cb != NULL)
   {
-    SYS_trace("callback @ %08x; call %08x r0=%08x", cb, cb->fn, cb->R0val);
+    SYS_trace("callback @ %08p; call %08p r0=%08x", cb, cb->fn, cb->R0val);
     cb = cb->next;
   }
 }
 
-#ifdef PC_DEMO
-static int xy=0;
-#endif
+/* #define DUMPHANDLER */
 
 static void CPU_TimedRun ( int timeout_cs )
 {
-  //_kernel_swi_regs R;
-  //char iof[32]="<Diva$Dir>.IO_H";
-  //char memf[32]="<Diva$Dir>.Mem_H";
+#ifdef DUMPHANDLER
+  _kernel_swi_regs R;
+  char iof[32] = "<Diva$Dir>.IO_H";
+  char memf[32] = "<Diva$Dir>.Mem_H";
+#endif
 
   *CPUS_pStopFlag = 0;
   *CPU_pTimerWord = timeout_cs;
 
   do
   {
-#ifdef PC_DEMO
-    if (xy==0) xy=*((int*)0x10C)+71999; /* ~12 minutes*/
-    if ( *((int*)0x10C) > xy )
-      DEMOTIMEOUT;
-#endif
-    /*R.r[0] = 10; R.r[1] = (int) iof; R.r[2] = 0xffd;
+#ifdef DUMPHANDLER
+    R.r[0] = 10; R.r[1] = (int) iof; R.r[2] = 0xffd;
     R.r[4] = (int) &SYS_State.IOhandlers; R.r[5] = R.r[4] + (sizeof(Handler)*256);
     _kernel_swi( OS_File, &R, &R );
+/*
     R.r[0] = 10; R.r[1] = (int) memf; R.r[2] = 0xffd;
     R.r[4] = (int) &SYS_State.Memhandlers; R.r[5] = R.r[4] + (sizeof(Handler)*24);
-    _kernel_swi( OS_File, &R, &R );*/
+    _kernel_swi( OS_File, &R, &R );
+*/
+#endif
     CPUS_Run();
     //_kernel_swi( PCSupport_GetInternalAddr, &R, &R );
     //trace_cb_list( (Callback**) (R.r[3]-8) );
@@ -829,7 +897,6 @@ static void EnsureReset( void )
     SYS_trace ("Hard Reset");
     CPU_Reset();
   }
-
   SYS_error ( true, "henoreset");
 }
 
@@ -1112,7 +1179,10 @@ static bool CPU_Shutdown (void)
 
   R.r[0] = 0;
   R.r[1] = 0;
+  R.r[2] = (int) MemTable;
+  R.r[3] = MemTableSize * 2;
   _kernel_swi ( PCMem_SetMem, &R, &R );
+  if (GuessRISCOSversion() == 6) free(MemTable);
 
   return false;
 }

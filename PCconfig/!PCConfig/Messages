@@ -1,5 +1,5 @@
 _TaskName:PCConfig
-Ver:0.84 (26 Jan 1999)
+Ver:0.85 (26 Oct 2008)
 no_diva:I dont know where your !PC application is. Please open the directory containing the PC application and re-start !PCConfig.
 no_diva_version:Your !PC.!Run file seems to be corrupted (can't find version number).  Please re-install and try again, or contact Aleph One.
 no_config_dir:I couldn't find your configuration folder, but have attempted to create a suitable default.  This is entirely normal if this is the first time you have installed this verson of !PC.

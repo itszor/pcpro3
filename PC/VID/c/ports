@@ -19,6 +19,7 @@
 
 #include <string.h>
 #include "kernel.h"
+#include "swis.h"
 
 #include "sys.h.stdtypes"
 #include "sys.h.sys"
@@ -657,9 +658,21 @@ void VID_SaveVESA(void)
   char test[10];
 
   if (VID_ModeType == MODE_VESA) {
-    r.r[0] = 2; r.r[1] = 2;
-    _kernel_swi(0x66 /*OS_DynamicArea*/, &r, &r);
-    src = (BYTE*) r.r[3] + VID_DispStart32;
+/*
+ * Changed for RISC OS 6. OS_ReadVduVariables has to be used to
+ * find the start of the screen memory now BUT it returns the
+ * address corresponding to the top left-hand corner of the screen
+ * being displayed and not the address of the start of screen memory.
+ * This code fiddles with the value
+ */
+    int block[4], base;
+    block[0] = 149;	/* Address of start screen memory being displayed */
+    block[1] = -1;
+    r.r[0] = r.r[1] = (int) &block[0];
+    if (_kernel_swi(OS_ReadVduVariables, &r, &r) != NULL)
+      return;
+    base = block[0] & 0xfff00000;	/* Unjustified hack */
+    src = (BYTE*) base + VID_DispStart32;
     debug(("VID_SaveVESA: HardScreenBase %x", VIDS_HardScreenBase));
     debug(("VID_SaveVESA: RealScreenBase %x", VID_RealScreenBase));
     debug(("VID_SaveVESA: MemoryBlk %x", VIDS_MemoryBlk));

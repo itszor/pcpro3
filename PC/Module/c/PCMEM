@@ -1,0 +1,1275 @@
+#define VERSION_STRING "3.08 (2008.10.26)"
+/*
+*    !PC C source code
+*
+*    Module.C.PCMem - PC Memory mapper module
+*
+*    17-11-94 1.00 INH    Original
+*    01-12-94 1.66        Exclude video RAM
+*    26-05-95 1.78        Proper SWI chunk used
+*    02-06-95 1.80        Renamed for release
+*    01-08-96 2.02	  Works round DMA/Cache bug
+*  1997.10.20 2.15 RJW    VESA RAM block on end of list if possible
+*  1998.03.05      MB     Fiddled so we've got the option of adding the VRAM
+*                           block on the end if we want
+*  1999.06.24 3.03 W      Allocate ram on 256Mb machine (or 128 in 2nd slot)
+*  2000.01.15 3.04 W      Workaround ROS4 256Mb RAM bug
+*  2000.02.01 3.05 W      Turning off SA cache moved from c.CPU_g and fixed for ROS 3.71
+*  2000.06.07 3.06 JB/W   Fettled to ensure Castle Kinetic SDRAM is not allocated
+*  2008.09.22 3.08 DD     Various changes to cope with RISC OS 6
+*			  Moved OS_Memory 7 call to !PC. Map now passed to module
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "kernel.h"
+/*#include "os.h"*/
+#include "swis.h"
+
+#include "module.h.pcmemswis"
+/*#include "module.h.PCSupport"*/
+
+/* Guess what! The video controller requires specific physical pages,
+   but doesn't lock them properly; hence, we see them as available
+   and allocate from them, and misery happens. To avoid this, we
+   find out the physical base of video RAM and mark the subsequent
+   VRAM_EXCLUDE_SIZE length of memory as unavailable. Hopefully
+   Acorn will fix this soon. Fixed from ROS 3.6? and by MemFix - I think.
+
+   However we now have a problem with SA when RISCOS moves its heap pages but
+   only flushes the data cache, not the instruction cache. Stuff goes wrong
+   at this point. Workaround for this to turn the data cache off whilst allocating RAM.
+*/
+
+/* Changes from RJW:
+   Previous versions of this code worked to try and find any suitable set of
+   memory blocks. To allow a slot free as often as possible (to use for VRAM)
+   we want to satisfy the memory requirement using the smallest number of blocks
+   possible. Thus we don't stop searching when we have fulfilled the memory
+   requirement, but rather keep searching until we have searched all the memory.
+   Then we throw blocks away, smallest first, and split as necessary to get a
+   suitable set. In this way we should get more big blocks than before, rather
+   than ending up with 1 or 2 small blocks at the end of our list that could
+   more easily be amalgamated.
+*/
+
+#define DEBUG 0
+
+#define VRAM_EXCLUDE_SIZE (1024*1024)
+
+/* dynamic area numbers */
+#define HEAParea 0
+#define VRAMarea 2
+
+extern int  PCMemS_GrowFlag;
+extern int  PCMemS_ShrinkFlag;
+extern void PCMemS_DAHandler(void);
+
+#undef OS_DynamicArea
+#define OS_DynamicArea 0x66
+#undef OS_Memory
+#define OS_Memory      0x68
+#define CVT_FROM_PAGENO   0x100
+#define CVT_FROM_LOGADDR  0x200
+#define CVT_FROM_PHYSADDR 0x400
+#define CVT_TO_PAGENO     0x800
+#define CVT_TO_LOGADDR   0x1000
+#define CVT_TO_PHYSADDR  0x2000
+
+#define SET_NONCACHEABLE (2<<14)
+#define SET_CACHEABLE    (3<<14)
+
+struct pblk
+{
+  int pageno;
+  int logaddr;
+  int physaddr;
+};
+
+
+
+/* Definitions ******************************************************** */
+
+#define SAVE_INT_STATE   \
+              int intstate = _kernel_irqs_disabled(); _kernel_irqs_off();
+
+#define RESTORE_INT_STATE \
+              if ( !intstate ) _kernel_irqs_on();
+
+typedef enum {false, true} bool;
+
+#define NotUsed(r) (void) r
+
+/* Globals ************************************************************** */
+
+static _kernel_oserror ErrorBlk   = { 0x00010001, "MemBlk not loaded" };
+static _kernel_oserror MemErrBlk  = { 0x00010002, "Memory size mismatch" };
+static _kernel_oserror NowtMemErrBlk  = { 0x00010007, "Cannot find details of this machine's memory" };
+static _kernel_oserror CvtErrBlk  = { 0x00010003, "Error getting page numbers" };
+/*static _kernel_oserror VRAMErrBlk  = { 0x00010004, "Error finding VRAM details" };*/
+static _kernel_oserror VRAMCvtErrBlk  = { 0x00010005, "Error getting VRAM page numbers" };
+static _kernel_oserror VRAMFullErrBlk  = { 0x00010006, "Memory too fragmented to Map VRAM to PC card" };
+
+static int PCMem_PW;
+
+static int RISCOSVersion = 0;
+
+static char *MemTable;  /* Pointer to memory layout table */
+static int   MemTblSize;
+static int   PageSize;
+static int   MemReq;    /* Memory required, in bytes */
+static int   MemSize=0;   /* Actual size of memory */
+static int   VRAMSize=0; /* VRAM detected at startup */
+static int   VRAMBase=0;
+
+static int   AreaNo;
+static int   AreaLogBase;  /* Logical base of area */
+
+static char *debugmsg = "<no message>";
+
+static int   SAworkaround;  /* set to 1 if StrongARM and RISCOS 3.7x detected */
+
+
+/* Memory-block tiling routines ----------------------------------- */
+
+/* Things break quite heavily if these aren't powers of 2! */
+
+#define BLK_MAX_SIZE (8192*1024)
+#define BLK_MIN_SIZE (256*1024)
+#define MAX_BLKS 8
+#define REAL_MAX_BLKS 8
+
+/* ------------------- */
+
+/* The MemBlks array keep the base address & sizes of the
+   free blocks which we are using. They must be kept in
+   lowest-address-first order.
+*/
+
+static struct _memblk
+{
+  int bbase;
+  int bsize;
+  int bflags;
+#define DEL_LOWEST_FIRST  1
+#define DEL_HIGHEST_FIRST 2
+#define VRAM_BLOCK        4
+  int pageno;  /* Starting page number. We assume all
+                  subsequent pages are numbered consecutively */
+}
+  MemBlks[REAL_MAX_BLKS];
+
+/* FE control */
+
+/*static void SYS_BannerText(char *text)
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = (int) text;
+  _kernel_swi(PCSupport_BannerText, &R, &R);
+}*/
+
+/* Primitive operations ============================ */
+
+/* ClearBlks() ------------------------------- */
+
+static void ClearBlks(void)
+{
+  int i;
+  for ( i=0; i <REAL_MAX_BLKS; i++ )
+  {
+    MemBlks[i].bbase = 0;
+    MemBlks[i].bsize = 0;
+    MemBlks[i].pageno = -1;
+  }
+}
+
+/* InsertBlk() ------------------------------
+
+   inserts a block at position 'pos' in the array.
+   Later elements drop off the end!
+*/
+
+static void InsertBlk ( int pos, int base, int size, int flg )
+{
+  int i;
+
+  if ( pos < 0 || pos >= MAX_BLKS )
+    return;
+
+  for (i=MAX_BLKS-1; i > pos; i-- )
+    MemBlks[i] = MemBlks[i-1];
+
+  MemBlks[pos].bbase = base;
+  MemBlks[pos].bsize = size;
+  MemBlks[pos].bflags = flg;
+}
+
+/* DeleteBlk() ------------------------------
+
+   deletes the block at position 'pos' and shuffles all
+   elements down.
+*/
+
+static void DeleteBlk ( int pos )
+{
+  if ( pos < 0 || pos >= MAX_BLKS )
+    return;
+
+  /* Move other blocks down */
+
+  while ( pos < MAX_BLKS-1 )
+  {
+    MemBlks[pos] = MemBlks[pos+1];
+    pos++;
+  }
+
+  /* Add a free entry at the end */
+  MemBlks[MAX_BLKS-1].bsize  = 0;
+  MemBlks[MAX_BLKS-1].bbase  = 0;  /* For politeness only */
+  MemBlks[MAX_BLKS-1].bflags = 0;  /* For politeness only */
+}
+
+/* CurrentMemSize() --------------------------------- */
+
+static int CurrentMemSize(void)
+{
+  int i, t=0;
+
+  for ( i=0; i<MAX_BLKS; i++ )
+    t+= MemBlks[i].bsize;
+
+  return t;
+}
+
+/* HalveBlk: cuts a block in half. Block must be at least
+   2*BLK_MIN_SIZE. The DEL_LOWEST_FIRST/DEL_HIGHEST_FIRST
+   flags indicate whether the highest or lowest half should
+   be removed.
+*/
+
+static void HalveBlk ( int pos )
+{
+  int size = (MemBlks[pos].bsize) >> 1;
+
+  if ( size < BLK_MIN_SIZE )
+    return;
+
+  if ( MemBlks[pos].bflags & DEL_LOWEST_FIRST )
+    MemBlks[pos].bbase += size;
+
+  MemBlks[pos].bsize = size;
+}
+
+/* SplitBlk: splits a block into two half-sized ones. The block
+   must be at least 2*BLK_MIN_SIZE, and there must be a spare
+   space in the blocks array.
+*/
+
+static void SplitBlk ( int pos )
+{
+  int size = (MemBlks[pos].bsize) >> 1;
+  int base = (MemBlks[pos].bbase);
+  int flg  = (MemBlks[pos].bflags );
+
+  if ( size < BLK_MIN_SIZE )
+    return;
+
+  MemBlks[pos].bsize = size;
+  InsertBlk ( pos+1, base+size, size, flg );
+}
+
+
+
+/* AddBlk() ======================================== */
+
+/* AddBlk inserts a block into its correct position
+   in the array. It returns true if this has resulted
+   in the memory requirement (MemReq) being satified
+   and we can stop adding blocks.
+*/
+
+
+static bool AddBlk ( int base, int size, int flg )
+{
+  int i;
+
+  /* Skip too-small blocks */
+
+  if ( size < BLK_MIN_SIZE )
+    return false;
+
+  /* Split up too-large blocks */
+
+  while ( size > BLK_MAX_SIZE )
+  {
+    flg = DEL_HIGHEST_FIRST;
+    if ( AddBlk ( base, BLK_MAX_SIZE, flg ) )
+      return true;
+    base += BLK_MAX_SIZE;
+    size -= BLK_MAX_SIZE;
+    /* Drop through into... */
+  }
+
+  /* If no free gaps in the array, we will have to
+     delete the smallest block. If several blocks are
+     the same size, we take the highest one in the
+     array (last one to be added). If no blocks are
+     smaller than the one we're about to add, we don't
+     add the new block
+  */
+
+  if ( MemBlks[MAX_BLKS-1].bsize != 0 )
+  {
+    int smallest_pos = -1;
+    int smallest_size = size;
+
+    for ( i=MAX_BLKS-1; i >=0; i-- )
+      if ( MemBlks[i].bsize < smallest_size )
+      {
+        smallest_pos = i;
+        smallest_size = MemBlks[i].bsize;
+      }
+
+    if ( smallest_pos >= 0 )
+      DeleteBlk(smallest_pos);
+    else
+      return false;
+  }
+
+  /* Insert in first free slot in array */
+
+  for ( i=0; i < MAX_BLKS; i++ )
+    if ( MemBlks[i].bsize == 0 )
+    {
+      InsertBlk ( i, base, size, flg );
+      if ( CurrentMemSize() > MemReq )
+      {
+        MemBlks[i].bflags = DEL_HIGHEST_FIRST;
+        return true;
+      }
+      break;
+    }
+
+  return false;
+}
+
+/* ProcessFreeMem() -------------------------------------- */
+
+/* This is given a first/last range, and splits it into a
+   series of power-of-2 blocks on power-of-2 boundaries.
+   These blocks are added using AddBlk.
+
+   It is based on the premise that somewhere in the range
+   first-last is one address which is aligned on a bigger
+   power-of-2 boundary than any other. Below that address,
+   at most one of each power-of-2-sized block can be
+   fitted in. Above that address, the same holds true.
+
+   It returns true if the memory requirement has been
+   satisfied.
+
+*/
+
+static bool ProcessFreeMem ( int first, int last )
+{
+  int size;
+
+  /* if memory is in kinetic SDRAM area then don't allocate it*/
+  /*perhaps better done by bit-checking in memtable? */
+  if ( first >= 0x20000000 ) return false;
+
+  if ( last < first ) return false;  /* OOPS! */
+
+  /* Find block size which will take us to next
+     power-of-2 boundary. Fit blocks in up to this address */
+
+  for ( size=1; first+size-1 <= last ; size <<= 1 )
+  {
+    /* Here, 'first' is aligned on a 'size' boundary */
+    if ( first & size )
+    {
+      if ( AddBlk(first, size, DEL_LOWEST_FIRST) )
+        return true;
+      first += size;
+      /* Ensure it is now aligned on a 2*size boundary */
+    }
+  }
+
+  /* Now fit blocks in after this address */
+
+  for ( ; size > 0; size >>= 1 )
+  {
+    if ( first+size-1 <= last )
+    {
+      if ( AddBlk(first, size, DEL_HIGHEST_FIRST) )
+        return true;
+      first += size;
+    }
+  }
+
+  return false;
+}
+
+/* OptimiseBlocks() ================================
+
+   This adjusts the memory blocks to fit the actual memory
+   requirement as closely as possible.
+
+   Blocks were added to the table starting with the lowest
+   memory address, and stopping when we had examined all the
+   memory.
+
+   First we find the smallest block. If it is smaller than the
+   excess, we cut it. If it is at least twice as big as the
+   excess we halve it. If it is smaller than twice as big then
+   there is nothing more we can do...
+
+   The blocks are sorted in lowest-address-first order
+   at this stage; OptimiseBlocks() maintains this.
+*/
+
+
+static void OptimiseBlocks (void)
+{
+  int i, size, excess;
+  int smallest;
+
+again:
+  excess= CurrentMemSize() - MemReq;
+  /* If the excess is smaller than our smallest lump, there ain't much we can do! */
+  /* So we're done. Exit. */
+  if (excess < BLK_MIN_SIZE)
+    return;
+  /* Find the smallest block in the list */
+  size = BLK_MAX_SIZE;
+  smallest = -1;
+  for ( i=MAX_BLKS-1; i >=0; i-- )
+  {
+    if ((MemBlks[i].bsize != 0) && (MemBlks[i].bsize <= size)) {
+      size = MemBlks[i].bsize;
+      smallest = i;
+    }
+  }
+  /* If smallest == -1 then we couldn't find ANY free blocks! */
+  if (smallest == -1)
+    return;
+  /* If the smallest block is all excess then cut it */
+  if (size <= excess)
+  {
+    /*printf("Cutting Block %d [size=%d, excess=%d]\n", smallest, size, excess);*/
+    DeleteBlk(smallest);
+    goto again;
+  }
+
+  /* If the the excess is greater than half the size of the block then halve the block */
+  if (size <= excess * 2 )
+  {
+    /*printf("Halving Block\n");*/
+    HalveBlk(smallest);
+    goto again;
+  }
+
+  /* If we get here, then the size of the block must be between excess/2 and */
+  /* excess. Lets split it in two and do our best */
+  if (MemBlks[MAX_BLKS-1].bsize == 0 )  /* Spare space in array */
+  {
+    /*printf("Splitting Block\n");*/
+    SplitBlk(smallest);
+    goto again;
+  }
+  /* If we get here, then we have done the best we can, but overshot... */
+}
+
+/* SortBlocks () -----------------------------------
+
+   All the blocks in both ARM and PC memory space must lie on
+   a boundary which is a multiple of their size. For this
+   reason they must be arranged in PC space with the largest
+   blocks first, and the smaller ones later. SortBlocks()
+   orders the blocks largest-first.
+
+   This same ordering of blocks is used when the page tables
+   for ARM logical-to-physical mapping are being set up
+   (with FillPageTable()), which means that ARM logical memory
+   will be a straight map of PC physical memory.
+
+*/
+
+static void SortBlocks()
+{
+  int i, j, s_max, s_pos;
+  struct _memblk tmp;
+
+  /* Basically a bubble sort, but with less movement of the data */
+
+  for ( i=0; i < MAX_BLKS-1; i++ )
+  {
+    s_max = MemBlks[i].bsize;
+    s_pos = i;
+
+    if ( s_max == 0 ) /* We're done */
+      break;
+
+    /* Find largest block above this one */
+    for ( j=i+1; j < MAX_BLKS; j++ )
+    {
+      if ( MemBlks[j].bsize > s_max )
+      {
+        s_pos = j;
+        s_max = MemBlks[j].bsize;
+      }
+    }
+
+    /* If we've found a new biggest block, swap it */
+    if ( s_pos != i )
+    {
+      tmp = MemBlks[i];
+      MemBlks[i] = MemBlks[s_pos];
+      MemBlks[s_pos] = tmp;
+    }
+  }
+
+}
+
+/* GetPageNumbers() ======================================= */
+
+static bool GetPageNumbers ( void )
+{
+  struct pblk p;
+  _kernel_swi_regs R;
+  int i;
+
+  for ( i=0; i < MAX_BLKS; i++ )
+  {
+    if ( MemBlks[i].bsize == 0 )
+      break;
+
+    p.physaddr = MemBlks[i].bbase;
+    R.r[0] = CVT_FROM_PHYSADDR | CVT_TO_PAGENO;
+    R.r[1] = (int) &p;
+    R.r[2] = 1;
+
+    if ( _kernel_swi ( OS_Memory, &R, &R ) != NULL )
+      return false;
+
+    MemBlks[i].pageno = p.pageno;
+  }
+
+  return true;
+}
+
+/* ------------------------------------------- */
+
+static int GuessRISCOSversion() /* returns 3 for RISCOS 3, 4 for ROS 4 */
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = 129;
+  R.r[1] = 0;
+  R.r[2] = 255;
+  _kernel_swi ( OS_Byte, &R, &R );
+
+  if ( R.r[1] >= 0xA9 )		/* 4.39, 4.42 and 6 return &A9 */
+    return 6;
+  if ( R.r[1] >= 0xA8 )
+    return 4;
+  if ( R.r[1] >= 0xA3 )
+    return 3;
+
+  return 2;
+}
+
+/* ShowInfo() ============================================ */
+
+static void ShowInfo ( void  )
+{
+  int i;
+  _kernel_swi_regs R;
+
+  printf("StrongARM workaround is %s\n", SAworkaround ? "on" : "off");
+  for ( i=0; i<MAX_BLKS; i++)
+  {
+    if ( MemBlks[i].bsize != 0 )
+      printf("Base: %8Xh size: %8X page # %Xh\n",
+        MemBlks[i].bbase, MemBlks[i].bsize, MemBlks[i].pageno );
+  }
+
+  printf("Total PC memory allocated: %Xh\n", MemSize );
+  printf("VRAM detected: %Xh at:%Xh\n", VRAMSize, VRAMBase );
+
+  printf("Pagesize:%Xh  No. Memory Table entries:%Xh\n\n", PageSize, MemTblSize);
+  printf("Memory table is at %Xh\n", MemTable);
+  printf("Dynamic area #%d\n", AreaNo );
+
+  R.r[0] = 2;
+  R.r[1] = AreaNo;
+  if ( _kernel_swi ( OS_DynamicArea, &R, &R ) )
+    printf("Cannot read current area info\n");
+  else
+     printf("Area logical base %Xh, size %Xh\n", R.r[3], R.r[2] );
+
+  printf("Debug message: %s\n", debugmsg );
+
+}
+
+/* ------------------------------------------- */
+
+
+#if 0
+static void BodgeDynamicArea ( char *table, int pgsize, int area )
+{
+  _kernel_swi_regs R;
+
+  int area_size;
+  int pg_no;
+  struct pblk p;
+
+  NotUsed(table);
+
+  R.r[0] = 2;  /* Read area info */
+  R.r[1] = area;  /* VRAM is area #2, HEAP is area 0 */
+  if ( _kernel_swi ( OS_DynamicArea, &R, &R ) != NULL )
+  {
+    debugmsg = "Couldn't read dynamic area base addr";
+    return;
+  }
+  /* Returns R3 = area base, R2 = area size */
+
+  area_size     = R.r[2];
+  if (area==VRAMarea)
+    if ( area_size < VRAM_EXCLUDE_SIZE )
+      area_size = VRAM_EXCLUDE_SIZE;
+
+  /* Get physical address of first page */
+
+  p.logaddr = R.r[3];
+  R.r[0] = CVT_FROM_LOGADDR | CVT_TO_PHYSADDR;
+  R.r[1] = (int) &p;
+  R.r[2] = 1;
+  if ( _kernel_swi ( OS_Memory, &R, &R ) != NULL )
+  {
+    debugmsg = "Couldn't convert dynamic area addr to phys";
+    return;
+  }
+
+  pg_no = p.physaddr / pgsize;
+  area_size /= pgsize;
+
+  /* Fill in entries in table */
+
+  while ( area_size-- > 0 )
+  {
+    /* Set relevant entry to unavailable */
+    if ( pg_no & 1 )
+      MemTable[pg_no >> 1] |= 0x80;
+    else
+      MemTable[pg_no >> 1] |= 0x08;
+
+    pg_no++;
+  }
+
+}
+#endif
+/* ------------------------------------------- */
+
+#define PAGE_FREE 0x1
+
+static _kernel_oserror *AllocPages ( int totsize )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+  int i, tt, freestart;
+
+  MemReq = totsize;
+  ClearBlks();
+
+  R.r[0] = 7;
+  R.r[1] = (int) MemTable;
+
+  /* Fill in memory table */
+
+  err = _kernel_swi ( OS_Memory, &R, &R );
+  if ( err != NULL )
+    return err;
+
+ /*!! this was an attempt to counter the problem of moving the heap area pages,
+  which goes wrong on SA  - should no longer be necessary*/
+  /*BodgeDynamicArea ( MemTable, PageSize, HEAParea );*/
+
+  freestart = -1;
+
+  /*!!printf("Scanning memory...\n");*/
+  for ( i=0; i < MemTblSize; i++ )
+  {
+    if ( i & 1 )
+      tt = MemTable[i >> 1] >> 4;
+    else
+      tt = MemTable[i >> 1] & 0xF;
+
+    if ( tt == PAGE_FREE )
+    {
+      if ( freestart < 0 )
+        freestart = i;     /* First free page */
+
+      continue;
+    }
+    else  if ( freestart >= 0 ) /* End of free block */
+    {
+      /* We no longer exit as soon as we have enough memory */
+      ProcessFreeMem ( freestart * PageSize, i*PageSize - 1 );
+      freestart = -1;
+    }
+  }
+  if ( freestart >= 0 ) /* free DRAM all the way to end of table */
+  {
+      ProcessFreeMem ( freestart * PageSize, i*PageSize - 1 );
+  }
+
+  /*!!printf("Optimising Blocks...\n");*/
+
+  OptimiseBlocks();
+
+  /*!!printf("Sorting Blocks...\n");*/
+  SortBlocks();
+
+  /*!!printf("CurrentMemSize...\n");*/
+  MemSize = CurrentMemSize();
+
+  /*!!printf("GetPageNumbers...\n");*/
+  if ( !GetPageNumbers() )
+    return &CvtErrBlk;
+
+  /*!!printf("Done\n");*/
+  return NULL;
+}
+
+/* =============================================================== */
+
+static _kernel_oserror * SetMemSize ( int size )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  R.r[0] = AreaNo;
+  err = _kernel_swi ( OS_ReadDynamicArea, &R, &R );
+  if ( err != NULL )
+  {
+    debugmsg = "Couldn't read size";
+    return err;
+  }
+
+  size -= R.r[1];  /* Subtract current size to give +/- amount */
+
+  R.r[0] = AreaNo;
+  R.r[1] = size;
+  /* This call causes the memory to be expanded in sections (eg 256 lots of
+  128K for 32Mb. For each of these pregrow is called, which calls FillPTE to
+  keep the page table uptodate. This works OK until the dynamic area grows
+  over the 28Mb (logical) memory where the heap is stored. With StrongARM as
+  the ROM moves the page it uses info from the pysical address rather than the
+  logical address which is now out of date, and things go wrong...*/
+
+  #if DEBUG
+  printf("SetMemSize:changing dyn area by %x\n", size);
+  #endif
+  err =  _kernel_swi ( OS_ChangeDynamicArea, &R, &R );
+  if ( err != NULL )
+  {
+    debugmsg = "unable to shrink/grow dynamic area";
+    return err;
+  }
+
+  return NULL;
+}
+
+/* ------------------------------------------------------ */
+
+static int fill_blk;  /* Current block whose pages are being filled in */
+static int fill_page; /* The next page number to fill in */
+static int fill_count; /* Count of pages left in this block */
+
+/* GrowMemToSize() starts the actual memory-allocation process,
+   by setting up and calling ChangeDynamicArea.
+*/
+
+static _kernel_oserror *GrowMemToSize ( void )
+{
+
+  fill_blk = 0;
+  fill_page  = MemBlks[0].pageno;
+  fill_count = MemBlks[0].bsize / PageSize;
+
+  /* This is used to count the total number of pages
+     filled in by repeated calls to PreGrow. This should
+     be exactly zero when PostGrow is called. If not,
+     PostGrow returns an error.
+  */
+
+  PCMemS_GrowFlag = MemSize / PageSize;
+  return SetMemSize(MemSize);
+}
+
+/* -------------------------- */
+
+static _kernel_oserror *SetAreaCacheable ( int base, int size, int code )
+{
+  int i;
+  struct pblk p;
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+  #if DEBUG
+  printf("Setting area %scacheable: From %x, size:%x\n",((code==SET_NONCACHEABLE)?"non":""),base,size);/*!!*/
+  #endif
+  for ( i=0; i < size; i += PageSize )
+  {
+    /*!!*/
+    p.logaddr = base + i;
+    R.r[0] = CVT_FROM_LOGADDR | code;
+    R.r[1] = (int) &p;
+    R.r[2] = 1;
+
+    err = _kernel_swi ( OS_Memory, &R, &R );
+    if ( err != NULL )
+    {
+      #if DEBUG
+      printf("Error at: RelAddr:%x, AbsAddr:%x\n",i,base+i);
+      #endif
+      return err;
+    }
+
+  }
+
+  return NULL;
+}
+
+
+/* -------------------------- */
+
+/* FillPageTable is called from the PreGrow routine; because
+   PreGrow gets called (potentially) a number of times to fill
+   in the page table a bit at a time, we have to make this
+   slightly fancy.
+*/
+
+static bool FillPageTable ( struct pblk *tbl, int tblsize )
+{
+  PCMemS_GrowFlag -= tblsize;
+
+  while ( tblsize-- > 0 )
+  {
+    if ( fill_count == 0 )
+    {
+      if ( ++fill_blk >= MAX_BLKS ) /* No more blocks */
+        return false;
+
+      fill_page = MemBlks[fill_blk].pageno;
+      fill_count = MemBlks[fill_blk].bsize / PageSize;
+      if ( fill_count == 0 )
+        return false;               /* Found end of blocks */
+    }
+
+    tbl->pageno = fill_page++;
+    tbl++;
+    fill_count--;
+  }
+
+  return true;
+}
+
+/* DetectVRAM is called on startup to set the global VRAMSize */
+
+static void DetectVRAM(void)
+{
+  _kernel_swi_regs R;
+
+  if (GuessRISCOSversion() == 6) {
+/*
+ * This is a RISC OS 6 hack... The screen dynamic area has been
+ * half removed. OS_DynamicArea returns a garbage address for it.
+ * The RISC OS 6 PRMs say use OS_ReadVduVariables instead but
+ * this returns the address of the byte corresponding to what
+ * is at the top left-hand corner of the screen which is not the
+ * same thing. I make the assumption it is going to start on a
+ * megabyte boundary and mask the address to suit, but there is
+ * no justification for this assumption.
+ */
+    int block[4];
+    block[0] = 149;	/* Address of start screen memory being displayed */
+    block[1] = 150;	/* Size of screen */
+    block[2] = -1;
+    R.r[0] = R.r[1] = (int) &block[0];
+    if ( _kernel_swi ( OS_ReadVduVariables, &R, &R ) != NULL )
+      return;
+    VRAMBase = block[0] & 0xfff00000;	/* Unjustified hack */
+    VRAMSize = block[1];
+    if (VRAMSize < 0x100000 || VRAMSize > 0x200000) {	/* Sanity check */
+      VRAMBase = VRAMSize = 0;
+    }
+  } else {
+    R.r[0] = 2;  /* Read area info */
+    R.r[1] = VRAMarea;  /* VRAM is area #2 */
+    if ( _kernel_swi ( OS_DynamicArea, &R, &R ) != NULL )
+      return;
+    VRAMSize = R.r[5];
+    VRAMBase = R.r[3];
+  }
+}
+
+/* AddVRAMBlock */
+
+static _kernel_oserror *AddVRAMBlock(void )
+{
+  _kernel_swi_regs R;
+
+  struct pblk p;
+  int pos;
+
+  /* Get physical address of first page */
+
+/*
+ * This should work with RISC OS 6. We are going from a logical
+ * address to a physical one. Assuming that OS_ReadVduVariables
+ * does return the address of the start of the VRAM (which it is
+ * NOT guaranteed to do) then we should get what we want from
+ * this call i.e. the physical address of the VRAM. On a RiscPC
+ * this is at 0x2000000.
+ */
+  p.logaddr = VRAMBase;
+  R.r[0] = CVT_FROM_LOGADDR | CVT_TO_PHYSADDR | CVT_TO_PAGENO;
+  R.r[1] = (int) &p;
+  R.r[2] = 1;
+  if ( _kernel_swi ( OS_Memory, &R, &R ) != NULL )
+  {
+    return &VRAMCvtErrBlk;
+  }
+
+  /* Now add this to the list of pages that the PC card can see */
+  /* Run through and find the first gap in the blocklist */
+  for (pos = 0; (pos < REAL_MAX_BLKS) && (MemBlks[pos].bsize != 0); pos++);
+  if (pos == REAL_MAX_BLKS) {
+    return &VRAMFullErrBlk;
+  }
+  MemBlks[pos].bbase  = p.physaddr;
+  MemBlks[pos].bsize  = VRAMSize;
+  MemBlks[pos].bflags = VRAM_BLOCK;
+  MemBlks[pos].pageno = p.pageno;
+
+  return NULL;
+}
+
+
+
+/* Function to do the guts of PCMEM_SetMem -
+ * separated off to make it easy to turn strongARM data cache off around it
+ * On entry:
+ *   R0 = PC card memory size
+ *   R1 = 'Include VRAM' flag
+ *   R2 -> memory table or 0
+ *   R3 = memory table size or 0
+ *
+ * The memroy table passed is only used for RISC OS 4.39 and above.
+ * It is really aimed at RISC OS 6
+ */
+
+static _kernel_oserror *Do_PCMem_SetMem (_kernel_swi_regs *R)
+{
+  _kernel_oserror *err;
+  int             includevram_flag = 0;
+
+  /* Release non-cacheable bits on pages */
+  if ( MemSize > 0 )
+    SetAreaCacheable ( AreaLogBase, MemSize, SET_CACHEABLE );
+
+  includevram_flag = R->r[1];
+
+  /* R0 = # of bytes */
+  /*!!printf("Seting memory size to zero\n");*/
+  err = SetMemSize ( 0 );  /* Shrink area to zero size, free pages */
+  if ( R->r[0] == 0 ) /* No dynamic area set up */
+  {
+    MemSize = 0;
+    return NULL;
+  }
+
+  if ( err != NULL )
+    return err;
+
+  /* Allocate pages */
+  if (RISCOSVersion == 6) {	/* 4.39 and 6 */
+    MemTable = (char *) R->r[2];
+    MemTblSize = R->r[3];
+/* Sanity check */
+    if (MemTable == NULL || MemTblSize == 0) return &NowtMemErrBlk;
+  }
+
+  if (includevram_flag)
+  {
+    #if DEBUG
+    printf("Allocating memory, excluding VRAM\n");
+    #endif
+    err = AllocPages ( R->r[0] - VRAMSize );
+  }
+  else
+  {
+    /*!!printf("Allocating memory\n");*/
+    err = AllocPages ( R->r[0] );
+  }
+  if ( err != NULL )
+    return err;
+  #if DEBUG
+  printf("Allocated Pages for: %Xh\n", MemSize);
+  #endif
+  /* Now add the VRAM to the end of the block list */
+  if (includevram_flag)
+  {
+    #if DEBUG
+    printf("Allocating VRAM\n");
+    #endif
+    err = AddVRAMBlock();
+  }
+  if ( err != NULL )
+    return err;
+
+  #if DEBUG
+  printf("Growing mem\n");
+  #endif
+  err = GrowMemToSize(); /* Create area again */
+  if ( err != NULL )
+    return err;
+
+  #if DEBUG
+  printf("Setting noncacheable\n");
+  #endif
+  err = SetAreaCacheable (AreaLogBase, MemSize, SET_NONCACHEABLE);
+
+  R->r[0] = VRAMSize; /* Tell !PC the VRAM size so it knows by how
+                         much to lie to the BIOS */
+  return err;
+}
+
+
+/* Do OSCLI command */
+
+static void OScommand ( char * command )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+    R.r[0] = (int) command ;
+    err = _kernel_swi ( OS_CLI, &R, &R );
+}
+
+/* Main dispatch routine --------------------------- */
+
+extern _kernel_oserror *PCMem_SWI (int SWIno, _kernel_swi_regs *R, void *pw )
+{
+  _kernel_oserror *err;
+
+  #define SADataCacheOff "cache iw"
+  #define SADataCacheOn  "cache idw"
+
+  NotUsed(pw);
+
+  switch (SWIno+PCMEM_SWIBASE)
+  {
+    case PCMem_SetMem:
+      if (SAworkaround) OScommand (SADataCacheOff);
+
+      err = Do_PCMem_SetMem(R);
+
+      if (SAworkaround) OScommand (SADataCacheOn);
+
+      return err;
+
+    case PCMem_FillPTE:  /* Fills in page-table entries */
+      /* This is called by the PreGrow routine when it is asked
+         to fill in the physical page numbers. This means that
+         PCMem_SWI is reentrant, as PreGrow gets called as part
+         of PCMem_SetMem. R1->table to fill in, R2=no. of
+         entries to fill in.
+      */
+
+      if ( !FillPageTable ((struct pblk *)(R->r[1]), R->r[2] ) )
+        return &MemErrBlk;
+
+      break;
+
+    case PCMem_GetMemTbl: /* R0->table to put address/length pairs
+                             into. This is *only valid* after
+                             PCMem_SetMem has allocated memory
+                             successfully */
+      {
+        int i;
+        int *p = (int *) (R->r[0]);
+
+        for ( i=0; i<MAX_BLKS; i++)
+        {
+          p[i+i] = MemBlks[i].bbase;
+          p[i+i+1] = MemBlks[i].bsize;
+        }
+
+        R->r[1] = AreaLogBase;  /* Logical address of area */
+        R->r[2] = MemSize;      /* Actual memory size */
+      }
+      break;
+
+    case PCMem_ShowInfo:
+      ShowInfo();
+      break;
+
+  }
+  return NULL;
+}
+
+/* shutdown() ******************************************************* */
+
+static void shutdown(void)
+{
+  _kernel_swi_regs R;
+
+  /* Release pages */
+
+  if ( MemSize > 0 )
+  {
+    SetAreaCacheable ( AreaLogBase, MemSize, SET_CACHEABLE );
+    MemSize = 0;
+  }
+
+  /* Remove dynamic area */
+
+  R.r[0] = 1;
+  R.r[1] = AreaNo;
+
+  _kernel_swi ( OS_DynamicArea, &R, &R );
+
+  /* free memory table memory*/
+  if (RISCOSVersion != 6) free (MemTable);
+}
+
+
+/* test for presence of StrongARM */
+
+static int CheckForSA()
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  R.r[0] = 0;
+  err = _kernel_swi ( 0x6D /*OS_PlatformFeatures*/, &R, &R );
+  /* SA present if SWI recognised & bits 0-4 set - but ROS 3.71 returns 1B instead!*/
+  if ( (err == NULL) && ((R.r[0] & 0x1B) == 0x1B) )
+  {
+    return 1;
+  }
+  else
+
+  return 0;
+
+}
+
+
+/* init() *********************************************************** */
+
+
+/* This is called by RISCOS when the module installs. We don't need to
+   take very much action at this stage
+*/
+
+extern _kernel_oserror *init ( char *cmd_tail, int podule_base, int pw )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+  int size;
+
+  PCMem_PW = pw;
+  NotUsed(cmd_tail);
+  NotUsed(podule_base);
+
+  RISCOSVersion = GuessRISCOSversion();
+  if ( CheckForSA() && RISCOSVersion == 3 )
+  {
+    SAworkaround = 1;
+    debugmsg = "StrongARM+RISCOS 3.7 detected - cache-control operating";
+  }
+
+  R.r[0] = 6;  /* Get mem-table size */
+  if ( _kernel_swi ( OS_Memory, &R, &R ) != NULL )
+  {
+    return &ErrorBlk;
+  }
+
+  size = R.r[1];
+  PageSize = R.r[2];
+  /* Bodge to workaround ROS 4 bug in OS_Memory 7 */
+  /* for ROS 4 need to use &28000 bytes instead of the reported &10000
+  in case 256Mb RAM present */
+
+  if (size <= 0x10000) /*allow for later hardware having bigger RAM */
+  {
+    /* OSmodule20 = enumrate module number r[1]: 0 is utilitymodule */
+    R.r[0]=20;
+    R.r[1]=0;
+    R.r[2]=-1;
+    if ( _kernel_swi ( OS_Module, &R, &R ) != NULL )
+    {
+      return &ErrorBlk;
+    }
+    /* top 16 bits are major version number */
+    if ((R.r[6] >> 16) == 0x4) size = 0x28000;
+  }
+
+/*
+ * OS_Memory 7 is broken in RISC OS 6 and needs far more
+ * memory than OS_Memory 6 says. Code currently multiplies
+ * what it says by 10. Code to read table has been moved to
+ * !PC and the physical page table is passed to the module
+ * by !PC instead. This code is for RISC OS 6 but it will
+ * also catch 4.39 as well as OS_Byte 129 returns &A9 for
+ * 4.39, 4.42 and 6.
+ */
+  if (RISCOSVersion == 6) {
+    MemTable = NULL;
+    MemTblSize = 0;
+  }
+  else {
+    MemTblSize = (size << 1);
+    MemTable = (char *) malloc(size);
+    if ( MemTable == NULL )
+    {
+      return &ErrorBlk;
+    }
+  }
+
+  DetectVRAM();
+
+  /* Create Dynamic Area ---------- */
+
+  R.r[0] = 0;  /* Create area */
+  R.r[1] = -1; /* Area number: allocate please */
+  R.r[2] = 0;  /* Initial size */
+  R.r[3] = -1; /* Logical base address: allocate please */
+  R.r[4] = 0  | /* Read/write by everybody */
+           (1 << 4) | /* Not bufferable */
+           /*(1 << 5) |  Cacheable! - will be made uncacheable later */
+           (1 << 7) | /* Cannot be dragged in TaskMan */
+           (1 << 8);  /* May require specific phys pages */
+  R.r[5] = 32*1024*1024;  /* Max size in bytes */
+  R.r[6] = (int) PCMemS_DAHandler;
+  R.r[7] = pw;
+  R.r[8] = (int) "PC Card Memory";
+
+  err = _kernel_swi ( OS_DynamicArea, &R, &R );
+  if ( err != NULL )
+    return err;
+
+  AreaNo = R.r[1];
+  AreaLogBase = R.r[3];
+
+  atexit ( shutdown );
+  return NULL;
+}
+
