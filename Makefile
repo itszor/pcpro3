@@ -15,8 +15,20 @@ RISCOSE ?= riscose
 ACORN_C ?=
 WIMPSLOT ?= 4194304
 
+# A leading ~ is expanded here, as not every shell does so after the = of
+# make's VAR=value arguments (zsh doesn't).  The tools run in $(SRC), so a
+# path is made absolute; a bare RISCOSE is looked for on the PATH.
+home      = $(patsubst ~/%,$(HOME)/%,$(patsubst ~,$(HOME),$(1)))
+ACORN_DIR := $(abspath $(call home,$(ACORN_C)))
+RISCOSE_BIN := $(if $(findstring /,$(RISCOSE)),$(abspath $(call home,$(RISCOSE))),$(RISCOSE))
+
+ifneq ($(MAKECMDGOALS),clean)
 ifeq ($(strip $(ACORN_C)),)
 $(error Set ACORN_C to the directory holding Acorn C/C++ 5's Library and Libraries)
+endif
+ifeq ($(wildcard $(ACORN_DIR)/Library/cc),)
+$(error ACORN_C: no Library/cc in $(ACORN_DIR))
+endif
 endif
 
 SRC   := PC
@@ -31,8 +43,8 @@ BIN   := $(BUILD)/bin
 # (cc appends ".h.stdio" to an include directory).
 ro      = $(subst /,.,$(1))
 FROMSRC = ^.$(call ro,$(1))
-RUN     = cd $(SRC) && $(RISCOSE) -w $(WIMPSLOT)
-TOOL    = $(abspath $(ACORN_C))/Library
+RUN     = cd $(SRC) && $(RISCOSE_BIN) -w $(WIMPSLOT)
+TOOL    = $(ACORN_DIR)/Library
 
 LIBS    := ^.$(BUILD).AcornC.Libraries
 CLIB    := $(LIBS).clib
@@ -58,7 +70,7 @@ all: $(BIN)/!RunImageG $(BIN)/!RunImageD \
      $(BIN)/PCSupport $(BIN)/PC_IO $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp
 
 $(BUILD)/AcornC: | $(BUILD)
-	ln -sfn $(abspath $(ACORN_C)) $@
+	ln -sfn $(ACORN_DIR) $@
 
 $(BUILD) $(OBJ) $(BIN):
 	mkdir -p $@
