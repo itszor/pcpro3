@@ -33,7 +33,9 @@ $label  TEQP     $rmode, #0
 
 XDivaSupport_SetCallback EQU (Auto_Error_SWI_bit :OR: &4468C)
 
-        LEADR   Module_LoadAddr
+; Assembled with objasm and linked as a binary at 0 (see msm), in place of
+; AAsm -Module with LEADR Module_LoadAddr.
+        AREA    |!!!Module$$Header|, CODE
 
 ; These options cover logging for debugging. This data can go to the screen,
 ; on a block in RMA which is written out to a file when the PCIOIntDump
@@ -114,7 +116,7 @@ Help    DCB     "PC IO Support", 9, "2.14 (8 Oct 1997)", 0
 ; Processor mode:       SVC mode, IRQs (probably) enabled
 ;
 
-Init    ENTRY
+Init    Entry
         LDR     r2, [r12]
         TEQ     r2, #0
         MOVNE   r12, r2
@@ -155,7 +157,7 @@ Init    ENTRY
 ; Processor mode:       SVC mode
 ;
 
-Die     ENTRY
+Die     Entry
         LDR     r12, [r12]
         BL      CommonDie
         TEQ     r10, #0
@@ -303,12 +305,12 @@ SWI_names DCB     "PCIO", 0
 
 ; Our routines (1): Entry and exit ========================================
 
-ColdInit   ENTRY
+ColdInit   Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-WarmInit   ENTRY
+WarmInit   Entry
            EXITS
 
 ; -------------------------------------------------------------------------
@@ -372,17 +374,17 @@ ErrorBlock
 
 ; -------------------------------------------------------------------------
 
-PermDie    ENTRY
+PermDie    Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-TempDie    ENTRY
+TempDie    Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-CommonDie  ENTRY
+CommonDie  Entry
 
 Final
 ;   STMFD    r13!,{r0-r2,r8,lr}

@@ -1,2 +1,6 @@
 echo ** Assembling Module.s.%0
-Cbin:Aasm  -From module.s.%0 -To bin.%0 -Module -Stamp -Quit
+| objasm, in place of AAsm: an AREA in the source in place of LEADR, and
+| the module linked as a binary at 0
+Cbin:objasm -From module.s.%0 -To o.%0 -Stamp -Quit
+Cbin:link -bin -base 0 -o bin.%0 o.%0
+Settype bin.%0 Module

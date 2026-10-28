@@ -14,9 +14,10 @@ Proc_Debug SETL False
 ; *** point so that an exit may be effected anywhere in the body without    ***
 ; *** remembering how many (and which) registers to destack and ADJSP.      ***
 ; *** Also ensures that the code entry label is word-aligned.               ***
+; *** The macro is Entry, not ENTRY, which is an objasm directive.          ***
 ; *****************************************************************************
         MACRO
-$label  ENTRY   $reglist,$framesize
+$label  Entry   $reglist,$framesize
         ALIGN
 Proc_RegList SETS "$reglist"
  [ "$framesize" = ""
