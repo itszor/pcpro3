@@ -114,7 +114,7 @@ Help    DCB     "PC IO Support", 9, "2.14 (8 Oct 1997)", 0
 ; Processor mode:       SVC mode, IRQs (probably) enabled
 ;
 
-Init    ENTRY
+Init    Entry
         LDR     r2, [r12]
         TEQ     r2, #0
         MOVNE   r12, r2
@@ -155,7 +155,7 @@ Init    ENTRY
 ; Processor mode:       SVC mode
 ;
 
-Die     ENTRY
+Die     Entry
         LDR     r12, [r12]
         BL      CommonDie
         TEQ     r10, #0
@@ -303,12 +303,12 @@ SWI_names DCB     "PCIO", 0
 
 ; Our routines (1): Entry and exit ========================================
 
-ColdInit   ENTRY
+ColdInit   Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-WarmInit   ENTRY
+WarmInit   Entry
            EXITS
 
 ; -------------------------------------------------------------------------
@@ -372,17 +372,17 @@ ErrorBlock
 
 ; -------------------------------------------------------------------------
 
-PermDie    ENTRY
+PermDie    Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-TempDie    ENTRY
+TempDie    Entry
            EXITS
 
 ; -------------------------------------------------------------------------
 
-CommonDie  ENTRY
+CommonDie  Entry
 
 Final
 ;   STMFD    r13!,{r0-r2,r8,lr}

@@ -50,7 +50,9 @@ $label  MOV      $rtmp, #I_bit
         TEQP     $rtmp, #0
         MEND
 
-        LEADR   Module_LoadAddr
+; Assembled with objasm and linked as a binary at 0 (see msm), in place of
+; AAsm -Module with LEADR Module_LoadAddr.
+        AREA    |!!!Module$$Header|, CODE
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -93,7 +95,7 @@ Module_BaseAddr
 ; Processor mode:       SVC mode, IRQs (probably) enabled
 ;
 
-Init    ENTRY
+Init    Entry
         LDR     r2, [r12]
         TEQ     r2, #0
         MOVNE   r12, r2
@@ -114,15 +116,15 @@ Init    ENTRY
 50      BL      CommonInit
         EXITS
 
-ColdInit   ENTRY
+ColdInit   Entry
            EXITS
 
-WarmInit   ENTRY
+WarmInit   Entry
            EXITS
 
 ; General 'Init' routine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-CommonInit ENTRY
+CommonInit Entry
 
         MOV     R0, #0
         STR     R0, Key_Active
@@ -175,7 +177,7 @@ Init_Exit
 ; Processor mode:       SVC mode
 ;
 
-Die     ENTRY
+Die     Entry
         LDR     r12, [r12]
         BL      CommonDie
         TEQ     r10, #0
@@ -188,15 +190,15 @@ Die     ENTRY
         SWI     XOS_Module
         EXIT
 
-PermDie ENTRY
+PermDie Entry
         EXITS
 
-TempDie ENTRY
+TempDie Entry
         EXITS
 
 ; General 'Terminate' routine ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-CommonDie  ENTRY
+CommonDie  Entry
 
         MOV     R0, # 13          ; OSByte: disable an event
         MOV     R1, # Event_Keyboard
