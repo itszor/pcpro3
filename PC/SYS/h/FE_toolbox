@@ -42,3 +42,13 @@
 #define SaveMenu_Text    0x1
 #define SpeedWin_Fore    0xa
 #define SpeedWin_Back    0xc
+
+/* Show types from a later Toolbox than Acorn C/C++ 5's toolbox.h knows.
+ * Here rather than in Main, whose __LINE__s would move: with these, Main
+ * compiles to the same code as in the 3.06 release's !RunImageG. */
+#ifndef Toolbox_ShowObject_Centre
+#define Toolbox_ShowObject_Centre    3
+#endif
+#ifndef Toolbox_ShowObject_AtPointer
+#define Toolbox_ShowObject_AtPointer 4
+#endif
