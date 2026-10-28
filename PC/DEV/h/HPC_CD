@@ -309,6 +309,8 @@ extern void CD_TrackInfo ( struct CD_TRACKINFO_PARAMS *pIn,
 extern void CD_QChannel ( struct CD_QCHANNEL_PARAMS *pIn,
                           struct CD_QCHANNEL_RESULT *pOut );
 
+/* Acorn C/C++ 5's swis.h defines CD_Control, CDFS's SWI, as a number. */
+#undef CD_Control
 extern void CD_Control ( struct CD_CONTROL_PARAMS *pIn,
                          struct CD_CONTROL_RESULT *pOut );
 
