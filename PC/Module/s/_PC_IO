@@ -1,0 +1,1285 @@
+; **************************************************************************
+;
+;   MODULE.S.PC_IO - Serial & Parallel support for !386PC
+;
+;   05-03-93  INH   Original
+;   14-02-95        R4-R11 preserved/C call faking
+;   15-02-95        Gemini only LPT support.
+;   11-05-95        v1.77 with callbacks
+;   12-09-95        v1.90 Save/restore serial state
+; **************************************************************************
+
+        GET     Module.hdr.listopts
+        GET     Module.hdr.macros
+        GET     Module.hdr.system
+        GET     Module.hdr.proc
+        GET     Module.hdr.modhand
+        GET     Module.hdr.services
+
+ModSWI_Chunk    EQU   &48C40
+
+        MACRO
+$label  DisableInts $rtmp            ; Only works in non-user mode
+$label  MOV      $rtmp, #I_bit
+        ORR      $rtmp, $rtmp, PC
+        TEQP     $rtmp, #0
+        MEND
+
+        MACRO
+$label  SetMode  $rmode              ; Set processor flags from mode
+$label  TEQP     $rmode, #0
+        MOVNV    R0, R0
+        MEND
+
+XDivaSupport_SetCallback EQU (Auto_Error_SWI_bit :OR: &4468C)
+
+        LEADR   Module_LoadAddr
+        
+; These options cover logging for debugging. This data can go to the screen,
+; on a block in RMA which is written out to a file when the PCIOIntDump
+; command is used.
+        
+
+DoPrints                * 0;2           ; 1 for PrintRn includes, 0 else
+                                        ; > 1, diagnostic text as well
+RAMPrint                * 0;2           ; 0 = print diagnostics to screen, 
+                                        ; 1 = print to ram if in IRQs, 2 = Print all to ram
+                                        
+
+; Module Header ============================================================
+
+Module_BaseAddr
+
+        DCD     0
+        DCD     Init    - Module_BaseAddr
+        DCD     Die     - Module_BaseAddr
+        DCD     Service - Module_BaseAddr
+        DCD     Title   - Module_BaseAddr
+        DCD     Help    - Module_BaseAddr
+        DCD     Commands- Module_BaseAddr
+
+        DCD     ModSWI_Chunk
+        DCD     SWI_dispatch    - Module_BaseAddr       ; Handler code
+        DCD     SWI_names       - Module_BaseAddr       ; Decoding table
+        DCD     0
+
+; -------------------------------------------------------------------------
+;
+; Purpose:              Name by which module is referred
+;
+; Description:  This is the name by which the module is identified,
+;               and also the name printed by a *modules call. The
+;               name is NULL terminated,
+
+Title   DCB     "PCIOSupport", 0
+        ALIGN
+
+
+
+; -------------------------------------------------------------------------
+;
+; Purpose:              Name that describes module
+;
+; Description:  This is the name printed by *help modules, and is
+;               intended to be a descriptive name. It includes TAB
+;               characters to column sixteen, then a version and date
+;               in a common format.
+;
+
+Help    DCB     "PC IO Support", 9, "2.14 (8 Oct 1997)", 0
+        ALIGN
+
+
+; Header Routines ==========================================================
+;
+;
+; Purpose:              Initialisation entry point.
+;
+; Entry:        r10     Pointer to environment string. This is the parameters
+;               supplied to OS_Module.
+;       r11     I/O base or the instantiation number
+;       r12     Pointer to private word associated with this (the
+;               preferred) instantiation. Zero implies cold init, and
+;               non zero implies warm init.
+;
+; Exit:         Return with error if initialisation is not possible.
+;
+; Description:  Perform either an initialisation or a reinitialisation
+;               for the indicated instantiation. Called as a result of
+;               *rmtidy and OS_Module with reason codes Run, Load,
+;               Reinit and Tidy.
+;
+; Preservation: r7, r8, r9, r10, r11, SP (note only V is noted on exit)
+;
+; Processor mode:       SVC mode, IRQs (probably) enabled
+;
+
+Init    ENTRY
+        LDR     r2, [r12]
+        TEQ     r2, #0
+        MOVNE   r12, r2
+        BLNE    WarmInit
+        BNE     %FT50
+        LDR     r3, =256        ; size, word aligned
+        MOV     r0, #ModHandReason_Claim
+        SWI     XOS_Module
+        EXIT    VS
+        STR     r2, [r12]
+        MOV     r0, #0
+        MOV     r14, r2
+00      STR     r0, [r14], #4
+        SUBS    r3, r3, #4
+        BNE     %BT00
+        MOV     r12, r2
+        BL      ColdInit
+50      BL      CommonInit
+        EXITS
+
+; -------------------------------------------------------------------------
+;
+; Purpose:              Terminate a module
+;
+; Entry:        r10     Fatality indicator. 0 is non-fatal, 1 is fatal
+;       r11     Instantiation number
+;       r12     Private word for the Instantiation
+;
+; Exit:         Returning an error leaves the RM in the RMA
+;
+; Description:  Causes the indicated instantiation to either terminate
+;               permantently, or to pause during RMA tidying. Used by
+;               OS_Module with reason codes Reinit, Delete, Tidy and
+;               Clear, and reloading modules of the same name.
+;
+; Preservation: r7, r8, r9, r10, r11, SP
+;
+; Processor mode:       SVC mode
+;
+
+Die     ENTRY
+        LDR     r12, [r12]
+        BL      CommonDie
+        TEQ     r10, #0
+        BLEQ    TempDie
+        BLNE    PermDie
+        EXIT    VS
+        EXITS   EQ
+        MOV     r0, #ModHandReason_Free
+        MOV     r2, r12
+        SWI     XOS_Module
+        EXIT
+
+; -------------------------------------------------------------------------
+;
+; Purpose:              Service call handler
+;
+; Entry:        r1      Service number
+;       r12     Private word of preferred instantiation
+;
+; Exit: r1      Zero if claimed
+;
+; Description:  Despatch the indicated service call. Errors are not
+;               supported in general, although certain calls handle
+;               them.
+;
+; Preservation: r9, r10, r11, SP. r0-r8 unless results.
+;
+; Processor mode:       SVC or IRQ. IRQs undefined
+;
+
+Service ROUT
+     ;   TEQ	R1,#Service_UKCommand
+     ;   MOVNES  PC,LR                  ;reject unwanted calls ASAP
+        
+     ;   TEQ	R1, 
+
+     ;   LDR     r12, [r12]
+     ;   CMP     R1, Unknowncommand
+     ;   BEQ     IDPHelp
+
+        MOVS    pc, R14
+
+; -------------------------------------------------------------------------
+;
+; Purpose:               Table of recognised commands
+
+
+Commands 
+ [ RAMPrint > 0
+   DCB      "PCIOIntDump"
+
+   DCB      0
+   ALIGN
+   DCD      IDP-Module_BaseAddr         ; Code offset
+                                        ; Info Word follows
+   DCB      1                           ; min 1 params
+   DCB      0                           ; no OS_GSTrans ing
+   DCB      1                           ; max 1 params
+   DCB      0                           ; flag word
+   DCD      IDPInvalid-Module_BaseAddr  ; Invalid syntax message
+   DCD      IDPHelp-Module_BaseAddr     ; Help Message
+ ]
+
+
+; -------------------------------------------------------------------------
+;
+; Purpose:      Dispatch SWI call
+;
+; Entry:        r11     SWI number within chunk
+;       r12     Private word of preferred instantiation
+;       r14     Flags of the caller, except V bit clear
+;
+; Exit: r0      Error indicator if applicable. In particular, an
+;               error for an unknown SWI should use an error message
+;               quoting the module's title, but use an error number
+;               of &1E6. IRQs may be enabled with:
+;
+;               MVN     Rn, #I_bit
+;               TSTP    Rn, pc
+;
+;               IRQs may be disabled with:
+;
+;               MOV     Rn, pc
+;               ORR     Rn, Rn, #I_bit
+;               TEQP    Rn, #0
+;
+; Description:  Entry point to decode the handling of SWIs within the
+;               module's SWI chunk.
+;
+; Preservation: SP
+;
+; Processor mode:       SVC, IRQs from caller
+;
+
+SWI_dispatch  ROUT
+        LDR     r12, [r12]
+        CMP     r11, # (%FT01 - %FT00) / 4
+        ADDCC   pc, pc, r11, LSL #2
+        B       %FT01
+00
+        B       SWI_LPTInit
+        B       SWI_LPTSetCallback
+        B       SWI_COMInit
+        B       SWI_COMSetCallback
+        B       SWI_COMSetRate
+        B       SWI_COMSetByteFormat
+        B       SWI_COMSetModem
+        B       SWI_COMTransmit
+        B       SWI_COMGetStatus
+        B       SWI_COMReceive
+        B       SWI_LPTReadPort
+
+01      ADR     r0, %FT02
+        ORRS    pc, r14, #V_bit
+02
+        DCD     &1E6
+        DCB     "Unknown Module operation", 0
+        ALIGN
+
+; -------------------------------------------------------------------------
+;
+; Purpose:      Permit generation of the name of a SWI from a number
+;
+; Description:  When RISC OS generates a SWI name from a SWI number
+;               it attempts to use this table to generate the name.
+;               It will use the next entry if it cannot generate a
+;               name by using this entry.
+;
+
+SWI_names DCB     "PCIO", 0
+          DCB     "LPTInit", 0
+          DCB     "LPTSetCallback", 0
+          DCB     "COMInit", 0
+          DCB     "COMSetCallback", 0
+          DCB     "COMSetRate", 0
+          DCB     "COMSetByteFormat", 0
+          DCB     "COMSetModem", 0
+          DCB     "COMTransmit", 0
+          DCB     "COMGetStatus", 0
+          DCB     "COMReceive", 0
+          DCB     "LPTReadPort", 0
+
+          DCB     0       ; Terminate list
+          ALIGN
+
+; Our routines (1): Entry and exit ========================================
+
+ColdInit   ENTRY
+           EXITS
+
+; -------------------------------------------------------------------------
+
+WarmInit   ENTRY
+           EXITS
+
+; -------------------------------------------------------------------------
+
+XParallel_HardwareAddress EQU &62EC0
+
+CommonInit
+     STMFD    R13!, {LR}
+
+     ; Initialise : try to find hardware ----------------
+
+     MOV      R0, #0
+     SWI      XParallel_HardwareAddress
+     BVS      CInit_Error
+     CMP      R0, #0
+     BEQ      CInit_Error
+
+     ; R0 = Parallel port base address
+     STR      R0, LPT_PortBase
+
+     ; get serial parallel base address
+     BIC      R0, R0, #  &FF
+     BIC      R0, R0, # &F00     ; Get R0 = 82C711 base address
+     ADD      R0, R0, # 4 * &3F8 ; Make COM base address
+     STR      R0, COM_PortBase
+
+; castle bits to claim RMA space for logging
+   MOV      r0,#6               ; rma claim
+   MOV      r3,#:INDEX:WorkEnd-:INDEX:WorkBase ; workspace bytes
+   SWI      XOS_Module 
+   LDMVSFD  r13!,{lr,r7-r11}
+   ADRVSL   r0,CInit_Error
+   ORRVS    r0,r0,#&40000000
+   MOVVS    pc,lr               ; error detected
+ [ RAMPrint>0
+        MOV     r0,#13                  ; rma extend
+        MOV     r3,#:INDEX:RamBufEnd-:INDEX:RamBuf ; extra workspace bytes
+        SWI     XOS_Module
+   LDMVSFD  r13!,{lr,r7-r11}
+   ADRVSL   r0,CInit_Error
+   ORRVS    r0,r0,#&40000000
+   MOVVS    pc,lr               ; error detected
+        BL      InitPrints
+ ]
+
+   STR      r2,[r12,#0]            ; pointer to private word workspace
+     
+
+     LDMFD    R13!, {PC}^
+
+     ; Error exit
+CInit_Error
+     ADR      R0, ErrorBlock
+     LDMFD    R13!, {LR}
+     ORRS     PC, LR, #V_bit
+
+ErrorBlock
+     DCD      &1234
+     DCB      "Cannot find 82C711 Multi-IO controller", 0
+
+
+; -------------------------------------------------------------------------
+
+PermDie    ENTRY
+           EXITS
+
+; -------------------------------------------------------------------------
+
+TempDie    ENTRY
+           EXITS
+
+; -------------------------------------------------------------------------
+
+CommonDie  ENTRY
+
+Final
+;   STMFD    r13!,{r0-r2,r8,lr}
+   LDR      r2,[r12,#0]
+   TEQ      r2,#0
+   BEQ      NoRAM1              ; not initialised
+   MOV      r0,#7               ; rma free
+   LDR      r2,[r12,#0]
+   SWI      XOS_Module 
+   MOV      r2,#0
+   STR      r2,[r12,#0]            ; flag no data area
+NoRAM1
+;   LDMFD    r13!,{r0-r2,r8,pc}^
+
+           EXITS
+
+
+; Our routines (2): Commands =============================================
+
+; This section covers logging for debugging. This data can go to the screen,
+; on a block in RMA which is written out to a file when the PCIOIntDump
+; command is used.
+
+
+
+; Intra module WorkSpace definitions
+                ^ 0
+WorkBase        # 0             ; the next address is filled in after calling FileCore_Create
+ [ RAMPrint > 0
+RamEnd          # 4             ; offset to start of diagnostic buffer
+ ]
+WorkEnd         # 0
+
+; diagnostic buffer added at end of mem if needed
+ [ RAMPrint > 0
+RamBuf          # &80000;8000         ; diagnostic RAM print
+RamBufEnd       # 0
+ ]
+ 
+        GET     Module.hdr.ramlog        ; all the macros used for ramlogging
+; ----------------------------------------------------------------------
+
+SerIRQoff  *  &08000003 ;service with IRQs disabled
+
+ [ RAMPrint > 0
+IDPHelp
+        DCB     "PCIOIntDump <filename> writes the diagnostic buffer to named file",13
+IDPInvalid
+        DCB     "Syntax: *PCIOIntDump <filename>"
+        DCB     0     ;Terminator
+        ALIGN
+IDP
+; r0 points at command tail
+; r1 is parameter count
+; returns status byte in r0
+        STMFD   r13!,{r1-r8,lr}
+        LDR     r12,[r12,#0]                ; workspace pointer
+        MOV     r1,r0
+ [ RAMPrint > 0
+        BL      SaveResults
+ ]
+        LDMFD   r13!,{r1-r8,pc}
+ ]
+
+; diagnostic printout bit.. only used if required
+
+ [ DoPrints > 0
+
+TimeStamp
+   STMFD    r13!,{r0-r3,lr}
+   SWI      XOS_ReadMonotonicTime
+   B        DoPr
+
+;diagnostic to print out R1 as hex word
+PrintR0
+   STMFD    r13!,{lr,r0-r3}
+   B        DoPr
+PrintR2
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r2
+   B        DoPr
+PrintR3
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r3
+   B        DoPr
+PrintR4
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r4
+   B        DoPr
+PrintR5
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r5
+   B        DoPr
+PrintR6
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r6
+   B        DoPr
+PrintR7
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r7
+   B        DoPr
+PrintR8
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r8
+   B        DoPr
+PrintR9
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r9
+   B        DoPr
+PrintR10
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r10
+   B        DoPr
+PrintR11
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r11
+   B        DoPr
+PrintR12
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r12
+   B        DoPr
+PrintR13
+   STMFD    r13!,{lr,r0-r3}
+   ADD      r0,r13,#20
+   B        DoPr
+PrintPC
+PrintR15
+   STMFD    r13!,{lr,r0-r3}
+   SUB      r0,lr,#4
+   B        DoPr
+PrintR1
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r1
+DoPr
+   ADR      r1,buf
+   MOV      r2,#10;buf length
+   SWI      XOS_ConvertHex8
+   BL       PrintStr
+   DCB      " "
+buf
+   DCB  "          "
+   DCB      0
+   ALIGN
+   LDMFD    r13!,{pc,r0-r3}^
+
+PrintNewLine
+   STMFD    r13!,{lr,r0-r3}
+   BL       PrintStr
+   DCB      10,0
+   ALIGN
+   LDMFD    r13!,{pc,r0-r3}^
+
+;diagnostic to print out Rn as hex byte
+PrintbR0
+   STMFD    r13!,{lr,r0-r3}
+prrb1
+   ADR      r1,bbuf
+   MOV      r2,#2    ;buf length
+   SWI      XOS_ConvertHex2
+   BL       PrintStr
+   DCB      " "
+bbuf
+   DCB  "   "
+   DCB      0
+   ALIGN
+   LDMFD    r13!,{pc,r0-r3}^
+
+
+PrintbR2
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r2
+   B       prrb1
+PrintbR3
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r3
+   B       prrb1
+PrintbR4
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r4
+   B       prrb1
+PrintbR5
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r5
+   B       prrb1
+PrintbR6
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r6
+   B       prrb1
+PrintbR7
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r7
+   B       prrb1
+PrintbR8
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r8
+   B       prrb1
+PrintbR9
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r9
+   B       prrb1
+PrintbR10
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r10
+   B       prrb1
+PrintbR11
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r11
+   B       prrb1
+PrintbR12
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r12
+   B       prrb1
+PrintbR13
+   STMFD    r13!,{lr,r0-r3}
+   ADD      r0,r13,#20
+   B       prrb1
+PrintbR1
+   STMFD    r13!,{lr,r0-r3}
+   MOV      r0,r1
+   B       prrb1
+
+; print inline text
+PrintStr
+   STMFD    r13!,{r0}
+   MOV      r0,lr               ; get return address
+   BIC      r0,r0,#ARM_CC_Mask  ; clear flag bits
+   BL       PrintStrR0          ; print it
+   TST      r0,#3
+   BICNE    r0,r0,#3
+   ADDNE    r0,r0,#4            ; realign if required
+   MOV      lr,r0
+   LDMFD    r13!,{r0}
+   MOV      pc,lr
+
+;Print null terminated string pointed by R0
+PrintStrR0
+   STMFD    r13!,{lr,r1-r3}
+ [ RAMPrint = 0                 ; all prints to screen
+   SWI      XOS_Write0
+ ]
+ [ RAMPrint = 1                 ; print to screen or ram
+   LDR      r3,RamPrInIRQ
+   TEQ      r3,#0               ; if 0, pr to screen, else pr to ram
+   BNE      %4
+   SWI      XOS_Write0  
+   B        %5
+ ]
+ [ RAMPrint > 0                 ; print to ram only if >1
+4  TEQP     pc,#SerIRQoff       ; ensure not overwritten...
+   MOVNE    r0,r0
+   LDR      r3,RamPrPtr
+   LDR      r2,RamPrTop
+   TEQ      r2,#0               ; initialised?
+1  
+   CMPNE    r3,r2               ; or space there?
+   LDRGE    r3,RamPrBot         ; no..roll to start
+   
+   BGE      %3                  ; no.. or no space left
+   LDRB     r1,[r0],#1          ; byte from source
+   TEQ      r1,#0               ; terminator?
+   STRNEB   r1,[r3],#1          ; ..only write out if not
+   BNE      %1
+2  STR      r3,RamPrPtr
+   LDMFD    r13!,{pc,r1-r3}^
+3  
+   LDRB     r1,[r0],#1          ; byte from source
+   TEQ      r1,#0               ; terminator?
+   BNE      %3                  ; no.. keep going till found
+ ]
+5  LDMFD    r13!,{pc,r1-r3}^
+                      
+ [ RAMPrint > 0
+; enter with r2-> WorkBase
+InitPrints
+   STMFD    r13!,{r0,lr}
+   ADD      lr,r2,#:INDEX:RamBuf-:INDEX:WorkBase            ; compute start point...
+   STR      lr,RamPrPtr
+   STR      lr,RamPrBot
+   ADD      lr,lr,#:INDEX:RamBufEnd-:INDEX:RamBuf; - &100
+   STR      lr,RamPrTop
+   MOV      lr,#0
+   STR      lr,RamPrInIRQ
+   BL       RamPrNorm
+   LDMFD    r13!,{r0,pc}^
+;
+RamPrPtr    DCD 0               ; base of RAMBuf
+RamPrBot    DCD 0               ;
+RamPrTop    DCD 0
+RamPrInIRQ  DCD 0
+;
+; reset pointers
+ResetPrintPointers
+   STMFD    r13!,{r0,lr}
+   LDR      r0,RamPrBot
+   STR      r0,RamPrPtr
+   LDMFD    r13!,{r0,pc}^
+; 
+; save results so far, and reset pointers
+; r1->file name to save
+SaveResults
+        STMFD    r13!,{r1-r5,lr}
+        LDR     r5,RamPrPtr
+        MOV     lr,#0
+        STRB    lr,[r5]             ; ensure null terminated
+        LDR     r4,RamPrBot
+        MOV     r0,#10                  ; save
+        MOV     r2,#&1000
+        SUB     r2,r2,#1                ; filetype &fff..Text
+        SWI     XOS_File
+        LDR     lr,RamPrBot
+        STR     lr,RamPrPtr
+        LDMFD   r13!,{r1-r5,pc}
+; 
+; print results so far, and reset pointers
+PrintResults
+   STMFD    r13!,{r0,lr}
+   SWI      XOS_WriteS
+   DCB      10,13,"IRQ data:",10,13,0
+   ALIGN
+   LDR      r0,RamPrPtr
+   MOV      lr,#0
+   STRB     lr,[r0]             ; ensure null terminated
+   LDR      r0,RamPrBot
+   SWI      XOS_Write0
+   LDR      r0,RamPrBot
+   STR      r0,RamPrPtr
+   SWI      XOS_WriteS
+   DCB      10,13,"PR OK",10,13,0
+   ALIGN
+   LDMFD    r13!,{r0,pc}^
+; 
+KillPrints
+   STMFD    r13!,{lr}
+   MOV      lr,#0
+   STR      lr,RamPrPtr
+   STR      lr,RamPrBot
+   STR      lr,RamPrTop
+   LDMFD    r13!,{pc}^
+;
+; flag following prs to RAM
+RamPrIRQ
+   STMFD    r13!,{lr}
+   ORR      lr,lr,#I_bit
+   TEQP     pc,lr               ; force IRQs off
+   MOV      r0,r0
+   LDR      lr,RamPrInIRQ
+   ADD      lr,lr,#1            ; thread it in
+   STR      lr,RamPrInIRQ
+   LDMFD    r13!,{pc}^
+; flag following prs to screen
+RamPrNorm
+   STMFD    r13!,{lr}
+   ORR      lr,lr,#I_bit
+   TEQP     pc,lr
+   MOV      r0,r0
+   LDR      lr,RamPrInIRQ
+   SUBS     lr,lr,#1            ; thread it out
+   MOVLT    lr,#0
+   STR      lr,RamPrInIRQ
+   LDMFD    r13!,{pc}^
+   
+ ]
+ ]
+ 
+; Our routines (3): SWI calls =============================================
+
+LPT_Vector   EQU    0
+COM_Vector   EQU    10
+
+; COM port register definitions
+
+TX_DATA   EQU  0
+RX_DATA   EQU  0
+RATE_LO   EQU  0
+RATE_HI   EQU  4
+INT_ENB   EQU  4
+INT_ID    EQU  8
+LINE_CTRL EQU  12
+MODM_CTRL EQU  16
+LINE_STAT EQU  20
+MODM_STAT EQU  24
+
+RXBUFLENGTH EQU &800  ; 2K buffer for good measure
+
+; ------------------------------------------------
+
+SWI_LPTInit     ; On entry R0 = 0 to initialise
+
+                ; On exit  R0 = 0xAFE9         } 'Initialise' call only
+                ;          R1 = LPT port base  }
+
+     STMFD    R13!, {LR}
+     LDR      R1, LPT_PortBase
+     LDR      R0, LI_Signature
+     LDMFD    R13!, {PC}^
+
+LI_Signature DCD &0000AFE9
+
+; ---------------------------------------------------------------
+
+LPT_CBBlock     ; Callback block
+                DCD     0       ; tag
+LPT_CBfnaddr    DCD     0       ; function address
+                DCD     0       ; R0 value
+                DCD     0       ; R12 value
+                DCD     0       ; link value
+
+SWI_LPTSetCallback ; On entry R0 = 0 to disable callbacks, or
+                ;          address of callback routine
+
+     STMFD    R13!, {LR}
+     STR      R0, LPT_CBfnaddr
+
+     CMP      R0, #0
+     BEQ      LSC_Deinstall
+
+     ; Startup - install interrupt handler & enable ---------
+LSC_Install
+
+     MOV     R0, # LPT_Vector        ; Install our ISR
+     ADR     R1, LPT_ISR
+     MOV     R2, #0
+     SWI     OS_ClaimDeviceVector
+
+     DisableInts R0                  ; Disable interrupts
+                                     ;   (will re-enable on exit)
+
+     MOV     R1, # IOC                  ; Enable our int mask
+     LDRB    R0, [ R1, #IOCIRQMSKA ]
+     ORR     R0, R0, #pbusy_bit
+     STRB    R0, [ R1, #IOCIRQMSKA ]
+
+     LDMFD    R13!, {PC}^
+
+
+     ; Shutdown - deinstall interrupts ----------------------
+
+LSC_Deinstall
+     MOV     R0, # LPT_Vector
+     ADR     R1, LPT_ISR
+     MOV     R2, #0
+     SWI     OS_ReleaseDeviceVector
+
+     MOV     R1, # IOC                  ; Disable our int mask
+     LDRB    R0, [ R1, #IOCIRQMSKA ]
+     BIC     R0, R0, #pbusy_bit
+     STRB    R0, [ R1, #IOCIRQMSKA ]
+
+     LDMFD    R13!, {PC}^
+
+; ------------------------------------------------
+
+SWI_LPTReadPort ; On entry R0 = LPT port to read 0-2
+
+                ; On exit  R0 = byte data from LPT port
+
+     LDR      R1, LPT_PortBase
+     AND      R2, R0, #3
+     LDRB     R0, [R1, R2, LSL #2]
+     MOVS     PC, LR
+
+; ---------------------------------------------------------------
+
+LPT_ISR ; Parallel interrupt handling routine
+        ; This is entered with ints disabled.
+        ; Return is via MOV PC, R14
+        ; It must not corrupt R4-R11
+
+        STMFD   SP!, {R4-R11, LR}
+
+        ; Clear LPT interrupt
+
+        MOV     R0, # IOC
+        MOV     R1, # pbusy_bit
+        STRB    R1, [R0, #IOCIRQCLRA ]
+
+        ; Set callback, if appropriate
+
+        ADR     R0, LPT_CBBlock
+        LDR     R1, LPT_CBfnaddr
+        CMP     R1, #0
+        BEQ     LI_Exit
+
+        ; Must preserve R14_svc when calling SWI. Immediately
+        ; visible R14 is R14_irq, so we have to fart around a lot.
+
+        MOV     R4, PC
+        ORR     R5, R4, #3      ; Set SVC mode bits
+        SetMode R5              ; Go SVC mode
+
+        MOV     R5, R14         ; Save R14_SVC
+        SWI     XDivaSupport_SetCallback
+        MOV     R14, R5
+
+        SetMode R4              ; Restore processor mode
+
+LI_Exit
+        LDMFD   SP!, {R4-R11, PC}
+
+
+; ======================================================================
+
+; COMMS Routines
+
+
+; Initialise ----------------------------------------------------------
+
+SWI_COMInit     ; On entry R0 = 0 to initialise
+                ; On exit  R0 = 0xAFE4
+
+     STMFD    R13!, {LR}
+     LDR      R0, CI_Signature
+     LDMFD    R13!, {PC}^
+
+CI_Signature DCD &0000AFE4
+
+; ------------------------------------------------------------
+
+COM_CBBlock     ; Callback block
+                DCD     0       ; tag
+COM_CBfnaddr    DCD     0       ; function address
+COM_CB_R0val    DCD     0       ; R0 value
+                DCD     0       ; R12 value
+                DCD     0       ; link value
+
+SWI_COMSetCallback   ; On entry R0 = 0 to deinstall, or
+                ; address of callback function to install
+
+     STMFD    R13!, {LR}
+
+     STR      R0, COM_CBfnaddr
+
+     CMP      R0, #0
+     BEQ      CSI_Deinstall
+
+CSI_Install ; Startup & initialise interrupt -----------------
+
+
+     MOV     R0, # COM_Vector        ; Install our Interrupt handler
+     ADR     R1, COM_SerialISR       ;
+     MOV     R2, #0                  ;
+     SWI     OS_ClaimDeviceVector    ;
+
+     DisableInts R0                  ; Disable ARM interrupts
+                                     ;   (will re-enable on exit)
+
+     LDR     R3, COM_PortBase        ; Start to initialise
+     LDRB    R1, [R3, # LINE_CTRL]   ;
+     STRB    R1, COM_LCR_Save        ; Save current value
+     AND     R1, R1, # &7F           ;  Reset DLAB bit
+     STRB    R1, [R3, # LINE_CTRL]   ;
+     STRB    R1, COM_LCR_Val         ;
+
+     LDRB    R1, [R3, # MODM_CTRL]   ; Read modem control reg
+     STRB    R1, COM_MCR_Save        ; Save current value
+     AND     R1, R1, # &3            ;  Turn off loop mode
+     ORR     R1, R1, # &8            ;  Enable int. output pin
+     STRB    R1, [R3, # MODM_CTRL]   ;
+
+     LDRB    R1, [R3, # LINE_STAT ]  ;  Clear sticky bits
+     LDRB    R1, [R3, # MODM_STAT ]  ;
+     LDRB    R1, [R3, # RX_DATA ]    ;  Clear Rx characters
+     LDRB    R1, [R3, # RX_DATA ]    ;
+     LDRB    R1, [R3, # RX_DATA ]    ;
+     LDRB    R1, [R3, # INT_ID ]     ;  Clear interrupt statuses
+     LDRB    R1, [R3, # INT_ID ]     ;
+
+     LDRB    R1, [R3, # INT_ENB ]    ; Save Int Enable reg contents
+     STRB    R1, COM_IER_Save
+     MOV     R1, # 15                ;
+     STRB    R1, [R3, # INT_ENB ]    ;  Enable all 8250 interrupts
+
+     MOV     R1, # IOC               ; Unmask serial int bit in IOC
+     LDRB    R0, [ R1, #IOCIRQMSKB ]
+     ORR     R0, R0, #serial_bit
+     STRB    R0, [ R1, #IOCIRQMSKB ]
+
+     MOV     R0, #0                  ; Clear Rx buffer
+     STR     R0, COM_RxBufInput      ; & pending status bits
+     STR     R0, COM_RxBufOutput     ;
+     STR     R0, COM_PendingBits     ;
+
+     LDMFD    R13!, {PC}^
+
+
+     ; Shutdown - deinstall interrupts --------------------
+
+CSI_Deinstall
+
+     LDR     R3, COM_PortBase
+
+     LDRB    R1, COM_LCR_Save        ; Restore line control value
+     STRB    R1, [R3, # LINE_CTRL ]
+     LDRB    R1, COM_MCR_Save        ; Restore modem control value
+     STRB    R1, [R3, # MODM_CTRL ]
+     LDRB    R1, COM_IER_Save        ; Restore interrupt enable status
+     STRB    R1, [R3, # INT_ENB ]
+
+     MOV     R0, # COM_Vector        ; Unhook our serial ISR
+     ADR     R1, COM_SerialISR
+     MOV     R2, #0
+     SWI     OS_ReleaseDeviceVector
+
+     LDMFD    R13!, {PC}^
+
+
+; ------------------------------------------------
+
+SWI_COMSetRate  ; On entry R0 = new baud rate divisor 1-0xFFFF
+                ; baud rate = 115200 / R0
+
+      LDR     R3, COM_PortBase
+
+      LDRB    R1, COM_LCR_Val
+      ORR     R1, R1, # &80         ; Set DLAB bit
+      STRB    R1, [R3, #LINE_CTRL]
+
+      STRB    R0, [R3, #RATE_LO]    ; Set rate LSB
+      MOV     R0, R0, LSR # 8
+      STRB    R0, [R3, #RATE_HI]    ; Set rate MSB
+
+      BIC     R1, R1, # &80         ; Clear DLAB
+      STRB    R1, [R3, #LINE_CTRL]
+
+      MOV     R0, #0                  ; Clear Rx buffer
+      STR     R0, COM_RxBufInput      ;
+      STR     R0, COM_RxBufOutput     ;
+      MOVS    PC, LR
+
+; ------------------------------------------------
+
+SWI_COMSetByteFormat
+                ; On entry R0 = byte format byte
+                ;     bits 0..1 = word length select
+                ;     bit  2    = stop bit sel
+                ;     bits 3..5 = parity options
+                ;     bit  6    = set break
+
+      LDR     R3, COM_PortBase
+      AND     R0, R0, # &7F         ; make sure DLAB bit is clear
+      STRB    R0, [R3, #LINE_CTRL]
+      STRB    R0, COM_LCR_Val
+
+      MOV     R0, #0                  ; Clear Rx buffer
+      STR     R0, COM_RxBufInput      ;
+      STR     R0, COM_RxBufOutput     ;
+      MOVS    PC, LR
+
+
+; ------------------------------------------------
+
+SWI_COMSetModem
+                ; On entry R0 = bit 0 .. DTR value
+                ;               bit 1 .. RTS value
+
+      LDR     R3, COM_PortBase
+      AND     R0, R0, #3            ; keep DTR & RTS bits
+      ORR     R0, R0, #8            ; Set OUT2 - enable interrupts
+      STRB    R0, [R3, #MODM_CTRL]
+      MOVS    PC, LR
+
+; ------------------------------------------------
+
+SWI_COMTransmit ; Transmits a byte, crudely!
+                ; On entry R0 = byte to transmit
+
+      LDR     R3, COM_PortBase
+      STRB    R0, [R3, #TX_DATA]
+      MOVS    PC, LR
+
+
+; ------------------------------------------------
+
+StickyBitsMask  DCD &0F1E       ; Deltas, overrun, parity, framing, break
+
+
+SWI_COMGetStatus
+                ; Reads the current serial status bits
+
+                ; Exit: R0 = serial status
+                ; bit 0: 1 if rx data available
+                ; bit 1: 1 if an rx overrun has occurred
+                ; bit 2: 1 if parity error
+                ; bit 3: 1 if framing error
+                ; bit 4: 1 if break detected
+                ; bit 5: 1 if Tx buffer empty
+                ; bit 6: 1 if Tx idle
+                ; bit 8: Delta CTS
+                ; bit 9: Delta DSR
+                ; bit 10: Delta RI
+                ; bit 11: Delta DCD
+                ; bit 12: CTS state
+                ; bit 13: DSR state
+                ; bit 14: RI  state
+                ; bit 15: DCD state
+
+                ; bits 1..4 and 8..11 will be cleared after COMGetStatus
+                ; is called.
+
+     STMFD    R13!, {LR}
+     DisableInts        R0      ; Will re-enable on exit
+
+     BL     CheckStatus         ; Check for RX chars, return R0=status
+
+     ; Merge with existing sticky bits & clear them
+
+     LDR      R1, COM_PendingBits
+     LDR      R2, StickyBitsMask
+     AND      R1, R1, R2                ; AND off only sticky bits
+     ORR      R0, R0, R1                ; Combine
+
+     MOV      R1, #0
+     STR      R1, COM_PendingBits       ; Clear
+
+     ; Set R0 bit 0 according to receive data available
+
+     BIC      R0, R0, #1
+
+     LDR      R1, COM_RxBufInput        ; Check receive buffer...
+     LDR      R2, COM_RxBufOutput
+     CMP      R1, R2                    ; are there characters in it?
+     ORRNE    R0, R0, #1                ; if so, set Rx status.
+
+     LDMFD    R13!, {PC}^    ; Will restore interrupt status
+
+; ------------------------------------------------
+
+SWI_COMReceive  ; Gets a byte from the Rx buffer
+                ; On exit:  R0 = 0 : no character
+                ;           R0 = 1 : char available
+                ;           R1 = character (if available)
+
+     STMFD  R13!, {LR}
+     DisableInts  R0
+
+     LDR    R1, COM_RxBufInput   ; Check input & output pointers
+     LDR    R2, COM_RxBufOutput
+     CMP    R1, R2               ; If they are EQUal, no characters..
+     MOVEQ  R0, #0
+     BEQ    CR_Exit              ; So exit
+
+     ADR    R1, COM_RxBuffer     ; Get char from buffer output
+     LDRB   R1, [R1, R2]         ;
+
+     ADD    R2, R2, #1           ; Move pointer on
+     CMP    R2, # RXBUFLENGTH    ; is it past the end?
+     MOVHS  R2, # 0              ; ..start from beginning
+     STR    R2, COM_RxBufOutput
+
+     LDR    R0, COM_RxBufInput   ; Is the buffer empty now?
+     CMP    R0, R2               ;
+     BEQ    CR_ExitChar          ; If so, exit
+
+     LDR    R0, COM_CBfnaddr     ; Else, cause new event
+     CMP    R0, #0               ; by setting callback
+     BEQ    CR_ExitChar
+
+     STMFD  R13!, {R1}
+     ADR    R0, COM_CBBlock
+     SWI    XDivaSupport_SetCallback
+     LDMFD  R13!, {R1}
+
+CR_ExitChar
+     MOV    R0, #1               ; Exit with char available status
+CR_Exit
+     LDMFD  R13!, {PC}^          ; will restore interrupt status
+
+; ----------------------------------------------------------------------
+
+     ; Serial Interrupt Service routine
+     ; Must not corrupt R4-R11
+
+COM_SerialISR
+        STMFD   SP!, {R4-R11, LR}
+
+        BL      CheckStatus             ; Reads RX if any, returns
+                                        ; R0 = status word, R3 = port base
+        LDRB    R1, [R3, # INT_ID ]     ; Clear Tx interrupt flag
+
+        ; LDRB    R1, [R3, # INT_ID ]
+        ; Note: without this in, on a RISCPC we seem to get a
+        ; Tx Empty interrupt every 500ms or so. These interrupts
+        ; read back $C2 in the INT_ID register; bits 6 and 7 set
+        ; indicate enhanced-UART FIFOs are enabled. Are these
+        ; interrupts caused by the enhanced UART??
+
+        ; The extra interrupts are probably No Bad Thing; they
+        ; won't get passed to the PC unless it is correct to do
+        ; so, and it acts as a restarting method if we lose a
+        ; Tx Ready interrupt.
+
+
+        ; OR in with pending bits to make complete Comms Status
+
+        LDR     R1, COM_PendingBits     ; Get 'pending' status bits
+        ORR     R0, R0, R1              ; OR them in
+        STR     R0, COM_PendingBits
+
+        ; Set callback, if appropriate
+
+        ADR     R0, COM_CBBlock
+        LDR     R1, COM_CBfnaddr
+        CMP     R1, #0
+        BEQ     CSI_Exit
+
+        ; Must preserve R14_svc when calling SWI. Immediately
+        ; visible R14 is R14_irq, so we have to fart around a lot.
+
+        MOV     R4, PC
+        ORR     R5, R4, #3      ; Set SVC mode bits
+        SetMode R5              ; Go SVC mode
+
+        MOV     R5, R14         ; Save R14_SVC
+        SWI     XDivaSupport_SetCallback
+        MOV     R14, R5
+
+        SetMode R4              ; Restore processor mode
+CSI_Exit
+        LDMFD   SP!, {R4-R11, PC}
+
+
+; ----------------------------------------------------------------------
+
+; CheckStatus reads the status bits from the COM port, and also reads
+; a receive char into the buffer if available. This returns R0 =
+; status word. Bit 0 (RxReady) should be ignored; you should test for
+; the Rx buffer being empty instead. Also returns R3 = COM port base.
+
+CheckStatus
+        LDR      R3, COM_PortBase
+        LDRB     R0, [R3, #LINE_STAT]      ; Get Line Status bits
+        LDRB     R1, [R3, #MODM_STAT]      ; Get Modem Status bits
+        ORR      R0, R0, R1, LSL #8        ; R0 = combined status bits
+
+        TST      R0, #1                    ; Is Rx Data Ready?
+        MOVEQS   PC, LR                    ; If not, finish now
+
+        LDR    R1, COM_RxBufInput   ; Get 'input' pointer
+        ADR    R2, COM_RxBuffer
+        ADD    R2, R2, R1           ; R2 = address of space in Rx buf
+
+        LDRB   R1, [R3, #RX_DATA]   ; Get Rx char data
+        STRB   R1, [R2]             ; Put into buffer
+
+        LDR    R2, COM_RxBufInput
+        ADD    R2, R2, #1           ; Move pointer on
+        CMP    R2, # RXBUFLENGTH    ; is it past the end?
+        MOVHS  R2, # 0              ; ..start from beginning
+        STR    R2, COM_RxBufInput
+
+        LDR    R1, COM_RxBufOutput  ; Have we wrapped over the
+        CMP    R1, R2               ; start of the buffer?
+        MOVNES PC, LR               ; if not, exit
+
+        ORR    R0, R0, #2           ; otherwise: Set Rx Overrun bit
+                                    ; and discard oldest character
+        ADD    R1, R1, #1           ; Move output pointer on
+        CMP    R1, # RXBUFLENGTH    ; is it past the end?
+        MOVHS  R1, # 0              ; ..start from beginning
+        STR    R1, COM_RxBufOutput
+        MOVS   PC, LR
+
+; ----------------------------------------------------------------------
+
+; LPT port data
+
+LPT_ClearIRQ     DCD &03350558     ; Address to clear LPT interrupt
+LPT_PortBase     DCD 0
+LPT_PagedInPtr   DCD 0
+LPT_HandlerPtr   DCD 0
+LPT_PendingFlag  DCD 0
+
+
+; COM port data
+
+
+COM_PortBase     DCD 0
+COM_PendingBits  DCD     0       ; 'Sticky' bits
+
+COM_LCR_Val  DCB 0     ; Line Control reg current value
+COM_LCR_Save DCB 0     ; Previous value of Line Ctrl Register
+COM_MCR_Save DCB 0     ; Modem Ctrl Register
+COM_IER_Save DCB 0     ; Int Enable Register
+
+COM_RxBufInput   DCD 0
+COM_RxBufOutput  DCD 0
+
+; Data space ==========================================================
+
+DataSpace
+             ^ DataSpace
+
+COM_RxBuffer # RXBUFLENGTH
+DataEnd      # 0
+
+DataSize     % DataEnd - DataSpace
+
+        DCB     "Module by IH", 0
+
+        END

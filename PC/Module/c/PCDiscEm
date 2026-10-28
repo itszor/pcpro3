@@ -1,0 +1,127 @@
+/*
+*    !PC floppy / hard drive emulation
+*
+*    Module
+*/
+
+#define DEBUG 1
+
+#include <stdio.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.StdTypes"
+#include "module.h.PCDevHelp"
+#include "module.h.PCSupport"
+#include "module.h.PCDiscEm"
+
+int fdc_command_length[] = {
+  -1, -1, 8, 2, 1, 8, 8, 2, 0, 8, 1, -1, 8, 5, -1, 2
+};
+
+static FILE   *debug_log = NULL;
+
+static unsigned char                fdc_reg_output = 0;
+static unsigned char                fdc_reg_data = 0;
+static struct fdc_reg_status_struct fdc_reg_status;
+
+static struct fdc_command           current_cmd;
+static int                          cmd_ptr;
+
+static int  PCDiscEm_Read8(int addr)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return(0);
+  if (DEBUG)
+    fprintf(debug_log, "Read8: %Xh\n", addr);
+
+  switch(addr)
+  {
+    case FDC_OUTPUT :
+      /* Return the last value put in */
+      return(fdc_reg_output);
+      break;
+    case FDC_STATUS :
+      return( *(int*)&fdc_reg_status);
+      break;
+    case FDC_DATA   :
+      return(fdc_reg_data);
+      break;
+    case FDC_INPUT  :
+      break;
+  }
+  return(0xFF);
+}
+
+static void PCDiscEm_Write8(int addr, int data)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return;
+  if (DEBUG)
+    fprintf(debug_log, "Write8: %Xh -> %Xh\n", data, addr);
+
+  switch(addr)
+  {
+    case FDC_OUTPUT :
+      current_cmd.type.cmd = -1;
+      fdc_reg_output = data;
+      /* Motor control / drive selection
+         Let's just reset the controller and keep the value */
+      break;
+    case FDC_STATUS :
+      fprintf(debug_log, "God is not with us: status register written to");
+      break;
+    case FDC_DATA   :
+      if (fdc_reg_status.dio == 0)
+      {
+        (char*)&current_cmd[cmd_ptr++] = data;
+        if [cmd_ptr > fdc_command_length[currend_cmd.type])
+          { PCDiscEm_ErrorFDC(); return; }
+      }
+      break;
+    case FDC_INPUT  :
+      fprintf(debug_log, "God is not with us: input register written to");
+      break;
+  }
+}
+
+static void PCDiscEm_ErrorFDC(void)
+{
+
+}
+
+static void PCDiscEm_ResetFDC(void)
+{
+  fdc_reg_status.ndma = 1; /* Not in DMA mode */
+  fdc_reg_status.dio  = 0; /* Waiting for command*/
+  cmd_ptr = 0;
+}
+
+static void PCDiscEm_Final(void)
+{
+  if (DEBUG)
+    fclose(debug_log);
+}
+
+extern _kernel_oserror *PCDiscEm_Init( char *cmd_tail, int podule_base, int pw )
+{
+  Handler   PCDiscEm_handler;
+  _kernel_swi_regs R;
+
+  PCDiscEm_handler.Read8 = PCDiscEm_handler.Read16 = PCDiscEm_Read8;
+  PCDiscEm_handler.Write8 = PCDiscEm_handler.Write16 = PCDiscEm_Write8;
+  PCDiscEm_handler.R12value = pw;
+
+  if (DEBUG)
+    debug_log = fopen("<Diva$Dir>.DiscDebug", "w");
+
+  R.r[0] = (int) &PCDiscEm_handler; R.r[1] = 0x3F0; R.r[2] = 0x3F7;
+  _kernel_swi(PCDevHelp_RegisterIO, &R, &R);
+
+  PCDiscEm_ResetFDC();
+
+  atexit(PCDiscEm_Final);
+
+  return(0);
+}

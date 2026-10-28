@@ -1,0 +1,262 @@
+#define VERSION_STRING "2.02 (01-Aug-96)"
+/*
+*    !PC C source code
+*
+*    Module.C.PCDevHelp - PC Device module assistance
+*
+*    22-02-96 1.99 INH    Original
+*    01-08-96 2.02        Re-released properly
+*/
+
+#include "kernel.h"
+#include "swis.h"
+
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.hrdstate"
+#include "sys.h.festate"
+
+#include "module.h.pcdevhelp"
+
+/* Definitions ******************************************************** */
+
+#define SAVE_INT_STATE   \
+              int intstate = _kernel_irqs_disabled(); _kernel_irqs_off();
+
+#define RESTORE_INT_STATE \
+              if ( !intstate ) _kernel_irqs_on();
+
+
+/* Globals ************************************************************** */
+
+static _kernel_oserror ErrInstall = { 0x00010004, "!PC not loaded" };
+static _kernel_oserror ErrParams  = { 0x00010005, "Bad parameters" };
+static _kernel_oserror ErrBadSWI  = { 0x00010006, "Unknown SWI number" };
+
+static int PCDevHelp_PW;
+
+static struct HardwareState *pHW;
+static struct FrontEndState *pFE;
+
+/* Main SWI routine -------------------------------------------------- */
+
+_kernel_oserror *PCDVH_SWI (int SWIno, _kernel_swi_regs *R, void *pw )
+{
+  NotUsed(pw);
+
+  switch (SWIno | DVH_BASE)
+  {
+    case PCDevHelp_Init:
+    /* Initialise the module. !PC calls this to tell us the address of
+       the SYS_State structure (in R0) and the SYS_FEState structure
+       (in R1). We return a version number * 100 in R0. This is done
+       before the Service_PCDevice service call, so that we'll be
+       ready to provide SWI functions when this call comes along.
+       When PC shuts down, it calls us with R0=R1=0, to indicate it
+       has gone away */
+      pHW = (struct HardwareState *) R->r[0];
+      pFE = (struct FrontEndState *) R->r[1];
+      R->r[0] = PCDEVHELP_VERSION_NUMBER; /* Version number */
+      return NULL;
+
+    case PCDevHelp_RegisterIO:
+      {
+        /* R0 points to a Handler structure, R1 = first I/O port
+           and R2 = last I/O port */
+
+        int i, first, last;
+        Handler *pH;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pH = (Handler *) R->r[0];
+        if ( pH == NULL ) /* Deregister */
+          pH = &(pHW->NullHandlers);
+
+        /* Get I/O addresses */
+
+        first = R->r[1];
+        last  = R->r[2];
+
+        /* Check alignment */
+
+        if ( (first & 3) != 0  || (last & 3) != 3 )
+          return &ErrParams;
+
+        /* Convert to slot number */
+
+        first >>= 2;
+        last  >>= 2;
+
+        if ( first > last || first < 0 || last >= SYS_nIOSlots )
+          return &ErrParams;
+
+        /* Copy into array and finish */
+        for (i=first; i<=last; i++)
+          pHW->IOhandlers[i] = *pH;
+
+        return NULL;
+      }
+
+
+    case PCDevHelp_RegisterMem:
+      {
+        /* R0 points to a Handler structure, R1 = first I/O port
+           and R2 = last I/O port */
+
+        int i, first, last;
+        Handler *pH;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pH = (Handler *) R->r[0];
+        if ( pH == NULL ) /* Deregister */
+          pH = &(pHW->NullHandlers);
+
+        /* Get memory addresses */
+
+        first = R->r[1];
+        last  = R->r[2];
+
+        /* Check alignment to 16K boundary */
+
+        if ( (first & 0x3FFF) != 0  || (last & 0x3FFF) != 0x3FFF )
+          return &ErrParams;
+
+        /* Convert to slot number */
+
+        first = (first - SYS_MemBase) >> 14;
+        last  = (last  - SYS_MemBase) >> 14;
+
+        if ( first > last || first < 0 || last >= SYS_nMemSlots )
+          return &ErrParams;
+
+        /* Copy into array - that's it */
+        for (i=first; i<=last; i++)
+          pHW->Memhandlers[i] = *pH;
+
+        return NULL;
+      }
+
+    case PCDevHelp_RegisterDMA:
+      {
+        /* Pointer to DMA_handler in R0, DMA channel number in R1 */
+        DMA_handler * pDH;
+        int  DMAch;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pDH = (DMA_handler *) R->r[0];
+        DMAch = R->r[1];
+
+        if ( DMAch < 0 || DMAch >= SYS_nDMAslots || pDH == NULL )
+          return &ErrParams;
+
+        /* Copy structure */
+        pHW->DMAhandlers[DMAch] = *pDH;
+        return NULL;
+      }
+
+    case PCDevHelp_RegisterEvent:
+      {
+        /* R0 points to a CallList structure, R1 is an event number */
+
+        struct CallList *pCL;
+        int evtno;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pCL = (struct CallList *) R->r[0];
+        evtno = R->r[1];
+
+        if ( evtno < 0 || evtno >= SYS_nEvents || pCL == NULL )
+          return &ErrParams;
+
+        /* Linked-list insert */
+        pCL->next = pHW->eventlist[evtno];
+        pHW->eventlist[evtno] = pCL;
+
+        return NULL;
+      }
+
+    case PCDevHelp_RegisterConfig:
+      {
+        /* R0 points to a CallList structure */
+
+        struct CallList *pCL;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pCL = (struct CallList *) R->r[0];
+
+        if ( pCL == NULL )
+          return &ErrParams;
+
+        /* Linked-list insert */
+        pCL->next = pHW->Config_list;
+        pHW->Config_list = pCL;
+        return NULL;
+      }
+
+    case PCDevHelp_RegisterHPC:
+      {
+        /* R0 points to an HPC_handler structure */
+        HPC_handler *pHH;
+        int listno;
+
+        if ( pHW == NULL )
+          return &ErrInstall;
+
+        pHH = (HPC_handler *) R->r[0];
+
+        if ( pHH == NULL )
+          return &ErrParams;
+
+        listno = ServiceIDHashFn( pHH->ServiceID );
+
+        /* Linked-list insert */
+        pHH->next = pHW->HPCHandlerLists[listno];
+        pHW->HPCHandlerLists[listno] = pHH;
+
+        return NULL;
+      }
+
+    case PCDevHelp_GetStructAddr:
+      /* Return R0->HardwareState, R1->FEState */
+      if ( pHW == NULL || pFE == NULL )
+        return &ErrInstall;
+
+      R->r[0] = (int) pHW;
+      R->r[1] = (int) pFE;
+      return NULL;
+
+
+    default:
+      break;
+  }
+  return &ErrBadSWI;
+}
+
+
+/* init() *********************************************************** */
+
+/* We do very little when the module installs */
+
+_kernel_oserror *PCDVH_Init ( char *cmd_tail, int podule_base, int pw )
+{
+  PCDevHelp_PW = pw;
+  NotUsed(cmd_tail);
+  NotUsed(podule_base);
+
+  pFE = NULL;
+  pHW = NULL;
+
+  return NULL;
+}
+

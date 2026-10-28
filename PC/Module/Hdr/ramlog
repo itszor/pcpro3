@@ -1,0 +1,572 @@
+; > h.ramlog
+
+;bits supplied courtesy of jon ballance for doing logging to RMA - used by PCIO
+
+; set these values to choose options
+
+;-----------------------------------------
+; Macros
+
+        MACRO
+        PrMBuf                  ; r1 -> mbuf chain
+ [ DoPrints>0
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r2,r3,lr}   ; preserve any flags there
+;   ToSVCE 2,3
+   BL   DisplayMBuf
+;   FromSVCE 2,3   
+   LDMFD r13!,{r2,r3,pc}^
+2
+ ]
+        MEND
+
+
+        MACRO
+        PrTime $String
+ [ DoPrints>0
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,r1,lr}   ; preserve any flags there
+   ToSVCE 0,1
+   BL   PrintStr
+   DCB  10,13,"Time:$String",0
+   ALIGN
+   BL TimeStamp
+   FromSVCE 0,1   
+   LDMFD r13!,{r0,r1,pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrResults $String
+ [ DoPrints>1
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,r1,lr}   ; preserve any flags there
+   BL   PrintStr
+   DCB  10,13,"$String",0
+   ALIGN
+   ToSVCE 0,1
+   BL PrintResults
+   FromSVCE 0,1   
+   LDMFD r13!,{r0,r1,pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrRegs7 $String
+ [ DoPrints>1
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{lr}   ; preserve any flags there
+   BL   PrintStr
+   DCB  10,13,"$String",0
+   ALIGN
+   BL  NCRRegs  ; assume pointing to r7
+   LDMFD r13!,{pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrLoc $String
+ [ DoPrints>1
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{lr}   ; preserve any flags there
+   BL   PrintStr
+   DCB  10,13,"$String",0
+   ALIGN
+   LDMFD r13!,{pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrLocC $cond,$String
+ [ DoPrints>1
+   BL$cond %FT1
+   B  %FT2
+1  STMFD r13!,{lr}   ; preserve any flags there
+   BL   PrintStr
+   DCB  10,13,"$String",0
+   ALIGN
+   LDMFD r13!,{pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrLocNC $cond,$String
+ [ DoPrints>1
+   BL$cond %FT1
+   B  %FT2
+1  STMFD r13!,{lr}   ; preserve any flags there
+   BL   PrintStr
+   DCB  "$String",0
+   ALIGN
+   LDMFD r13!,{pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrStr $reg
+ [ DoPrints>0
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,lr}   ; preserve any flags there
+   PrNl
+   MOV r0,r$reg
+   BL   PrintStrR0
+   LDMFD r13!,{r0,pc}^
+2
+ ]
+        MEND
+
+
+        MACRO
+        PrL $Condition,$String
+ [ DoPrints>1
+   B$Condition %FT3
+   B  %FT2
+3  BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,lr}   ; preserve any flags there
+   PrNl
+   ADR  r0,%FT4
+   BL   PrintStrR0
+   LDMFD r13!,{r0,pc}^
+4  DCB  "$String",0
+   ALIGN
+2
+ ]
+        MEND
+    
+        MACRO
+        PrErr   $String   
+ [ ((DoPrints>1) :LAND: (DoPrints<>6))
+   BVC      %FT1
+   STMFD    r13!,{r0,r2,lr}
+   MOV      r2,r0
+   LDR      r0,[r2],#4
+   BL       PrintStrR0
+   BL       PrintNewLine
+   BL       PrintR2        ; print error no if print enabled
+   BL       PrintStrR0   ; andreport the PFB error found
+   ADR      r0,%FT3
+   BL       PrintStrR0
+   MOV      r0,pc
+   ORR      r0,r0,#V_flag
+   TEQP     r0,#0
+   MOVNE    r0,r0
+   LDMFD    r13!,{r0,r2,lr}
+   B        %FT1
+3
+   =        " @ "
+   =        "$String"
+   =        " "
+   =        0
+   ALIGN
+1
+ ]
+        MEND
+
+        MACRO
+        PrFunc   $String
+ [ ((DoPrints=3):LOR:(DoPrints>4))
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,lr}   ; preserve any flags there
+   ADR r0,%FT3
+   BL   PrintStrR0
+   LDMFD r13!,{r0}
+3  DCB "$String",0
+   ALIGN
+   BL PrintR0
+   LDMFD r13!,{pc}^
+2
+ ]
+        MEND
+
+        MACRO
+        PrFuncB  $String
+ [ ((DoPrints=3):LOR:(DoPrints>4))
+   BL %FT1
+   B  %FT2
+1  STMFD r13!,{r0,lr}   ; preserve any flags there
+   ADR r0,%FT3
+   BL   PrintStrR0
+   LDMFD r13!,{r0}
+3  DCB "$String",0
+   ALIGN
+2
+ ]
+        MEND
+
+        MACRO
+        PrW     $Reg
+ [ (DoPrints>0):LAND:($Reg/=14)
+   STMFD r13!,{lr}
+   BL   PrintR$Reg
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW1     $string,$Reg1
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW2     $string,$Reg1,$Reg2
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW3     $string,$Reg1,$Reg2,$Reg3
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   BL   PrintR$Reg3
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW4     $string,$Reg1,$Reg2,$Reg3,$Reg4
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   BL   PrintR$Reg3
+   BL   PrintR$Reg4
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW5     $string,$Reg1,$Reg2,$Reg3,$Reg4,$Reg5
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   BL   PrintR$Reg3
+   BL   PrintR$Reg4
+   BL   PrintR$Reg5
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW6     $string,$Reg1,$Reg2,$Reg3,$Reg4,$Reg5,$Reg6
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   BL   PrintR$Reg3
+   BL   PrintR$Reg4
+   BL   PrintR$Reg5
+   BL   PrintR$Reg6
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrW7     $string,$Reg1,$Reg2,$Reg3,$Reg4,$Reg5,$Reg6,$Reg7
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   BL   PrintR$Reg2
+   BL   PrintR$Reg3
+   BL   PrintR$Reg4
+   BL   PrintR$Reg5
+   BL   PrintR$Reg6
+   BL   PrintR$Reg7
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrWC     $cond,$Reg
+ [ (DoPrints>0):LAND:($Reg/=14)
+   STMFD r13!,{lr}
+   BL$cond   PrintR$Reg
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB     $Reg
+ [ (DoPrints>0):LAND:(($Reg/=14):LAND:($Reg/=15))
+   STMFD r13!,{lr}
+   BL   PrintbR$Reg
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrBC     $cond,$Reg
+ [ (DoPrints>0):LAND:(($Reg/=14):LAND:($Reg/=15))
+   STMFD r13!,{lr}
+   BL$cond   PrintbR$Reg
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB1     $string,$Reg1
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintbR$Reg1
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB2     $string,$Reg1,$Reg2
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintbR$Reg1
+   BL   PrintbR$Reg2
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB3     $string,$Reg1,$Reg2,$Reg3
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintbR$Reg1
+   BL   PrintbR$Reg2
+   BL   PrintbR$Reg3
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB4     $string,$Reg1,$Reg2,$Reg3,$Reg4
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintbR$Reg1
+   BL   PrintbR$Reg2
+   BL   PrintbR$Reg3
+   BL   PrintbR$Reg4
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrB5     $string,$Reg1,$Reg2,$Reg3,$Reg4,$Reg5
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintbR$Reg1
+   BL   PrintbR$Reg2
+   BL   PrintbR$Reg3
+   BL   PrintbR$Reg4
+   BL   PrintbR$Reg5
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+        MACRO
+        PrBlkD     $string,$Reg1
+ [ (DoPrints>0):LAND:($Reg1/=14)
+   STMFD r13!,{lr}
+   PrLoc $string
+   BL   PrintR$Reg1
+   STMFD r13!,{r0}
+   LDR   r0,[r$Reg1,#-4]
+   BL    PrintR0
+   LDMFD r13!,{r0,lr}
+ ]
+        MEND
+
+        MACRO
+        PrNl     
+ [ (DoPrints>0)
+   STMFD r13!,{lr}
+   BL    PrintNewLine
+   LDMFD r13!,{lr}
+ ]
+        MEND
+
+; reg1,reg2 are 2 corruptable work regs in range 0-7, reg1<reg2
+        MACRO
+        ToSVCE          $reg1,$reg2   
+ [ (DoPrints>0)
+        STMFD   r13!,{r$reg1,r$reg2}    ; in current mode
+        MOV     r$reg1,pc           ; remember mode flags
+        TEQP    pc,#SerIRQoff   ; change mode
+        MOV     r0,r0
+        MOV     r$reg2,lr           ; remember svce lr
+        STMFD   r13!,{r$reg1,r$reg2}    ; on svce stack
+ ]
+        MEND
+
+        MACRO
+        FromSVCE        $reg1,$reg2     
+ [ (DoPrints>0)
+        LDMFD   r13!,{r$reg1,r$reg2}    ; recover svce lr & old mode flags
+        MOV     lr,r$reg2           ; restore lr
+        TEQP    r$reg1,#0           ; change to old mode
+        MOV     r0,r0
+        LDMFD   r13!,{r$reg1,r$reg2}    ; restore r0,r1 in old mode
+ ]
+        MEND
+
+        MACRO
+        PrWords     $Reg1,$count
+ [ (DoPrints>0)
+        STMFD r13!,{r$Reg1,lr}
+  [ ($Reg1 = 0)
+        stmfd   r13!,{r1-r2,r3}
+        mov     r2,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#4
+2       ldr     r1,[r$Reg1],#4
+        PrW     1
+        subs    r2,r2,#4
+        bgt     %bt1
+        ldmfd   r13!,{r1-r2,r3}
+  ]
+  [ ($Reg1 = 1)
+        stmfd   r13!,{r0,r2,r3}
+        mov     r2,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#4
+2       ldr     r0,[r$Reg1],#4
+        PrW     0
+        subs    r2,r2,#4
+        bgt     %bt1
+        ldmfd   r13!,{r0,r2,r3}
+  ]
+  [ ($Reg1 = 3)
+        stmfd   r13!,{r1-r2,r0}
+        mov     r2,#$count
+        mov     r0,#0
+1       subs    r0,r0,#1
+        bgt     %ft2
+        PrNl
+        mov     r0,#4
+2       ldr     r1,[r$Reg1],#4
+        PrW     1
+        subs    r2,r2,#4
+        bgt     %bt1
+        ldmfd   r13!,{r1-r2,r0}
+  ]
+  [ ($Reg1 /= 0):LAND:($Reg1 /= 1):LAND:($Reg1 /= 3)
+        stmfd   r13!,{r0,r1,r3}
+        mov     r1,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#4
+2       ldr     r0,[r$Reg1],#4
+        PrW     0
+        subs    r1,r1,#4
+        bgt     %bt1
+        ldmfd   r13!,{r0,r1,r3}
+  ]
+   LDMFD r13!,{r$Reg1,lr}
+ ]
+        MEND
+
+        MACRO
+        PrBytes     $Reg1,$count
+ [ (DoPrints>0)
+        STMFD r13!,{r$Reg1,lr}
+  [ ($Reg1 = 0)
+        stmfd   r13!,{r1-r2,r3}
+        mov     r2,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#16
+2       ldrb    r1,[r$Reg1],#1
+        PrB     1
+        subs    r2,r2,#1
+        bgt     %bt1
+        ldmfd   r13!,{r1-r2,r3}
+  ]
+  [ ($Reg1 = 1)
+        stmfd   r13!,{r0,r2,r3}
+        mov     r2,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#16
+2       ldrb    r0,[r$Reg1],#1
+        PrB     0
+        subs    r2,r2,#1
+        bgt     %bt1
+        ldmfd   r13!,{r0,r2,r3}
+  ]
+  [ ($Reg1 = 3)
+        stmfd   r13!,{r1-r2,r0}
+        mov     r2,#$count
+        mov     r0,#0
+1       subs    r0,r0,#1
+        bgt     %ft2
+        PrNl
+        mov     r0,#16
+2       ldrb    r1,[r$Reg1],#1
+        PrB     1
+        subs    r2,r2,#1
+        bgt     %bt1
+        ldmfd   r13!,{r1-r2,r0}
+  ]
+  [ ($Reg1 /= 0):LAND:($Reg1 /= 1):LAND:($Reg1 /= 3)
+        stmfd   r13!,{r0,r1,r3}
+        mov     r1,#$count
+        mov     r3,#0
+1       subs    r3,r3,#1
+        bgt     %ft2
+        PrNl
+        mov     r3,#16
+2       ldrb    r0,[r$Reg1],#1
+        PrB     0
+        subs    r1,r1,#1
+        bgt     %bt1
+        ldmfd   r13!,{r0,r1,r3}
+  ]
+   LDMFD r13!,{r$Reg1,lr}
+ ]
+        MEND
+
+
+        END

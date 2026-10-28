@@ -1,0 +1,3 @@
+echo ************* COMPILING %0.c.%1
+|Cbin:cc -c -fah -g -I<Obey$Dir> %0.c.%1 -o o.%1
+Cbin:cc -c -fah -I<Obey$Dir> %0.c.%1 -o o.%1

@@ -1,0 +1,190 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.CURSOR  - Cursor routines for text mode
+*
+*
+*    08-01-92 INH  Original
+*    25-03-92 INH  Cursor now relative to DrawPointer
+*    30-03-92      Redraw area when cursor moves
+*    13-04-92      Cursor is now timed
+*    02-07-93      BIOS / hardware separation
+*/
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.FEstate"
+#include "vid.h.cursor"
+#include "vid.h.vids"
+#include "vid.h.modes"
+#include "vid.h.ports"
+
+/* Globals *************************************************** */
+
+static int  CUR_ArmScreenOffset;
+static int  CUR_PixelValue;
+static int  CUR_StartLine;
+static int  CUR_StopLine;
+static int  CUR_SavedPixels[32];
+
+static int  CUR_NextFlashTime = 0;
+
+/* ************************ */
+
+/* This is called in windows-FE mode when the cursor is about to
+   be moved.
+*/
+
+static void CUR_AreaChanged(void)
+{
+  int X, Y;
+
+  Y = CUR_ArmScreenOffset/VIDS_ArmScreenWidthBytes;
+  X = (CUR_ArmScreenOffset - Y*VIDS_ArmScreenWidthBytes) <<1;
+
+  VID_AreaChanged ( X, X+7, Y, Y+VIDS_CharHeight-1, 2 );
+
+}
+
+
+/* ************************ */
+
+void CUR_HideCursor(void)
+{ int *x;
+  int i;
+
+  if ( !VIDS_CursorVisible ) return;
+  VIDS_CursorVisible = false;
+
+
+  if ( CUR_ArmScreenOffset < 0 )
+    return;
+  x = (int *) (VIDS_DrawPointer + CUR_ArmScreenOffset);
+
+  for (i=0; i<VIDS_CharHeight; i++)
+  {
+    *x = CUR_SavedPixels[i];
+     x += (VIDS_ArmScreenWidthBytes >> 2);
+  }
+
+  if ( SYS_FEState.WinFErunning )
+    CUR_AreaChanged();
+
+
+}
+
+/* ************************* */
+
+static void CUR_ShowCursor(void)
+{ int *x;
+  int i;
+
+  if ( VIDS_CursorVisible ) return;
+  VIDS_CursorVisible = true;
+
+
+  if ( CUR_ArmScreenOffset < 0 )
+    return;
+  x = (int *) (VIDS_DrawPointer + CUR_ArmScreenOffset);
+
+  for (i=0; i<VIDS_CharHeight; i++)
+  { CUR_SavedPixels[i] = *x;
+
+    if ( i >= CUR_StartLine && i <= CUR_StopLine )
+       *x ^= CUR_PixelValue;
+
+    x += (VIDS_ArmScreenWidthBytes >> 2);
+  }
+
+  if ( SYS_FEState.WinFErunning )
+    CUR_AreaChanged();
+
+}
+
+/* ******************************** */
+
+void VID_CursorPoll(void)
+{
+  int t;
+
+  if ( VID_ModeType != MODE_TEXT )
+    return;
+
+  t = SYS_GetTime();
+
+  if ( t - CUR_NextFlashTime > 25 )
+    CUR_ShowCursor();
+  else
+    CUR_HideCursor();
+
+  if ( t - CUR_NextFlashTime > 75 )
+    CUR_NextFlashTime = t;
+}
+
+/* ******************** */
+
+void CUR_UpdateCurPos (void)
+{
+  int offset, pageoffs, curoffs;
+
+  if ( VID_ModeType != MODE_TEXT ) return;
+
+  pageoffs = ( (VID_CRTCregs[CRTC_OffsetMSB] << 8) +
+                VID_CRTCregs[CRTC_OffsetLSB] ) & 0x3FFF;
+
+  curoffs  = ( (VID_CRTCregs[CRTC_CursorMSB] << 8) +
+                VID_CRTCregs[CRTC_CursorLSB] ) & 0x3FFF;
+
+
+  offset = (curoffs-pageoffs);
+
+  if ( SYS_FEState.WinFErunning )
+    CUR_AreaChanged();
+
+  CUR_HideCursor();
+
+  VIDS_CurrentCursorOffset = offset;
+
+  /* Screen length is given by VIDS_DisplayLength/8 in text modes
+     (8 bytes per character */
+
+  if ( offset < 0 || (offset<<3) >= VIDS_DisplayLength )
+    CUR_ArmScreenOffset = -1;
+  else
+    CUR_ArmScreenOffset = VIDS_GetScreenOffset (offset);
+
+}
+
+/* ********************* */
+
+void CUR_UpdateCurShape (void)
+{
+  CUR_HideCursor();
+
+  if ( VID_CRTCregs[CRTC_CurStartLine] & 0x20 )  /* If bit 5 set, no cursor */
+  {
+    CUR_StartLine = 1;
+    CUR_StopLine  = 0;
+    return;
+  }
+
+  CUR_StartLine = VID_CRTCregs[CRTC_CurStartLine] & 0x1F;
+  CUR_StopLine  = VID_CRTCregs[CRTC_CurStopLine]  & 0x1F;
+}
+
+/* ********************** */
+
+void VID_CursorInit        (void)
+{
+  CUR_StartLine = 9;
+  CUR_StopLine  = 9;
+
+  VIDS_CursorVisible = false;
+  CUR_PixelValue = 0x77777777;
+
+}
+
+/* ************************ */
+
+
+

@@ -1,0 +1,17 @@
+dir <Obey$dir>
+SET Alias$DEL Wipe  
+SET Alias$REN Rename  
+SET Alias$. Ex
+SET Copy$Options F~C~A~N
+SET Wipe$Options ~C
+LIB $.Tools.Cv4.Library
+set c$libroot $.Tools.Cv4.Libraries.Clib
+set cbin$path $.Tools.Cv4.Library.
+set Clib$path $.Tools.Cv4.Libraries.
+Set C$Path $.Tools.Cv4.Libraries.Clib.
+set run$path <run$path>,$.Tools.Cv4.DDE.
+set testPC$dir $.PCs
+set PCback$dir SCSI::BIGSCSI.$
+|set PCback$dir ADFS::chewy.$
+set DDT$dir <obey$dir>
+

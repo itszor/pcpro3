@@ -1,0 +1,91 @@
+/*
+ * PCConfig application
+ *
+ * Version: 0.46 Wed 23rd August 1995
+ *
+ * © Dean Murphy
+ */
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "vars.h"
+#include "switching.h"
+#include "utils.h"
+
+void do_switching_initialise(void)
+{
+  raise_error(event_register_toolbox_handler(switching_window,ActionButton_Selected,switching_window_click_handler,0));
+ /* tmp_config.switching.switching_option = config.switching.switching_option = SWITCHING_NORMAL_SWITCH;*/
+}
+
+void setup_switching_window(void)
+{
+  update_switching_window();
+  toolbox_show_object(0,switching_window,0,0,0,0);
+}
+
+void update_switching_window(void)
+{
+  switch(config.switching.switching_option)
+  {
+    case SWITCHING_NORMAL_SWITCH:
+     radiobutton_set_state(0,switching_window,SWITCHING_NORMAL,1);
+    break;
+
+    case SWITCHING_MOUSE_SWITCH:
+     radiobutton_set_state(0,switching_window,SWITCHING_MOUSE,1);
+    break;
+
+    case SWITCHING_BREAK_SWITCH:
+     radiobutton_set_state(0,switching_window,SWITCHING_BREAK,1);
+    break;
+
+    case SWITCHING_NO_RETURN_SWITCH:
+     radiobutton_set_state(0,switching_window,SWITCHING_NO_RETURN,1);
+    break;
+  }
+  raise_error(numberrange_set_value(0,switching_window,SWITCHING_FOREGROUND,config.switching.foreground_slice));
+  raise_error(numberrange_set_value(0,switching_window,SWITCHING_BACKGROUND,config.switching.background_slice));
+  raise_error(radiobutton_set_state(0,switching_window,SWITCHING_STARTFROZEN+config.switching.start_up_option,1));
+  raise_error(optionbutton_set_state(0,switching_window,SWITCHING_TOOLBAR,config.switching.toolbar));
+}
+
+int switching_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int x;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+
+  if(id_block->self_component == SWITCHING_OK)
+  {
+    int selected;
+    radiobutton_get_state(0,switching_window,SWITCHING_NORMAL,0,&selected);
+    switch(selected)
+    {
+      case SWITCHING_NORMAL:
+       tmp_config.switching.switching_option = SWITCHING_NORMAL_SWITCH;
+       break;
+
+      case SWITCHING_MOUSE:
+       tmp_config.switching.switching_option = SWITCHING_MOUSE_SWITCH;
+       break;
+
+      case SWITCHING_BREAK:
+       tmp_config.switching.switching_option = SWITCHING_BREAK_SWITCH;
+       break;
+
+      case SWITCHING_NO_RETURN:
+       tmp_config.switching.switching_option = SWITCHING_NO_RETURN_SWITCH;
+       break;
+    }
+    raise_error(numberrange_get_value(0,switching_window,SWITCHING_FOREGROUND,&(tmp_config.switching.foreground_slice)));
+    raise_error(numberrange_get_value(0,switching_window,SWITCHING_BACKGROUND,&(tmp_config.switching.background_slice)));
+    raise_error(radiobutton_get_state(0,switching_window,SWITCHING_STARTFROZEN,&x,&(tmp_config.switching.start_up_option)));
+    raise_error(optionbutton_get_state(0,switching_window,SWITCHING_TOOLBAR,&tmp_config.switching.toolbar));
+    tmp_config.switching.start_up_option-=SWITCHING_STARTFROZEN;
+    check_for_modified_data((int)&config.switching, (int)&tmp_config.switching, sizeof(config.switching));
+    config.switching = tmp_config.switching;
+  }
+  return(1);
+}

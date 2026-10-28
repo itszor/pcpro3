@@ -1,0 +1,1548 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.MODES  - Video Mode-related things
+*
+*
+*        08-01-92 INH  Original
+*        24-01-92      VGA modes
+*        19-02-92      VGA BIOS support
+*        21-04-92      Rewritten
+*        11-06-92      VGA256 mode support
+*        02-07-92      Weird-Shaped modes support
+*        13-07-92      Check mode legal
+*        16-01-93      TBL_FontPosition
+*        29-03-93      AreaChanged clips to screen size
+*        07-02-93      BIOS / hardware separation
+*        09-11-94      RISCOS 3.5 mode specifiers now used
+*        21-06-96      VESA Support
+* 2.15  1997.10.14 RW  VESA acceleration via VESARAM option
+*       1998.03.12 MB  Robin's variables culled, VESARAM option removed,
+*                        now supports 8-bit DACs
+* 2.21a 1998.03.23     Fixed Stargunner probs / direct screen access stuff
+* 2.21b 1998.04.02     Screen memory now in a dynamic area
+* 2.23  1998.05.13     Supports fast page-based copying of video memory
+*       1998.06.30     Fixed 'blank text modes' bug introduced in 2.22 by
+*                        not re-initing the dynamic area as a sprite every
+*                        time its mode changes
+*/
+
+#define  DUMPREGS  0
+#define  DEBUG 0
+#include "sys.h.debug"
+
+#include <stdio.h>        /* For sscanf() */
+#include <stdlib.h>       /* For malloc() */
+#include <ctype.h>
+#include <string.h>       /* For memcpy() etc */
+
+#include "kernel.h"
+#include "swis.h"
+/*#include "sprite.h"        for structure defs */
+/*#include "os.h"            for SWI calling */
+
+#include "sys.h.veneers"
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "vid.h.vids"
+#include "vid.h.vgas"
+#include "vid.h.tables"
+#include "vid.h.cursor"
+#include "vid.h.ports"
+#include "vid.h.modes"
+#include "vid.h.palette"
+#include "vid.h.windrv"
+#include "sys.h.FEstate"
+
+#include "module.h.PCSupport"
+
+#define  XOS_WriteO (0x20002)
+
+#define  MAXHEIGHT 600
+
+#define SPRITE_HEADER_SIZE 10240
+
+extern bool MOU_Init(void);
+
+/* Globals ********************************************************* */
+
+int   VID_ModeType;
+int   VID_PCYtotal;
+int   VID_PCXtotal;
+int   VID_PCbpp;
+
+bool  VID_FullScreenActive;
+bool  VID_256ClrNeedsTranslate;
+int   VID_MemorySize;
+int   VID_TextModeRows;       /* Only valid in text mode */
+int   VID_TextModeCols;
+BYTE *VID_RealScreenBase;
+int   VID_ImageSize;          /* Size of screen image in bytes */
+int   VID_SpriteHeight;       /* Height of screen sprite in pixels, clipped
+                                 to account for start position */
+int   VID_WatchBytesPerLine;
+/*bool  AccelerateVESA;
+int   AcceleratedVESAModeSize = 0; MB: do we need these? */
+
+static sprite_header *VID_sprite_hdr;
+static int            VID_RedrawTimer;
+
+static bool VID_InterleavedRAM;
+
+static ModeSpec VID_WinDrvMode;
+
+/* DEBUG ONLY ****************************************************** */
+
+#if DUMPREGS
+static void DumpRegisters()
+{
+  SYS_trace("Mode type %d Width=%d, Height=%d, %d bpp",
+             VID_ModeType,  VID_PCXtotal, VID_PCYtotal, VID_PCbpp );
+  SYS_trace("Graph regs:"); SYS_tracedata (VGA_GraphRegs, Graph_max);
+  SYS_trace("Seq   regs:"); SYS_tracedata (VGA_SeqRegs,   Seq_max);
+  SYS_trace("CRTC  regs:"); SYS_tracedata (VID_CRTCregs,  CRTC_max);
+  SYS_trace("Attr  regs:"); SYS_tracedata (VGA_AttrRegs,  Attr_max);
+}
+#endif
+
+/* AllocVESAMem() ------------------------------------------
+
+   Bumps VRAM up to maximum size
+*/
+static bool AllocVESAMem ()
+{
+  int current, size;
+  _kernel_swi_regs r;
+
+  r.r[0] = 2; r.r[1] = 2;
+  _kernel_swi(0x68 /* OS_DynamicArea */, &r, &r);
+  size = r.r[5];
+
+  /*AcceleratedVESAModeSize = 0;*/
+  if (size == 0)
+    return true;
+
+  r.r[0] = 2;  /* screen area */
+  _kernel_swi(OS_ReadDynamicArea, &r, &r);
+
+  if (r.r[1] >= size) {
+    /*AcceleratedVESAModeSize = VID_ImageSize;*/
+    debug(("AllocVESAMem: Already at %d", r.r[1]));
+    return true;
+  }
+
+  current = r.r[1];
+  /* So we need to bump screensize */
+  r.r[0] = 2;
+  r.r[1] = size - current;
+  if (_kernel_swi(OS_ChangeDynamicArea, &r, &r) != NULL)
+    return false;
+  /*if (r.r[1]+current < size)
+    return false;*/ /* Grab as much as possible */
+  debug(("AllocVESAMem: Bumped to %d", r.r[1]+current));
+
+  /*AcceleratedVESAModeSize = VID_ImageSize;*/
+  return true;
+}
+
+/* GetScreenText routine ------------------------------- */
+
+/* As from v2.00 this is a new, more generalised method of
+   retrieving text from the screen. It is called (in normal
+   user mode) with a pointer to a destination buffer and
+   the size of said buffer. It will retrieve the text of the
+   screen into the buffer & return the number of characters
+   written.
+*/
+
+static int VID_GetScreenText ( char *dest, int buf_size )
+{
+  BYTE *src;
+  int width, i, rows, n_written;
+
+  if ( VID_ModeType != MODE_TEXT )
+    return 0;
+
+  n_written = 0;
+  src  = VIDS_MemoryBlk + VIDS_DisplayStart;
+  rows = VID_TextModeRows;
+
+  while ( rows-- > 0 )
+  {
+    /* src points to the start of this row of characters */
+    /* Note that each character occupies 8 bytes of video memory;
+       the character is at offset 0 of an 8-byte block, & the
+       attribute is at offset 1. The other bytes are used for fonts
+       or are spare. */
+
+    for ( width = VID_TextModeCols-1; width >=0; width-- )
+    {
+      if (  src[(width<<3)+1] != 0  && /* Non-blank attribute */
+            src[(width<<3)]   != 0x20 ) /* Not a space */
+        break;
+    }
+    width++;  /* Width = no. of non-blank chars on line */
+
+    if ( n_written + width + 1 > buf_size )
+      return n_written;
+
+    for ( i=0; i < width; i++ )
+    {
+      if (src[(i<<3)+1] == 0 || src[(i<<3)] == 0)
+        *dest++ = ' ';
+      else
+        *dest++ = src[(i<<3)];
+    }
+
+    *dest++ = 10;  /* CR at end of line */
+    src += (VID_TextModeCols << 3);
+    n_written += width+1;
+  }
+
+  return n_written;
+}
+
+/* max(), min() and clip() ************************* */
+
+int max ( int a, int b )
+{
+  return (a>b) ? a : b;
+}
+
+int min ( int a, int b )
+{
+  return (a<b) ? a : b;
+}
+
+int clip ( int lower, int value, int upper )
+{
+  if ( value > upper ) value = upper;
+  if ( value < lower ) value = lower;
+  return value;
+}
+
+static int GetBPPCode ( int bpp )
+{
+  switch(bpp)
+  {
+    case 1: return CD_1BPP;
+    case 2: return CD_2BPP;
+    case 4: return CD_4BPP;
+    case 8: return CD_8BPP;
+    case 16: return CD_16BPP;
+    case 32: return CD_32BPP;
+  }
+  return -1;
+}
+
+/* Mode Setup routines ************************************************ */
+
+/* SetModeParameters() examines the video registers and determines
+   the basic mode size & type. It will set
+
+   VID_ModeType
+   VID_PCXtotal
+   VID_PCYtotal
+   VID_PCbpp
+   VIDS_DisplayLength
+   VIDS_ArmScreenWidthBytes
+   VIDS_WatchLength (the length in bytes which the whole screen takes up
+                       in PC video memory space)
+
+   plus variables specific to a mode type which depend on the mode size.
+*/
+
+static void ModeSet ( int type, int X, int Y, int bpp )
+{
+  bool    s;
+
+  if (type != -1)
+    VID_ModeType = type;
+  if (X != -1)
+    VID_PCXtotal = X;
+  if (Y != -1)
+    VID_PCYtotal = Y;
+  if (bpp != -1)
+    VID_PCbpp    = bpp;
+  if (type != MODE_VESA)
+  {
+    VID_ScanLineLen = 0;
+    SYS_FEState_Ptr->DirectScreenAccess = VID_CRTCregs[CRTC_VESADirect] = 0;
+  }
+  if (VID_ScanLineLen != 0)
+    X = VID_PCXtotal = VID_ScanLineLen;
+  VIDS_ArmScreenWidthBytes = ((X*bpp+31) >> 5) * 4;
+  VID_ImageSize = VIDS_ArmScreenWidthBytes * Y;
+  if (type != MODE_WINDOWS)
+  {
+    if (VID_ImageSize < (CFG.VideoRAM<<10) )
+      s = VID_AllocVidMem(CFG.VideoRAM<<10);
+    else
+      s = VID_AllocVidMem(VID_ImageSize);
+  }
+  else
+    s = VID_AllocVidMem(WIN_LastAllocated);
+
+  if (VID_MemorySize < VID_ImageSize || s == false)
+  {
+    SYS_error ( true, "vramyampy1" );
+    fflush(stdout);
+    exit(1);
+  }
+
+  if (VID_ModeType == MODE_VESA)
+    AllocVESAMem();
+
+  SYS_trace("ModeSet (%d) %d,%d %dbpp (%dK mem %dK img)", VID_ModeType, VID_PCXtotal, VID_PCYtotal, VID_PCbpp, VID_MemorySize>>10, VID_ImageSize>>10);
+}
+
+/* ---------- */
+
+static bool SetVESAMode ( int val )
+{
+  int bpp;
+
+  /* Assume we're not going to need direct screen access unless the
+  ** SVGA BIOS explicitly requests it
+  */
+  /*if (VID_ScanLineLen == 0)
+    SYS_FEState_Ptr->DirectScreenAccess = VID_CRTCregs[CRTC_VESADirect] = 0;*/
+
+  switch ( val & 0x70 ) /* Bits 4..6 are bpp specifier */
+  {
+    case 0x10:
+      bpp = 4; break;
+    case 0x20:
+      bpp = 8; break;
+    case 0x30:
+      bpp = 16; break;
+    case 0x40:
+      bpp = 32; break;
+
+    default:
+      return false;
+  }
+
+  switch ( val & 0xF ) /* Bits 0..3 are size specifier */
+  {
+    case 0x0:
+      ModeSet ( MODE_VESA, 320, 200, bpp );
+      break;
+    case 0x1:
+      ModeSet ( MODE_VESA, 640, 400, bpp );
+      break;
+    case 0x2:
+      ModeSet ( MODE_VESA, 640, 480, bpp );
+      break;
+    case 0x3:
+      ModeSet ( MODE_VESA, 800, 600, bpp );
+      break;
+    case 0x4:
+      ModeSet ( MODE_VESA, 1024, 768, bpp );
+      break;
+    case 0x5:
+      ModeSet ( MODE_VESA, 1280, 1024, bpp );
+      break;
+    case 0x6:
+      ModeSet ( MODE_VESA, 320, 240, bpp );
+      break;
+    case 0x7:
+      ModeSet ( MODE_VESA, 320, 400, bpp );
+      break;
+    default:
+      return false;
+  }
+
+  return true;
+}
+
+/* ---------- */
+
+static void VID_SetModeParameters(void)
+{
+  int ncols, charheight, Yheight;
+
+  /* A few common basics */
+  ncols = VID_CRTCregs [CRTC_BytesPerRow]*2;
+  charheight = (VID_CRTCregs[CRTC_CharHeight] & 0x1F ) + 1;
+  Yheight = VID_CRTCregs[CRTC_ScanLines] + 1 +
+            (VID_CRTCregs[CRTC_Overflow] & 2 ? 256 : 0 ) +
+            (VID_CRTCregs[CRTC_Overflow] & 0x40 ? 512 : 0 );
+
+  if ( VID_CRTCregs[CRTC_CharHeight] & 0x80 )   /* Scan-line doubling bit */
+    Yheight >>= 1;
+
+  if ( Yheight == 144 )  /* Wolfenstein bodge!! - must find out why! */
+    Yheight = 320;
+
+  /* Select mode type */
+
+  /* Windows mode =================== */
+
+  if ( WIN_WinModeActive && VID_WinDrvMode.ModeNum != MN_NO_MODE )
+  {
+    ModeSet ( MODE_WINDOWS, WIN_Xtotal, WIN_Ytotal, WIN_bpp );
+    VIDS_WatchLength = 0;
+    return; /* Skip size check */
+  }
+
+  /* VESA mode ====================== */
+
+  else if ( SetVESAMode (VID_CRTCregs[CRTC_VESAModeReq]) )
+  {
+    VID_WatchBytesPerLine = VIDS_ArmScreenWidthBytes;
+    VIDS_WatchLength = VGAS_VESAScreenLength = VID_ImageSize;
+  }
+
+  /* Text mode ====================== */
+  else if ( (VGA_AttrRegs [Attr_ModeCtrl] & 1) == 0 )
+  {
+    /* AR10 bit 0 is clear for text modes */
+    VID_TextModeRows = Yheight / charheight;
+    VID_TextModeCols = ncols;
+    if ( VID_TextModeRows*ncols >= 16384 )  /* Memory addressing limit! */
+      VID_TextModeRows = 16000/ncols;
+
+    ModeSet ( MODE_TEXT, ncols*8, VID_TextModeRows*charheight, 4 );
+    VIDS_DisplayLength = ncols * VID_TextModeRows * 8;
+    VIDS_WatchLength   = VIDS_DisplayLength >> 2;
+    VID_WatchBytesPerLine = ncols * 2;
+
+    /* Private variables */
+    VIDS_TextRowScreenPitch = VIDS_ArmScreenWidthBytes * charheight;
+    VIDS_TextRowCharacters  = ncols;
+    VIDS_CharHeight = charheight;
+    VID_ScanLineLen = 0;
+  }
+
+  /* CGA Mode ============================== */
+  else if ( (VID_CRTCregs [CRTC_ModeCtrl] & 1) == 0)
+  {
+    /* CR17 bit 0 is clear for CGA mode */
+    if ( Yheight > 200 ) Yheight = 200;
+
+    /* ncols is normally 40 */
+    if ( VGA_GraphRegs[GR_RWMode] & 0x20 ) /* GR5 bit 5 set for 2bpp modes */
+    {
+      /* We have 2 ARM pixels per PC pixel here; it keeps everything
+         simple */
+      ModeSet ( MODE_CGA45, ncols*16, Yheight, 4 );
+      VIDS_CGAExpandTable = TBL_Modes45Expand;
+    }
+    else
+    {
+      ModeSet ( MODE_CGA6, ncols*8, Yheight, 4);
+      VIDS_CGAExpandTable = TBL_Mode6Expand;
+    }
+    /* Set display length to 16K words, so that 'watch' operates correctly */
+    VIDS_DisplayLength = 0x4000 << 2;
+    VIDS_WatchLength   = 0x4000;
+    VID_WatchBytesPerLine = ncols*2;   /* Normally 80 */
+  }
+
+  /* 16-colour VGA modes ========================== */
+  else if ( (VGA_GraphRegs [GR_RWMode] & 0x40) == 0 )
+  {
+    ModeSet ( MODE_VGA, ncols*8, Yheight/charheight, 4);
+
+    VGAS_DisplayLength = VID_ImageSize;
+    VIDS_WatchLength = VID_ImageSize >> 2;
+    VID_WatchBytesPerLine = ncols;
+  }
+
+  /* 256-colour VGA modes ========================= */
+  else
+  {
+    ModeSet ( MODE_256CLR, ncols*4, Yheight/charheight, 8 );
+
+    VGAS_DisplayLength = VID_ImageSize;
+    /* These two get overwritten depending on Chain4 setting */
+    VIDS_WatchLength = VID_ImageSize >> 2;
+    VID_WatchBytesPerLine = ncols;
+  }
+
+  /* Check for excessive size ====================== */
+
+  if ( (VID_ImageSize > VGA_RAM_SIZE) &&
+       ((VID_ImageSize > VIDS_FreeMemory(VID_MemorySize)) || (VID_ModeType != MODE_VESA))
+     )
+  {
+    SYS_trace("VIDS_FreeMemory = %dK", VIDS_FreeMemory(VID_MemorySize)>>10);
+    SYS_trace("Mode too big, %d by %d, %d bpp, type=%d",
+            VID_PCXtotal, VID_PCYtotal, VID_PCbpp, VID_ModeType );
+    ModeSet ( MODE_NONE, 640, 256, 4 );
+    VIDS_DisplayLength = VGAS_DisplayLength = VGAS_VESAScreenLength = 0;
+    VID_WatchBytesPerLine=1;
+  }
+
+  /* Do we need to re-jumble RAM contents? ---------- */
+
+  if ( VID_ModeType == MODE_VGA )
+  {
+    if ( !VID_InterleavedRAM )
+    {
+      VID_InterleavedRAM = true;
+      if ( CFG.PreserveVidMem & PVM_TO_VGA )
+        VGAS_ConvertToInterleaved();
+    }
+  }
+  else
+  {
+    if ( VID_InterleavedRAM )
+    {
+      VID_InterleavedRAM = false;
+      if ( CFG.PreserveVidMem & PVM_FROM_VGA )
+        VGAS_ConvertToByte();
+    }
+  }
+
+}
+
+
+/* Subroutines for ARM mode selection ---------- */
+
+static int ImageSize ( int x, int y, int bpp )
+{
+  return ((x*bpp+31) >> 5) * 4 *y;
+}
+
+/* ----------------- */
+
+static bool ModeUsable ( ModeSpec m, int ramsize_req )
+{
+  int r = VIDS_CheckModeValid(m);
+
+  if ( r == CMV_NOMEM )
+  {
+    VIDS_EnsureRAMsize(ramsize_req);
+    r = VIDS_CheckModeValid(m);
+  }
+
+  return ( r == CMV_OK );
+}
+
+/* VID_FindModeSel() ---------- */
+
+/* When we're trying to invent a mode selector to fit a given X/Y/bpp
+     setting, we first try the exact X/Y values, then we ought to try
+     a bigger Y size (e.g. if the mode wants 440 lines, we should try
+     480).
+*/
+
+static int LikelyYs[] = { 0, 256, 352, 480, 600, -1 };
+
+static ModeSelector VID_ModeSel;
+
+extern bool VID_FindModeSel ( int X, int Y, int bpp,
+                         bool pal, bool inexact,
+                         int *pY_out, ModeSpec *pModeOut )
+{
+  ModeSpec m;
+  int i;
+
+  VID_ModeSel.ModeSelFlags = MSF_DEFAULT;
+  VID_ModeSel.Xres = X;
+  VID_ModeSel.ClrDepth = GetBPPCode ( bpp );
+  VID_ModeSel.FrameRate = FR_DEFAULT;
+
+  if ( pal )
+  {
+    VID_ModeSel.ModeVars[0] = MV_MODEFLAGS;
+    VID_ModeSel.ModeVars[1] = 0x80;
+    VID_ModeSel.ModeVars[2] = MV_NCOLOUR;
+    VID_ModeSel.ModeVars[3] = 255;
+    VID_ModeSel.ModeVars[4] = MV_END;
+  }
+  else
+    VID_ModeSel.ModeVars[0] = MV_END;
+
+  LikelyYs[0] = Y;
+  m.pModeSel = &VID_ModeSel;
+
+  for ( i=0; LikelyYs[i] > 0; i++ )
+  {
+    if ( LikelyYs[i] >= Y )
+    {
+      VID_ModeSel.Yres = LikelyYs[i];
+      if ( ModeUsable ( m, ImageSize(X, VID_ModeSel.Yres, bpp) ) )
+      {
+        *pModeOut = m;
+        if ( pY_out != NULL )
+          *pY_out = VID_ModeSel.Yres;
+        return true;
+      }
+    }
+
+    if ( !inexact ) break;
+  }
+
+  return false;
+}
+
+/* ------------------------------------- */
+
+struct ArmModeDef
+{
+  int Xmax;
+  int Ymax;
+  int bpp;
+  ModeSpec amode;
+};
+
+/* These can be in any order; sorting is done by FindModeNum */
+
+static struct ArmModeDef ArmModes[] =
+{
+   640, 256, 4, {12},
+   640, 480, 4, {27},
+   800, 600, 4, {31},
+   320, 256, 4, {9},
+   640, 256, 8, {15},
+   640, 480, 8, {28},
+   320, 256, 8, {13},
+   360, 480, 8, {65},
+   0,   0,   0, {0}
+};
+
+static bool FindModeNum ( int X, int Y, int bpp, int *pY_out,
+                                                  ModeSpec *pMode_out )
+{
+  struct ArmModeDef *pMD, *pBest;
+
+  pBest = NULL;
+
+  for ( pMD = ArmModes; pMD->bpp > 0; pMD++ )
+  {
+    if ( X == pMD->Xmax &&
+         bpp == pMD->bpp  &&
+         Y <= pMD->Ymax &&
+         (pBest == NULL || pMD->Ymax < pBest->Ymax )
+       )
+    {
+      if ( ModeUsable(pMD->amode, ImageSize(X, pMD->Ymax, bpp) ) )
+        pBest = pMD;
+    }
+  }
+
+  if ( pBest != NULL )
+  {
+    *pY_out = pBest->Ymax;
+    *pMode_out = pBest->amode;
+    return true;
+  }
+
+  return false;
+}
+
+
+/* ChooseFullScreenMode() -------------- */
+
+/*
+   This selects the correct ARM screen mode, according to the following
+   values:
+
+     VID_PCXtotal
+     VID_PCYtotal
+     VID_PCbpp
+
+   If such a mode cannot be found, it returns false.
+*/
+
+
+/* --------------------------- */
+
+
+static bool ChooseFullScreenMode( ModeSpec *pMode_out, int *pActualY  )
+{
+  if ( VID_ModeType == MODE_WINDOWS )  /* Known ARM screen mode */
+  {
+    *pActualY = WIN_Ytotal;
+    *pMode_out = VID_WinDrvMode;
+    return true;
+  }
+
+  /* Choose most suitable ARM screen mode ********* */
+
+  /* If in 256clr mode, can we have a palette that works? */
+
+  if ( VID_PCbpp == 8 &&
+       VID_FindModeSel ( VID_PCXtotal, VID_PCYtotal, 8, true, true,
+                                        pActualY, pMode_out ) )
+  {
+    /*SYS_trace("Real 8-bit mode selected");*/
+    return true;
+  }
+
+  /* Can we get any usable mode selector? */
+  if ( !VID_FindModeSel ( VID_PCXtotal, VID_PCYtotal, VID_PCbpp,
+                         false, true, pActualY, pMode_out )
+  /* Or a mode number? */
+       && !FindModeNum ( VID_PCXtotal, VID_PCYtotal, VID_PCbpp,
+                                      pActualY, pMode_out )
+     )
+  {
+    return false;
+  }
+
+  /* We will need to translate in 256 colour modes unless the earlier
+     step worked */
+  if ( VID_PCbpp == 8 )
+    VID_256ClrNeedsTranslate = true;
+
+  return true;
+}
+
+/* SetFullScreenMode() -----------------------
+
+ Sets given mode, creates top and bottom borders, and pushes VRAM allocation
+ to maximum.
+
+*/
+
+static void SetFullScreenMode ( ModeSpec mode, int Yheight )
+{
+  int  bordersize, bsize_bytes, lwr_offset, bclr;
+
+  VIDS_InitARMmode ( mode );
+  VIDS_CursorVisible = false;
+
+  bordersize = (Yheight - VID_PCYtotal) >> 1;
+
+  SYS_FEState.Xratio = 1280 / VID_PCXtotal;
+  SYS_FEState.Yratio = 1024 / Yheight;
+
+  SYS_FEState.ArmLeftX   = 0;
+  SYS_FEState.ArmBottomY = bordersize * SYS_FEState.Yratio;
+
+  bsize_bytes = VIDS_ArmScreenWidthBytes * bordersize;
+  lwr_offset  = VIDS_ArmScreenWidthBytes * (Yheight-bordersize);
+
+  /* CGA modes use colour 4 (always black) as a border colour */
+
+  if (VID_ModeType & (MODE_CGA45|MODE_CGA6) )
+    bclr = 0x44;
+  else
+    bclr = 0;
+
+  if ( bsize_bytes > 0 )
+  {
+    memset ( VIDS_HardScreenBase,            bclr, bsize_bytes );
+    memset ( VIDS_HardScreenBase+lwr_offset, bclr, bsize_bytes );
+  }
+
+  VID_RealScreenBase = VIDS_HardScreenBase + bsize_bytes;
+
+  AllocVESAMem();
+}
+
+
+/* VID_SelectArmMode() ************************************************ */
+
+/* This is called from VID_SetModeVars, when the PC's screen size
+   changes. If we're in full-screen mode, it will attempt to set an
+   ARM mode to match. Otherwise it will set this will reset the ARM mode and
+   borders. It also sets VIDS_DrawPointer and VGAS_DrawPointer to
+   point to the current start of the (real or sprite) screen.
+*/
+
+static void VID_SelectArmMode( void )
+{
+  /* If in full-screen mode, choose & set new ARM mode */
+
+  VID_FullScreenActive = false;
+  VID_256ClrNeedsTranslate = false;
+
+  /* Stop copying video memory on vsyncs while we change mode */
+  VID_FreezePageCopying(true);
+
+  if ( SYS_FEState.FullFErunning )
+  {
+    ModeSpec mode;
+    int      Yheight;
+
+    if ( ChooseFullScreenMode ( &mode, &Yheight ) )
+    {
+      SetFullScreenMode ( mode, Yheight );
+      VID_FullScreenActive = true;
+    }
+    else /* Can't get mode. Just run into sprite for now */
+    {
+      VIDS_InitARMmode(SYS_FEState.WimpMode); /* Known OK mode! */
+      SYS_ErrorPending = true;
+      SYS_error( false, "nofullscr", VID_PCXtotal, VID_PCYtotal, VID_PCbpp);
+      /*os_swi1(XOS_WriteO, (int) msg);*/
+    }
+  }
+
+  /* We use standard mode numbers in the sprite header, to avoid the
+     front-end code trying to mess about with the X/Y ratios of the
+     sprite, and also to provide a mode number for strange-shaped modes.
+  */
+
+  VID_sprite_hdr->width = (VIDS_ArmScreenWidthBytes>>2) - 1;
+  VID_sprite_hdr->height = VID_PCYtotal-1;
+
+  VID_sprite_hdr->mode = (VID_PCbpp == 32) ? SPR_32BPP_MODE :
+                         (VID_PCbpp == 16) ? SPR_16BPP_MODE :
+                         (VID_PCbpp == 8 ) ? SPR_8BPP_MODE  :
+                                             SPR_4BPP_MODE;
+
+  SYS_FEState.Xpixels = VID_PCXtotal;
+  SYS_FEState.Ypixels = VID_PCYtotal;
+  SYS_FEState.PCbpp   = VID_PCbpp;
+
+
+  if ( VID_ModeType & MODE_TEXT )
+    SYS_FEState.GetTextFn = VID_GetScreenText;
+  else
+    SYS_FEState.GetTextFn = NULL;
+
+  /* Restore previous vsync memory copying state */
+  VID_FreezePageCopying(false);
+
+  SYS_FEState.ModeChanged = true;
+
+}
+
+/* VID_SetSpriteBase() -------------------------- */
+
+/* This is called from vid.c.modes when it is updating the
+   start position of the screen sprite. 'Offset' is the offset
+   of the start of the image, in bytes from the start of
+   VIDS_MemoryBlk.
+*/
+
+void VID_SetSpriteBase ( int offset )
+{
+  VID_sprite_hdr->image  = (VIDS_MemoryBlk+offset) - (BYTE *)VID_sprite_hdr;
+  VID_sprite_hdr->mask   = VID_sprite_hdr->image;
+
+  /* Clip sprite size to stop it running off end of memory */
+  if ( offset + VID_ImageSize > VID_MemorySize )
+    VID_SpriteHeight = (VID_MemorySize-offset) / VIDS_ArmScreenWidthBytes;
+  else
+    VID_SpriteHeight = VID_PCYtotal;
+
+  VID_sprite_hdr->height = VID_SpriteHeight-1;
+}
+
+/* VID_UpdateModeVars() ********************************* */
+
+/* This is the prime routine which gets called to translate
+   a set of CRTC register values into a video mode. It sets
+   the ARM mode as well if needed.
+*/
+
+void VID_UpdateModeVars(void)
+{
+  if ( (VGA_SeqRegs[SEQ_Reset] & 3) != 3 )
+    return;
+
+  VID_SetModeParameters();   /* Set X, Y, bpp and mode type */
+  VID_SelectArmMode(); /* Pick ARM mode, decide if we can do it fullscreen,
+                      if so change screen mode to suit */
+
+  VID_PortsModeChange();  /* Update all handler-related variables */
+
+  CUR_UpdateCurPos();
+  CUR_UpdateCurShape();
+
+  VID_UpdatePalette();   /* Calculate colours of PC pixels */
+
+#if DUMPREGS
+  DumpRegisters();
+#endif
+
+  VID_RedrawTimer=25; /* Logic changed */
+}
+
+/* This is identical to the above routine, except for the fact that it
+** only changes the X size of the mode for a particular VESA call.
+*/
+void VID_UpdateX (int x)
+{
+  ModeSet (-1, x, -1, -1);
+
+  VID_SelectArmMode(); /* Pick ARM mode, decide if we can do it fullscreen,
+                      if so change screen mode to suit */
+
+  VID_PortsModeChange();  /* Update all handler-related variables */
+
+  CUR_UpdateCurPos();
+  CUR_UpdateCurShape();
+
+  VID_UpdatePalette();   /* Calculate colours of PC pixels */
+
+#if DUMPREGS
+  DumpRegisters();
+#endif
+
+  VID_RedrawTimer=25; /* Logic changed */
+}
+
+
+/* ************************************************************* */
+
+void VID_RedrawBuffer(void)
+{
+  VIDS_CursorVisible = false;
+  VIDS_FontWritten = 0;
+  VID_RedrawTimer = 0;     /* Stop timer */
+  VID_AreaChanged ( 0, VID_PCXtotal-1, 0, VID_PCYtotal-1, 2 );
+
+  /* Text/CGA redraws involve re-plotting the screen memory data */
+
+  if ( VID_ModeType & (MODE_TEXT|MODE_CGA45|MODE_CGA6) )
+  {
+    register int maxlen =
+       min(VIDS_DisplayLength, VGA_RAM_SIZE - VIDS_DisplayStart);
+    register BYTE *data_ptr =
+              VIDS_MemoryBlk + VIDS_DisplayStart;
+    register int i;
+
+    if ( VID_ModeType == MODE_TEXT )
+    {
+      for ( i=0; i<maxlen; i+=8 )  /* Each char takes 8 bytes */
+        VIDS_PlotChar( i, data_ptr[i], data_ptr[i+1] );
+    }
+    else
+    {
+      for ( i=0; i<maxlen; i+=4)
+        VIDS_PlotCGA( (i>>2), data_ptr[i] );
+    }
+      return;
+  }
+
+  /* Other modes are essentially copies of video memory */
+  else if ( VID_ModeType & (MODE_VGA|MODE_256CLR|MODE_WINDOWS|MODE_VESA) )
+  {
+    register BYTE *src =
+      (BYTE *)VID_sprite_hdr + (VID_sprite_hdr->image);
+    register int len = VID_SpriteHeight * VIDS_ArmScreenWidthBytes;
+    register BYTE *dst = VID_RealScreenBase;
+
+    if ( VID_FullScreenActive )
+    {
+      if ( VID_256ClrNeedsTranslate )
+      {
+        while(len-- > 0)
+          *dst++ = VID_256colourXlate[*src++];
+      }
+      else
+      {
+        memcpy ( dst, src, len );
+      }
+    }
+  }
+
+}
+
+/* ************************* */
+
+/* This is called when something has changed which will affect the
+    whole screen's appearance and needs a call to VID_RedrawBuffer
+    to display it. At most 'delay' system polls events will occur
+    before the redraw is completed. This is currently called when
+
+    - PC mode has changed
+    - text mode font memory has been written
+    - palette has changed in fixed-256-colour modes
+    - accelerated 'screen scroll' function has changed
+    - font select register has changed
+    - CRTC base addess has changed
+    - underline position has changed
+*/
+
+void VID_RedrawRequest ( int delay )
+{
+  if ( VID_RedrawTimer <= 0  )
+    VID_RedrawTimer = delay;
+}
+
+/* ************************************************************* */
+
+/* In window-front-end mode, this is called when an area of the
+   screen has been changed. 'delay' specifies how long before the
+   redraw is done; a value of 1 will do it as soon as the current
+   CPU_Run call has ended.
+*/
+
+void VID_AreaChanged ( int Xmin, int Xmax, int Ymin, int Ymax, int delay)
+{
+  if ( VID_FullScreenActive )
+    return;
+
+  if ( Xmin < SYS_FEState.ChgdXmin )
+    SYS_FEState.ChgdXmin = max(Xmin, 0);
+  if ( Xmax > SYS_FEState.ChgdXmax )
+    SYS_FEState.ChgdXmax = min(Xmax, VID_PCXtotal-1);
+  if ( Ymin < SYS_FEState.ChgdYmin )
+    SYS_FEState.ChgdYmin = max(Ymin, 0);
+  if ( Ymax > SYS_FEState.ChgdYmax )
+    SYS_FEState.ChgdYmax = min(Ymax, VID_PCYtotal-1);
+
+  if ( SYS_FEState.RedrawDelay <= 0 || delay < SYS_FEState.RedrawDelay )
+    SYS_FEState.RedrawDelay = delay;
+}
+
+/* ******************** */
+
+extern void VID_DoChangedRegion ( int PCmin, int PCmax )
+{
+  int x0, x1, y0, y1;
+
+  x0 = 0;
+  x1 = VID_PCXtotal-1;
+
+  if ( VID_ModeType & (MODE_CGA45|MODE_CGA6) )
+  {
+    PCmin &= 0x1FFF;
+    PCmax &= 0x1FFF;
+    /* This next bit is not technically correct, but errs on the
+       side of caution */
+    y0 = (min(PCmin,PCmax) / VID_WatchBytesPerLine) * 2 - 1;
+    y1 = (max(PCmin,PCmax) / VID_WatchBytesPerLine) * 2 + 2;
+  }
+  else if ( VID_ModeType & MODE_TEXT )
+  {
+    y0 = (PCmin / VID_WatchBytesPerLine);
+    y1 = (PCmax / VID_WatchBytesPerLine);
+    if ( y0 == y1 ) /* One line of text is changed */
+    {
+      x0 = ((PCmin % VID_WatchBytesPerLine) >> 1) * 8;
+      x1 = ((PCmax % VID_WatchBytesPerLine) >> 1) * 8 + 7;
+    }
+    y0 = y0 * VIDS_CharHeight;
+    y1 = (y1+1) * VIDS_CharHeight - 1;
+  }
+  else if ( VID_ModeType & (MODE_VGA|MODE_256CLR|MODE_VESA) )
+  {
+    y0 = (PCmin / VID_WatchBytesPerLine);
+    y1 = (PCmax / VID_WatchBytesPerLine);
+  }
+  else /* Undefined mode */
+    return;
+
+  if ( y1-y0 < 56 )
+    VID_AreaChanged ( x0, x1, y0, y1, 3 );
+  else
+    VID_AreaChanged ( x0, x1, y0, y1, 6 );
+
+}
+
+/* ******************** */
+
+static int DropbackTimer;
+
+static bool VID_Poll()
+{
+  VID_CursorPoll();
+  VID_PaletteBlinkCheck();
+
+  if ( VID_PaletteChanged )
+  {
+    VID_UpdatePalette();
+    VID_PaletteChanged = false;
+  }
+
+  if ( VIDS_FontWritten )
+  {
+    VIDS_FontWritten = 0;
+    VID_RedrawRequest(5);
+  }
+
+  if ( VID_RedrawTimer > 0 )
+  {
+    if ( --VID_RedrawTimer == 0 )
+      VID_RedrawBuffer();
+  }
+
+  /* Drop back into windowed mode if we've been running a
+     non-full-screenable mode for a little while */
+
+  if (   !VID_FullScreenActive
+      &&  SYS_FEState.FullFErunning
+      &&  CFG.UseWindowFE )
+  {
+    if ( ++DropbackTimer > 10 ) /* About 200ms at typical poll rate */
+      SYS_FEState.SuspendRequest = true;
+  }
+  else
+    DropbackTimer = 0;
+
+  if ( SYS_FEState.WinFErunning && (VIDS_WatchMin <= VIDS_WatchMax) )
+  {
+    VID_DoChangedRegion( VIDS_WatchMin, VIDS_WatchMax );
+    VIDS_WatchMax = -1;
+    VIDS_WatchMin = 0x100000;
+  }
+
+  if ( WIN_WinModeActive )
+    WIN_CheckCursorState();
+
+  return false;
+}
+
+
+/* ************************************************************* */
+
+static bool ModesHardReset()
+{
+  WIN_WinModeActive = false;
+  VID_PortsHardReset();      /* Set up ports for mode 3 */
+  VID_UpdateModeVars();
+  memset ( VIDS_MemoryBlk, 0, VID_MemorySize);
+  VID_AreaChanged ( 0, VID_PCXtotal-1, 0, VID_PCYtotal-1, 1 );
+  return false;
+}
+
+/* ************************************************************* */
+
+static bool ModesStartFE()
+{
+  VID_SelectArmMode();
+  VID_PortsModeChange();  /* Update handlers & draw pointers */
+  VID_UpdatePalette();
+  VID_RedrawBuffer();
+  VID_FreezePageCopying(false);
+  return false;
+}
+
+static bool ModesStopFE() /* Called after the mode has changed */
+{
+  VID_FreezePageCopying(true);
+  return false;
+}
+
+static bool ModesStartWinFE()
+{
+  VID_SelectArmMode();
+  VID_PortsModeChange();
+  VID_UpdatePalette();
+  VID_RedrawBuffer();
+  VID_FreezePageCopying(false);
+  return false;
+}
+
+static bool ModesStopWinFE()
+{
+  VID_FreezePageCopying(true);
+  return false;
+}
+
+/* Initialisation routines ============================================= */
+
+/* VID_GetVESAModeCaps() ---------------------------------
+
+   This is used by the VESA code to determine what mode capabilities
+   are available.
+*/
+
+
+int VID_GetVESAModeCaps(void)
+{
+
+  return MC_REAL_PAL | MC_8BPP | MC_16BPP | MC_24BPP;
+}
+
+/* VID_AllocVidMem() ------------------------------------------
+
+   Allocates video memory of the requested size, and sets up
+   all the relevant pointers.
+*/
+
+static int first_alloc_done=0;
+
+extern bool VID_AllocVidMem ( int size )
+{
+  BYTE *blk;
+
+  /*blk = (BYTE *) malloc ( size + SPRITE_HEADER_SIZE );*/
+  blk = VIDS_ChangeAreaSize(size + SPRITE_HEADER_SIZE );
+  /*SYS_trace("VID_AllocVidMem got %d bytes screen memory at 0x%08X", size + SPRITE_HEADER_SIZE, blk);*/
+  if ( blk == NULL )
+    return false;
+
+  *(int*)blk = VID_MemorySize = size;   /*Size in bytes*/
+  debug(("blk=%08x", blk));
+
+  if (first_alloc_done) return(true);
+  first_alloc_done = 1;
+
+  /* Turn the block we've allocated into a sprite area */
+
+  SYS_FEState.s_area = (sprite_area *)blk;
+  sprite_area_initialise(SYS_FEState.s_area, size );
+
+  /* Create a sprite for the screen image; we'll alter it later */
+
+  SYS_FEState.spriteid.tag = sprite_id_addr;
+  SYS_FEState.spriteid.s.addr = 0;
+  if ( sprite_create_rp(SYS_FEState.s_area, "pc_screen",
+            FALSE /* sprite_palflag */,
+             640, 48, 27, &SYS_FEState.spriteid.s.addr) != NULL )
+     SYS_error( true, "iescreate" );
+
+  VID_sprite_hdr = (sprite_header *) SYS_FEState.spriteid.s.addr;
+
+  /* We put the video memory block immediately after the
+    end of the sprite header. This will mean that the
+    Windows image in 16- and 32-bpp modes will be immediately
+    after the end of the header. If we didn't do this, Put Sprite
+    Scaled thinks there's a palette involved and won't do the
+    operation (except during 16->32 and 32->16 translations,
+    where it doesn't notice). */
+
+  VIDS_MemoryBlk = VGAS_MemoryBlk = VGAS_MemoryBlk2 =
+            (BYTE *)VID_sprite_hdr + VID_sprite_hdr->image;
+  return true;
+}
+
+
+/* Windows driver mode string decoding -------------------- */
+
+#define OK            0
+#define ERR_BADSTRING 1  /* Mode string is unintelligible */
+#define ERR_NOTAVAIL  2  /* Mode not recognised by RISCOS */
+#define ERR_UNSUITED  3  /* Mode cannot be used by us */
+#define ERR_MEMLIMIT  4  /* Insufficient 'memsize' setting for mode */
+#define ERR_VideoRAM  5  /* Insufficient RISCOS video RAM for mode */
+#define ERR_MALLOC    6  /* Unable to allocate video memory */
+
+struct MyModeInfo
+{
+  ModeSpec mode;        /* -1 if no windows driver mode */
+  int     Xtotal;
+  int     Ytotal;
+  int     bpp;
+  int     flags;
+};
+
+struct bppstr
+{
+  char *name;
+  int bppval;
+};
+
+static struct bppstr bpp_names[] =
+{
+  "16M",  32,
+  "16",   4,
+  "1",    1,
+  "256",  8,
+  "32K",  16,
+  "32T",  16,
+  "4",    2,
+  NULL,   0
+};
+
+/* strmatch() --------------------------- */
+
+/*
+   Matches 'src' with 'tag'. Returns ptr to next character
+   of 'src' if it matches, otherwise returns NULL.
+*/
+
+static char *strmatch ( char *src, char *tag )
+{
+  while ( *tag != 0 )
+  {
+    if ( toupper(*src) != *tag )
+      return NULL;
+
+    src++, tag++;
+  }
+
+  return src;
+}
+
+/* DecodeModeNum() --------------------- */
+
+static int DecodeModeNum ( char *str, struct MyModeInfo *pMI )
+{
+  ModeSpec ms;
+
+  if ( sscanf( str, "%d", &ms.ModeNum ) != 1 ||
+       ms.ModeNum < 0 ||
+       ms.ModeNum > 255  )
+    return ERR_BADSTRING;
+
+
+  if ( VIDS_CheckModeValid(ms) == CMV_BADMODE )
+    return ERR_NOTAVAIL;
+
+  pMI->mode = ms;
+  pMI->Xtotal = VIDS_ReadModeVar ( ms.ModeNum, 11 ) + 1;
+  pMI->Ytotal = VIDS_ReadModeVar ( ms.ModeNum, 12 ) + 1;
+  pMI->bpp    = 1 << VIDS_ReadModeVar ( ms.ModeNum, 9 );
+  pMI->flags  = 0;
+
+  return OK;
+}
+
+/* DecodeModeString() -------------------- */
+
+
+static int DecodeModeString ( char *str, struct MyModeInfo   *pMI )
+{
+  static ModeSelector MS;
+  struct bppstr *pS;
+
+  MS.ModeSelFlags = MSF_DEFAULT;
+  MS.Xres = 0;
+  MS.Yres = 0;
+  MS.ClrDepth = -1;
+  MS.FrameRate = FR_DEFAULT;
+  MS.ModeVars[0] = MV_END;
+  pMI->mode.pModeSel = &MS;
+  pMI->flags = 0;
+
+  /* Try to collect X, Y, bpp and palette information */
+
+  while ( *str != 0 )
+  {
+    switch ( toupper(*str) )
+    {
+      case ' ': case '\n': case '\r': case '\t': case ',':
+        str++;
+        continue;
+
+      case 'X':
+        if (sscanf(++str, "%d", &MS.Xres) == 0)
+          return ERR_BADSTRING;
+
+        while ( isdigit( *str ) ) str++;
+        pMI->Xtotal = MS.Xres;
+        continue;
+
+      case 'Y':
+        if (sscanf(++str, "%d", &MS.Yres) == 0)
+          return ERR_BADSTRING;
+
+        while ( isdigit( *str ) ) str++;
+        pMI->Ytotal = MS.Yres;
+        continue;
+
+      case 'C':
+        str++;
+        for ( pS = bpp_names; pS->name != NULL; pS++)
+        {
+          char *s2 = strmatch ( str, pS->name );
+          if ( s2 != NULL )
+          {
+            str = s2;
+            pMI->bpp = pS->bppval;
+            MS.ClrDepth = GetBPPCode(pMI->bpp);
+            break;
+          }
+        }
+        continue;
+
+      case 'P': /* Palette flag */
+        str++;
+        pMI->flags |= MF_PAL_256;
+        MS.ModeVars[0] = MV_MODEFLAGS;
+        MS.ModeVars[1] = 0x80;
+        MS.ModeVars[2] = MV_NCOLOUR;
+        MS.ModeVars[3] = 255;
+        MS.ModeVars[4] = MV_END;
+        continue;
+
+      default:
+        return ERR_BADSTRING;
+    }
+  }
+
+  if ( MS.Xres <= 0 || MS.Yres <= 0 || MS.ClrDepth < 0 )
+    return ERR_BADSTRING;
+
+  /* We're only allowed Palette in 256clr modes */
+
+  if ( (pMI->flags & MF_PAL_256) != 0 &&
+       pMI->bpp != 8
+     )
+    return ERR_UNSUITED;
+
+  if ( VIDS_CheckModeValid(pMI->mode) == CMV_BADMODE )
+    return ERR_NOTAVAIL;
+
+  return OK;
+}
+
+/* ---------------------------- */
+
+static int size_needed_K;
+
+extern int VID_SetupWinMode ( char *modestring )
+{
+  int err, imgsize;
+  struct MyModeInfo MI;
+
+  /* Check for mode number or mode string */
+
+  err = DecodeModeNum ( modestring, &MI );
+
+  if ( err == ERR_BADSTRING )
+    err = DecodeModeString ( modestring, &MI );
+
+  if ( err != OK )
+    return err;
+
+  /* Check mode variables */
+
+  if ( MI.bpp != 4 && MI.bpp != 8 && MI.bpp != 16 && MI.bpp != 32 )
+    return ERR_UNSUITED;
+
+  imgsize = ImageSize (MI.Xtotal, MI.Ytotal, MI.bpp);
+  size_needed_K = (imgsize + 1023) >> 10;
+
+  if ( imgsize <= 0 )
+    return ERR_UNSUITED;
+
+  /* Check enough sprite RAM is allocated */
+  /*if ( memsize != -1 && imgsize > memsize )
+    return ERR_MEMLIMIT;*/
+
+  /* Check enough screen RAM available */
+
+  VIDS_EnsureRAMsize ( imgsize );
+
+  if ( VIDS_CheckModeValid(MI.mode) != CMV_OK )
+    return ERR_VideoRAM;
+
+  /* Allocate video RAM in a cunning fashion */
+  /*if (imgsize < (256<<10)) imgsize = 256<<10;*/
+  if (!VID_AllocVidMem(imgsize*1.25))
+    if (!VID_AllocVidMem(imgsize))
+      return ERR_MALLOC;
+
+  SYS_trace ("Got %dK for Windows mode", VID_MemorySize>>10);
+
+  /* All OK? Initialise Windows driver */
+
+  VID_WinDrvMode = MI.mode;
+  WIN_LastAllocated = VID_MemorySize;
+
+  WIN_Init ( MI.Xtotal, MI.Ytotal, MI.bpp, MI.flags, VID_MemorySize-SPRITE_HEADER_SIZE );
+  return OK;
+}
+
+/* ---------------------------------- */
+
+/* InitVidMemory --------------------------------------- */
+
+static void InitVidMemory( void )
+{
+  VID_WinDrvMode.ModeNum = MN_NO_MODE;
+
+  /* Bomb out if we can't allocate user-specified minimum VRAM
+  ** (which must be at least 256K for VGA)
+  */
+
+  if (CFG.VideoRAM < 256) CFG.VideoRAM = 256;
+
+  if ( VIDS_FreeMemory(0) < (CFG.VideoRAM<<10) )
+    SYS_error ( true, "sevidmem", CFG.VideoRAM );
+
+  /* Is a Windows driver mode required? */
+
+  if ( CFG.WinDrvMode != NULL && CFG.WinDrvMode[0] != 0 )
+  {
+    /* Ensure at least 256K video RAM */
+    if ( CFG.VideoRAM < 256 )
+    {
+      SYS_error ( false, "swVideoRAM" ); /* Say 'line ignored' */
+      CFG.VideoRAM = 256;
+    }
+
+    switch ( VID_SetupWinMode ( CFG.WinDrvMode ) )
+    {
+      case OK:
+        return;
+
+      case ERR_MALLOC:
+        SYS_error(false, "swvalloc", CFG.VideoRAM); /* Not enough memory */
+        break;
+
+      case ERR_BADSTRING:
+        SYS_error(false, "swdrve1", CFG.WinDrvMode ); /* Bad mode string */
+        break;
+
+      case ERR_NOTAVAIL:
+        SYS_error(false, "swdrve2", CFG.WinDrvMode ); /* Mode not available*/
+        break;
+
+      case ERR_UNSUITED:
+        SYS_error(false, "swdrve3", CFG.WinDrvMode ); /* Mode not usable */
+        break;
+
+      case ERR_MEMLIMIT:  /* VideoRAM isn't enough for mode */
+        SYS_error(false, "swdrve4", size_needed_K );
+        break;
+
+      case ERR_VideoRAM:  /* Not enough RISCOS screen RAM for mode */
+        SYS_error(false, "swdrve5" );
+        break;
+    }
+
+    /* Requested Windows mode failed. Try to use default mode (27) */
+
+    if ( VID_SetupWinMode ( "27" ) != OK )
+    {
+      SYS_error( false, "swnowin", "27" );  /* Can't use any WinDrv mode */
+    }
+  }
+/*ok:
+  if ( !AllocVESAMem () )
+    SYS_error ( false, "swVESAalc" );*/
+  SYS_trace("hello?");
+}
+
+static bool ModesSetConfig (void)
+{
+  InitVidMemory();
+  ModesHardReset();
+  return false;
+}
+
+
+/* ********************* */
+
+bool VID_Init(void)
+{
+  /* Initialise static pointers */
+  VID_InterleavedRAM = false;
+  VGAS_8to32Table = TBL_8to32;
+  VIDS_8to32Table = TBL_8to32;
+  VIDS_4to32Table = TBL_4to32;
+  VGAS_256ClrXlate = VID_256colourXlate;
+
+  /* Safety values */
+  SYS_FEState.s_area = NULL;
+  SYS_FEState.GetTextFn = NULL;
+  VID_MemorySize = 0;
+
+  SYS_registerEvent ( SYS_HardReset,  ModesHardReset, 0 );
+  SYS_registerEvent ( SYS_StartFE,    ModesStartFE, 0   );
+  SYS_registerEvent ( SYS_StopFE,     ModesStopFE, 0   );
+  SYS_registerEvent ( SYS_StartWinFE, ModesStartWinFE, 0);
+  SYS_registerEvent ( SYS_StopWinFE,  ModesStopWinFE, 0);
+
+  SYS_registerEvent ( SYS_SetConfig,  ModesSetConfig, 0 );
+  SYS_registerEvent ( SYS_PollChain,  VID_Poll, 0 );
+  SYS_registerEvent ( SYS_Shutdown,   VIDS_KillDynamicArea, 0 );
+
+  VID_CursorInit();
+  VIDS_InitDynamicArea();
+  MOU_Init();
+  return true;
+}
+
+
+
+
+
+
+

@@ -1,0 +1,9 @@
+; CMHG file for !PC IDE controller emulation
+; 
+; 19-01-98 MB  Experimental version
+
+help-string: PCDiscEm 0.01
+
+title-string: PCDiscEm
+
+initialisation-code: PCDiscEm_Init

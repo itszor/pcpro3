@@ -1,0 +1,37 @@
+#ifndef __pcsetup_installer_h
+#define __pcsetup_installer_h
+
+extern char boot_disc_location[32];
+extern char pc_location[128];
+extern char new_install_location[128];
+extern int  regcode;
+extern char regstring[16];
+
+extern int copied_files, files_to_copy, no_fresh_install, no_registration_code,
+           num_configs, netlinks_driver_chosen, no_sysfiles, install_netlinks;
+
+extern char installed_pc_version[8];
+extern char this_pc_version[8];
+extern char update_pc_version[8];
+
+extern char *no_dot(char *v);
+extern void do_update_boot(int item, int taskwin);
+extern void do_scan_system(void);
+extern void do_set_install_flags(void);
+extern void do_copy_files(void);
+
+#define BOOT_OPT_TBOX  0
+#define BOOT_OPT_CDFX  1
+#define BOOT_OPT_WKBD  2
+#define BOOT_OPT_DSFS  3
+#define BOOT_OPT_PCSL  4
+#define BOOT_OPT_DMAP  5
+#define BOOT_OPT_GRDD  6
+#define BOOT_OPT_FLRP  7
+#define BOOT_OPT_MEMFIX 8
+#define BOOT_OPT_URI   9
+
+#define BOOT_OPTS      10
+extern int boot_flags[BOOT_OPTS];
+
+#endif

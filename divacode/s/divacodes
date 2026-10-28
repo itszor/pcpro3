@@ -1,0 +1,9 @@
+ AREA divacodes, CODE
+
+	EXPORT	Image__RO_Base
+	IMPORT	|Image$$RO$$Base|
+
+Image__RO_Base
+	DCD	|Image$$RO$$Base|
+
+ END

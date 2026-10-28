@@ -1,0 +1,4 @@
+echo ** Assembling %0.s.%1
+|Cbin:objasm -g -from %0.s.%1 -to o.%1 -quit
+|Cbin:oddjasm  -from %0.s.%1 -to o.%1 -quit
+Cbin:objasm  -from %0.s.%1 -to o.%1 -quit

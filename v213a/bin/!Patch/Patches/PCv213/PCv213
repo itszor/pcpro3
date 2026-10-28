@@ -1,0 +1,24 @@
+
+# Patch to allow !PC v2.13 to get century right in last 3 weeks of 1999
+
+Application:!PC &2000
+Description:PC Card software
+Patch:Ensures !PC v2.13 gets century right in last 3 weeks of 1999
+File:!PC.!RunImage &FF8
+Transform:Squeeze
+Location:&00006D90
+VerifyWord:&E3500049
+Location:&00006DA4
+ChangeWord:&E351006C &E3510079
+Location:&00006DB8
+ChangeWord:&E351006C &E3510079
+Location:&00006DC4
+ChangeWord:&E35100EB &E3510047
+Location:&00006DD8
+ChangeWord:&E350006C &E3500079
+Location:&00006DE4
+ChangeWord:&E35000EB &E3500047
+Location:&00006DF0
+ChangeWord:&E35000B8 &E35000C8
+Location:&0011EBC
+ChangeWord:&33312E32 &70333132

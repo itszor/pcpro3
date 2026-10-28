@@ -1,0 +1,4 @@
+| set up the C library path (C$path) with/without toolbox libs present
+
+Set UseTOOLBOX 1
+<libs$Dir>.SetVars

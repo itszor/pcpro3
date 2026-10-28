@@ -1,0 +1,13 @@
+echo ** Compiling %0.c.%1
+
+| Normal compile
+|
+cc %0.c.%1 -o o.%1%2 -g -c -throwback -fah -I<Obey$Dir>,C: -DPC_%2
+
+| For MemCheck compilation
+|
+|cc %0.c.%1 -o o.%1 -c -g -fah -I<Obey$Dir>,C: -zpc1 -DMemCheck_MEMCHECK -JMemCheck:ANSI.,:mem -fw 
+
+| C version 4
+|
+|cc4 -c -g -fah -I<Obey$Dir>,C: %0.c.%1 -o o.%1

@@ -1,0 +1,363 @@
+/*
+ * Name   : Vars.h
+ * Desc   : External variables for use with PC Config
+ * Author : Dean Murphy
+ * Date   : 31-May-1995
+ */
+#ifndef __vars_h
+#define __vars_h
+#include "toolbox.h"
+#include "types.h"
+
+#define WimpVersion                310
+
+#define DISCS                      0
+#define DISCS_1                    1
+#define DISCS_2                    0
+
+/*********************************
+ * Main window component numbers *
+ *********************************/
+
+#define HARD_DISC_OPTIONS          0x2
+#define HARD_DISC_OPTIONS_T        0x26
+#define PC_CARD_MEMORY             0x3
+#define PC_CARD_MEMORY_T           0x28
+#define PRINTING_OPTIONS           0x4
+#define PRINTING_OPTIONS_T         0x29
+#define SERIAL_PORT_OPTIONS        0x5
+#define SERIAL_PORT_OPTIONS_T      0x2a
+#define WINDOWS_VIDEO_OPTIONS      0x6
+#define WINDOWS_VIDEO_OPTIONS_T    0x2b
+#define ASPI_OPTIONS               0x7
+#define ASPI_OPTIONS_T             0x2c
+#define SWITCHING_OPTIONS          0x8
+#define SWITCHING_OPTIONS_T        0x2d
+#define BOOT_OPTIONS               0x9
+#define BOOT_OPTIONS_T             0x2e
+#define NETWORK_OPTIONS            0x2f
+#define NETWORK_OPTIONS_T          0x31
+#define ADVANCED_OPTIONS           0x30
+#define ADVANCED_OPTIONS_T         0x32
+
+#define MAIN_OK                    0xC
+#define MAIN_CANCEL                0xD
+#define MAIN_SAVEASNEW             0x35
+#define MAIN_DELETE                0x36
+#define MAIN_DEFAULT               0x42
+#define MAIN_RENAME                0x40
+#define MAIN_HELP                  0x39
+#define MAIN_LAUNCH                0x3A
+
+#define MAIN_CONFIGSEL             0x37
+#define MAIN_CONFIGNAME            0x41
+
+/**********************************
+ * Discs window component numbers *
+ **********************************/
+
+#define DISCS_NUMBER                 0x1
+#define DISCS_DRIVE_C_DRAGGABLE      0x3
+#define DISCS_DRIVE_D_DRAGGABLE      0x4
+#define DISCS_DRIVE_C_DISPLAY        0x5
+#define DISCS_DRIVE_D_DISPLAY        0x7
+#define DISCS_OK                     0x9
+#define DISCS_CANCEL                 0xa
+#define DISCS_DRIVE_C_MASK           0xb
+#define DISCS_DRIVE_D_MASK           0xc
+#define DISCS_DRIVE_C_DRAG_MASK	     0xd
+#define DISCS_DRIVE_D_DRAG_MASK	     0xe
+
+
+#if DISCS_1
+ #define DISCS_DRIVE_C_MENU_ICON      0x25
+ #define DISCS_DRIVE_C_DEVICE_NUMBER  0x24
+ #define DISCS_DRIVE_C_PARTITION      0x14
+ #define DISCS_DRIVE_C_DIRECT_SCSI    0x15
+ #define DISCS_DRIVE_D_PARTITION      0x17
+ #define DISCS_DRIVE_D_DIRECT_SCSI    0x18
+ #define DISCS_DRIVE_D_MENU_ICON      0x2d
+ #define DISCS_DRIVE_D_DEVICE_NUMBER  0x2c
+
+ #define DISCS_DRIVE_C_HEADS_LABEL    0x26
+ #define DISCS_DRIVE_C_SCSI_HEADS     0x2a
+ #define DISCS_DRIVE_C_SECTORS_LABEL  0x28
+ #define DISCS_DRIVE_C_SCSI_SECTORS   0x2b
+
+ #define DISCS_DRIVE_D_HEADS_LABEL    0x2e
+ #define DISCS_DRIVE_D_SCSI_HEADS     0x30
+ #define DISCS_DRIVE_D_SECTORS_LABEL  0x2f
+ #define DISCS_DRIVE_D_SCSI_SECTORS   0x31
+
+ #define DISCS_C_PARTITION_SELECTED   0xb
+ #define DISCS_C_SCSI_SELECTED        0xc
+ #define DISCS_D_PARTITION_SELECTED   0xd
+ #define DISCS_D_SCSI_SELECTED        0xe
+ #define DISCS_C_BORDER               0xf
+ #define DISCS_D_BORDER               0x16
+ #define DISCS_C_CREATE               0x1e
+ #define DISCS_D_CREATE               0x1f
+#endif
+
+/****************************************
+ * Create Disc window component numbers *
+ ****************************************/
+
+#define CREATEDISC_SIZE            0x0
+#define CREATEDISC_INITDOS         0x4
+#define CREATEDISC_DRAGGABLE       0x7
+#define CREATEDISC_NAME            0x3
+#define CREATEDISC_CREATE          0x5
+#define CREATEDISC_CANCEL          0x6
+#define CREATEDISC_RISCOSSIZE      0x10
+
+/************************************
+ * Windows window component numbers *
+ ************************************/
+
+#define WINDOWS_COLOURS_MENU       0x2
+#define WINDOWS_RESOLUTION_MENU    0x3
+#define WINDOWS_MEMORY_SUGGESTED   0x6
+#define WINDOWS_USER_ALLOCATED     0xb
+#define WINDOWS_FASTVIDEO          0x12
+#define WINDOWS_FRAMESKIP          0x14
+#define WINDOWS_OK                 0xa
+#define WINDOWS_CANCEL             0x9
+#define WINDOWS_USE                0xc
+#define WINDOWS_USE_PALETTE	   0xe
+#define WINDOWS_INCLUDEVRAM        0x3f
+#define WINDOWS_SWITCHLFB          0x40
+
+/***********************************
+ * Memory window component numbers *
+ ***********************************/
+
+#define MEMORY_MEMORY_AVAILABLE    0x2
+#define MEMORY_EXISTING_MEMORY     0x4
+#define MEMORY_DISPLAY_MIN         0xa
+#define MEMORY_MEMORY_TO_ALLOCATE  0x6
+#define MEMORY_USER_ALLOCATED      0xb
+#define MEMORY_USER_SELECTED       0xc
+#define MEMORY_INCLUDEVRAM         0x11
+#define MEMORY_DISPLAY_ACTUAL      0x16
+#define MEMORY_OK                  0x7
+#define MEMORY_CANCEL              0x8
+
+/************************************
+ * Booting window component numbers *
+ ************************************/
+
+#define BOOTING_ALLOW_FLOPPY_DISC  0x1
+#define BOOTING_DISABLE_FLOPPIES   0x4
+#define BOOTING_OK                 0x2
+#define BOOTING_CANCEL             0x3
+
+/*************************************
+ * Printing window component numbers *
+ *************************************/
+
+#define PRINTING_RO_PRINT_STREAM   0x1
+#define PRINTING_LPT1_TO_RO_STREAM 0x2
+#define PRINTING_LPT2_TO_RO_STREAM 0x3
+#define PRINTING_DIRECT_PARALLEL   0x4
+#define PRINTING_OK                0x5
+#define PRINTING_CANCEL            0x6
+#define PRINTING_TURBODRIVERBODGE  0x7
+
+#define PRINTING_OPTIONS_GROUP     0x2
+
+#define RISCOS_PRINTER_STREAM      0x0
+#define LPT1_TO_RISCOS_STREAM      0x1
+#define LPT2_TO_RISCOS_STREAM      0x2
+
+/***********************************
+ * Serial window component numbers *
+ ***********************************/
+
+#define SERIAL_DIRECT_SERIAL       0x1
+#define SERIAL_OK                  0x2
+#define SERIAL_CANCEL              0x3
+
+/************************************
+ * Network window component numbers *
+ ************************************/
+
+#define NETWORK_ISO                0x1
+#define NETWORK_IPX                0x2
+#define NETWORK_TCPIP              0x3
+#define NETWORK_OK                 0x4
+#define NETWORK_SHARE_ON           0x7
+#define NETWORK_SHARE_OFF          0x8
+
+/**********************************
+ * Start window component numbers *
+ **********************************/
+
+/*#define START_ICON_BAR             0x1
+#define START_FULL_SCREEN          0x2
+#define START_WINDOW               0x3
+#define START_OK                   0x4
+#define START_CANCEL               0x5
+
+#define START_TO_ICONBAR           0x0
+#define START_TO_FULL_SCREEN       0x1
+#define START_TO_WINDOW            0x2*/
+
+/**************************************
+ * Swtiching window component numbers *
+ **************************************/
+
+/* 'switching' sounds like a bit of a misnomer these days... 'front-end'
+** is what's written there now
+*/
+
+#define SWITCHING_NORMAL           0x1
+#define SWITCHING_MOUSE            0x2
+#define SWITCHING_BREAK            0x3
+#define SWITCHING_NO_RETURN        0x4
+#define SWITCHING_CANCEL           0x5
+#define SWITCHING_OK               0x6
+#define SWITCHING_FOREGROUND       0xA
+#define SWITCHING_BACKGROUND       0xC
+#define SWITCHING_USEWINDOWFE      0xD
+#define SWITCHING_STARTFROZEN      0xF
+#define SWITCHING_STARTWINDOW      0x10
+#define SWITCHING_STARTFULL        0x11
+#define SWITCHING_TOOLBAR          0x3E
+
+#define SWITCHING_NORMAL_SWITCH    0x3
+#define SWITCHING_BREAK_SWITCH     0x2
+#define SWITCHING_MOUSE_SWITCH     0x1
+#define SWITCHING_NO_RETURN_SWITCH 0x0
+
+#define MAX_LINES                  1024
+#define MINIMUM_X_RESOLUTION       640
+#define MINIMUM_Y_RESOLUTION       480
+
+/*********************************
+ * ASPI window component numbers *
+ *********************************/
+
+#define ASPI_IGNOREBASE            0x20
+#define ASPI_RESERVEBASE           0x30
+#define ASPI_FORCEBASE             0x40
+#define ASPI_DISPBASE              0x8
+#define ASPI_CARDNUM               0x75
+#define ASPI_RESTRICT              0x74
+#define ASPI_SCAN                  0x77
+#define ASPI_64K                   0x78
+
+#define ASPI_OK                    0x72
+#define ASPI_CANCEL                0x76
+
+/*************************************
+ * Advanced window component numbers *
+ *************************************/
+
+/* note that radio button options must be consecutively numbered 
+ - the code relies on it*/
+#define ADV_L1CACHE_OFF            0x1
+#define ADV_L1CACHE_WRITETHROUGH   0x2
+#define ADV_L1CACHE_WRITEBACK      0x3
+#define ADV_L1CACHE_AUTO           0x4
+#define ADV_L2CACHE_OFF            0x6
+#define ADV_L2CACHE_WRITETHROUGH   0x7
+#define ADV_L2CACHE_WRITEBACK      0x8
+#define ADV_L2CACHE_AUTO           0x9
+#define ADV_L2CACHESIZE_128        0xB
+#define ADV_L2CACHESIZE_512        0xC
+#define ADV_ASICDISABLE_NEITHER    0xF
+#define ADV_ASICDISABLE_SMALL      0x10
+#define ADV_ASICDISABLE_LARGE      0x11
+//#define ADV_ASICDISABLE_BOTH       0x12
+#define ADV_VIDRETRACE_NORMAL      0x14
+#define ADV_VIDRETRACE_FASTA       0x15
+#define ADV_VIDRETRACE_FASTB       0x16
+#define ADV_BUSMOUSE               0x18
+#define ADV_BUSMOUSEINT            0x19
+#define ADV_NE2000INT              0x1D
+#define ADV_NE2000OPTS             0x20
+#define ADV_SHAREDMEM_ALLON        0x2C // can't be arsed with rest!
+#define ADV_PRESERVEVIDMEM_NEVER   0x26
+#define ADV_PRESERVEVIDMEM_FROMVGA 0x27
+#define ADV_PRESERVEVIDMEM_TOVGA   0x28
+#define ADV_PRESERVEVIDMEM_ALWAYS  0x29
+#define ADV_FLOPPY0                0x35
+#define ADV_FLOPPY1    	           0x3B
+#define ADV_SCALETOFIT             0x42
+
+#define ADV_OK                     0x2A
+
+/*****************************************
+ * Add / rename window component numbers *
+ *****************************************/
+
+#define ADDRENAME_NAME             0x0
+#define ADDRENAME_OK               0x1
+
+/***********************************
+ * Update window component numbers *
+ ***********************************/
+
+#define UPDATE_CONVERT 0x2
+#define UPDATE_DEFAULT 0x3
+#define UPDATE_PCPATH  0x8
+
+/*****************************************************/
+
+extern  ComponentId    last_component;
+
+extern  ObjectId       iconbar_icon,
+                       main_window,
+                       discs_window,
+                       createdisc_window,
+                       printing_window,
+                       serial_window,
+                       windows_window,
+                       aspi_window,
+                       switching_window,
+                       booting_window,
+                       memory_window,
+                       dcs_window,
+                       adv_window,
+                       network_window,
+                       update_window,
+                       proginfo_window,
+                       addrename_window;
+
+//extern  int            advanced_window_wimp;
+
+extern configpair     config_list[32];
+
+extern  BOOL           warning_given;
+
+extern  BOOL           still_running;
+
+extern  MessagesFD     messages;
+
+/***********************************
+ * General Configuration variables *
+ ***********************************/
+
+extern int discs_last_disc_dragged;
+
+extern BOOL configuration_changed;
+extern BOOL window_title_updated;
+
+extern int total_modes;
+extern small_mode_structure modes[100];
+extern options config;
+extern options tmp_config;
+extern options def_config;
+
+/*extern char config_lines[MAX_LINES];*/
+extern char *conf_lines[MAX_LINES];
+
+extern int  about_to_change_config, external_edit;
+extern int  config_number;
+extern char config_path_name[256];
+extern char config_dir[128];
+extern char config_new[16];
+
+#endif
+

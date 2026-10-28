@@ -1,0 +1,236 @@
+/* !PC source
+*
+*  SYS.C.DIVASERIAL - serial number generation and checking
+*
+* 2.34 1998.09.11 MB Original
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+
+#include "sys.h.divaserial"
+
+/**** Static variables ****/
+static int r250_index = 0;
+static unsigned int r250_buffer[250] = {
+	15301,57764,10921,56345,19316,43154,54727,49252,32360,49582,
+	26124,25833,34404,11030,26232,13965,16051,63635,55860,5184,
+	15931,39782,16845,11371,38624,10328,9139,1684,48668,59388,
+	13297,1364,56028,15687,63279,27771,5277,44628,31973,46977,
+	16327,23408,36065,52272,33610,61549,58364,3472,21367,56357,
+	56345,54035,7712,55884,39774,10241,50164,47995,1718,46887,
+	47892,6010,29575,54972,30458,21966,54449,10387,4492,644,
+	57031,41607,61820,54588,40849,54052,59875,43128,50370,44691,
+	286,12071,3574,61384,15592,45677,9711,23022,35256,45493,
+	48913,146,9053,5881,36635,43280,53464,8529,34344,64955,
+	38266,12730,101,16208,12607,58921,22036,8221,31337,11984,
+	20290,26734,19552,48,31940,43448,34762,53344,60664,12809,
+	57318,17436,44730,19375,30,17425,14117,5416,23853,55783,
+	57995,32074,26526,2192,11447,11,53446,35152,64610,64883,
+	26899,25357,7667,3577,39414,51161,4,58427,57342,58557,
+	53233,1066,29237,36808,19370,17493,37568,3,61468,38876,
+	17586,64937,21716,56472,58160,44955,55221,63880,1,32200,
+	62066,22911,24090,10438,40783,36364,14999,2489,43284,9898,
+	39612,9245,593,34857,41054,30162,65497,53340,27209,45417,
+	37497,4612,58397,52910,56313,62716,22377,40310,15190,34471,
+	64005,18090,11326,50839,62901,59284,5580,15231,9467,13161,
+	58500,7259,317,50968,2962,23006,32280,6994,18751,5148,
+	52739,49370,51892,18552,52264,54031,2804,17360,1919,19639,
+	2323,9448,43821,11022,45500,31509,49180,35598,38883,19754,
+	987,11521,55494,38056,20664,2629,50986,31009,54043,59743
+	};
+
+static unsigned myrand(void);
+static void mysrand(unsigned newseed);
+
+/**** Function: r250_init
+	Description: initializes r250 random number generator. ****/
+static void r250_init(int seed)
+{
+/*-------------------------------------------------------------------------*/
+    int        j, k;
+    unsigned int mask;
+    unsigned int msb;
+/*-------------------------------------------------------------------------*/
+    mysrand(seed);
+    r250_index = 0;
+    for (j = 0; j < 250; j++)     /* Fill the r250 buffer with 15-bit values */
+        r250_buffer[j] = myrand();
+    for (j = 0; j < 250; j++)     /* Set some of the MS bits to 1 */
+        if (myrand() > 16384)
+            r250_buffer[j] |= 0x8000;
+    msb = 0x8000;       /* To turn on the diagonal bit   */
+    mask = 0xffff;      /* To turn off the leftmost bits */
+    for (j = 0; j < 16; j++)
+        {
+        k = 11 * j + 3;             /* Select a word to operate on        */
+        r250_buffer[k] &= mask;     /* Turn off bits left of the diagonal */
+        r250_buffer[k] |= msb;      /* Turn on the diagonal bit           */
+        mask >>= 1;
+        msb >>= 1;
+        }
+}
+
+/**** Function: r250 Description: returns a random unsigned integer k
+      uniformly distributed in the interval 0 <= k < 65536.  ****/
+static unsigned int r250()
+{
+/*-------------------------------------------------------------------------*/
+    register int    j;
+    register unsigned int new_rand;
+/*-------------------------------------------------------------------------*/
+    if (r250_index >= 147)
+        j = r250_index - 147;      /* Wrap pointer around */
+    else
+        j = r250_index + 103;
+
+    new_rand = r250_buffer[r250_index] ^= r250_buffer[j];
+
+    if (r250_index >= 249)      /* Increment pointer for next time */
+        r250_index = 0;
+    else
+        r250_index++;
+
+    return new_rand;
+}
+
+/***  linear congruent pseudorandom number generator for initialization ***/
+
+static unsigned long seed=1;
+
+/*	Return a pseudorandom number in the interval 0 <= n < 32768.
+	This produces the following sequence of pseudorandom
+	numbers:
+	346, 130, 10982, 1090...  (9996 numbers skipped) ...23369,
+        2020, 5703, 12762, 10828, 16252, 28648, 27041, 23444, 6604...
+*/
+static unsigned myrand()
+{
+	seed = seed*0x015a4e35L + 1;
+	return (( (unsigned) seed>>16)&0x7fff);
+}
+
+/*	Initialize above linear congruent pseudorandom number generator */
+static void mysrand(unsigned newseed)
+{	seed = newseed;
+}
+
+
+static const char base[34]="0123456789abcdefghjkmnpqrstuvwxyz";
+
+extern void DivaSerial_tobase33(unsigned int n, char *buffer)
+{
+  char *b=buffer;
+
+  while(n!=0)
+  {
+    //printf("%d -- %d\n", n, n%33);
+    *(b++) = base[n%33];
+    n /= 33;
+  }
+  *b = 0;
+}
+
+extern unsigned int DivaSerial_frombase33(char *b)
+{
+  unsigned int i=0, p=1;
+
+  while(*b>32)
+  {
+    int v=0;
+    while (base[v] != *b) v++;
+    i+=v*p; p*=33; b++;
+  }
+
+  return(i);
+}
+
+extern void DivaSerial_encode(unsigned int p, unsigned int s, unsigned int l, unsigned int *enc, unsigned int *chk)
+{
+  unsigned int w, seed, check;
+
+  w = p | (s<<8) | (l<<24);
+
+  r250_init(rand()); // Yes, yes, I know... get a life ;-)
+  seed = r250() & 0xff;
+  check = ((s+1)*(p+1)*(l+1)^seed)&0xff;
+  r250_init(seed);
+  w ^= (r250() | (r250()<<16));
+
+  *enc = w;
+  *chk = seed|(check<<8);
+}
+
+extern int DivaSerial_decode(unsigned int enc, unsigned int chk, unsigned int *p, unsigned int *s, unsigned int *l)
+{
+  r250_init(chk&0xff);
+  enc ^= (r250() | (r250()<<16));
+  *p = enc&0xff;
+  *s = (enc>>8)&0xffff;
+  *l = (enc>>24)&0xff;
+  //fprintf(stderr, "(%08x %02x %02x\n", enc, ((*s+1)*(*p+1)*(*l+1)^(chk&0xff)), ((chk>>8)&0xff));
+  if ( (((*s+1)*(*p+1)*(*l+1)^(chk&0xff))&0xff) != ((chk>>8)&0xff) )
+    return(1);
+  else
+    return(0);
+}
+
+#ifdef TEST_PROGRAM
+
+void err_syntax(char *p)
+{
+  fprintf(stderr, "Syntax: %s -e  <product> <serial no.> <licensees>\n", p);
+  fprintf(stderr, "Syntax: %s -er <product> <serial no.> <licensees> <run>\n", p);
+  fprintf(stderr, "        %s -d  <reg. code>\n", p);
+  exit(1);
+}
+
+int main(int argc, char *argv[])
+{
+  srand(time());
+
+  if (argc == 1 || (!strcmp(argv[1], "-e") && !strcmp(argv[1], "-er") && !strcmp(argv[1], "-d")))
+    err_syntax(argv[0]);
+
+  if (!strcmp(argv[1], "-e")) {
+    int e, c;
+    char b1[8], b2[8];
+
+    if (argc!=5) err_syntax(argv[0]);
+
+    DivaSerial_encode(atoi(argv[2]), atoi(argv[3]), atoi(argv[4]), &e, &c);
+    DivaSerial_tobase33(e, b1); DivaSerial_tobase33(c, b2);
+    printf("%s-%s\n", b1, b2);
+    return(0);
+  }
+
+  if (!strcmp(argv[1], "-er")) {
+    int e, c, r, s;
+    char b1[8], b2[8];
+
+    if (argc!=6) err_syntax(argv[0]);
+    s=atoi(argv[3]);
+
+    for (r=0; r!=atoi(argv[5]); r++) {
+      DivaSerial_encode(atoi(argv[2]), s++, atoi(argv[4]), &e, &c);
+      DivaSerial_tobase33(e, b1); DivaSerial_tobase33(c, b2);
+      printf("%s-%s\n", b1, b2);
+    }
+  }
+
+  if (!strcmp(argv[1], "-d")) {
+    char *b;
+    int p, s, l;
+
+    if (argc!=3) err_syntax(argv[0]);
+
+    b=argv[2]; while(*b!='-') b++; *(b++)=0;
+    if (DivaSerial_decode(DivaSerial_frombase33(argv[2]), DivaSerial_frombase33(b), &p, &s, &l))
+      printf("Invalid registration code.\n");
+    else
+      printf("Product %d, serial %d, licensees %d\n", p, s, l);
+    return(0);
+  }
+}
+#endif

@@ -1,0 +1,163 @@
+Changes log for PCConfig
+
+  v0.61 (11th January 1998)
+
+* Major fiddle to work with multiple configurations in !Boot.Choices.PC.vX.XX
+   (i.e. name stringset in main window, buttons rearranged, internals rewired)
+
+* Idiot-proofed Disc Setup window: writables are now display icons (so you
+   can only drag 'real' discs to them).
+
+* Replaced annoying !PCFormat app with MkDOSDisc, a CLI tool which !PCConfig
+   launches and handles errors for.  This centralises creation of DOS discs in
+   a sensible way.  Also Power Users can now use the tool without PCConfig.
+
+* Added priority options to Switching options, and renamed it to 'PC/RISC OS
+   relationships' to generalise it a little.
+
+* Added 'Disable floppies' option to Floppy section
+
+* Added NetLinks section to main window to configure newly-hacked PCNE2
+
+* Moved Advanced Configuration from icon bar menu to main window.  Why it ended
+   up down there in the first place I'll never know...
+
+  v0.62 (18th January 1998)
+
+* Fixed bug with discs window always showing changed data (*) even if nothing
+   changed
+
+* Configuration setting now mirrored in ChooseCfg, so that whatever config you
+   chose last in one program is updated in the other.  Coded rather
+   inefficiently in parts, but what the hell; nobody'll notice ;-)
+
+  V0.62 (18th January 1998)
+
+  V0.63 (11th March 1998)
+
+* Added 'Launch !PC' button to main window
+
+* Fixed bug whereby setups for new version weren't being correctly created.
+
+  V0.64 (19th March 1998)
+
+* Added TurboDriverBodge option
+
+* Added IncludeVRAM option
+
+  V0.64a (23rd March 1998)
+
+* Fixed TurboDriverBodge option, and now launches cleanly (i.e. saving 
+    config behind it).
+  
+  V0.64b (02nd Apr 1998)
+
+* Added UseWindowFE back in.  Decided that !PCConfig is hideous.
+
+  V0.65 (22nd May 1998)
+
+* Fixed problem where >255 modes caused counting routine to report none.
+
+* Changed display icons in disc window back to writable
+
+* Moved display memory from 'Windows' setup to 'Memory', and renamed to minimum
+    display memory since this is what is it now!
+
+* Changed behaviour of 'Save as new' to 'Create new'
+
+* Idiot-proofed disc window, but still not quite perfect; also new 'RISC OS
+    size' indicator in Create Disc window.
+
+  V0.70 (9th June 1998)
+
+* Ripped out relics of Nicko's / Ian's old configuration routines (yacc etc.)
+    and replaced advanced window with another toolboxy one.
+
+* Took out (another) configuration loading bug re: importing and creating
+    new config folders.
+
+* Added SCSI window for configuring ASPI driver, based on Andreas' !ASPISetup
+
+* Got rid of 'Startup' box and merged it into the (retitled) 'Front-end' window
+
+* Added FastVESA / FrameSkip options to display choices box
+
+* Added asterisks to show which items are configurable at run-time
+
+  V0.71 (24th June 1998)
+
+* Added multiple SCSI card support to SCSI window, and 64K ext buffer option
+
+* Fixed Netlinks window loading problem
+
+* Numbers in Config file can be specified in hex (ASPI is by default)
+
+* multicfg re-written a little to stop inefficient and unreliable loads and
+    saves; writable icon in main window made display only, Rename button added,
+    slightly more RISC OSified all round.
+
+* SCSI ID in disc window allowed up to 32 now
+
+  V0.72a (30th June 1998)
+
+* Fixed 'Last' file always being written as zero (i.e. doesn't remember your
+    which was the last config file you edited)
+
+* Sub-config windows now have their associated icons stuck in the top-right
+    hand corner.
+
+  V0.73 (13th July 1998)
+
+* Memory window now shows 'real' amount of memory, i.e. VRAM is deducted 
+    depending on state of check box.
+
+* Messages changed to fit user guide.
+
+* All windows Wookified.
+
+* Won't automatically import configs; user gets a choice to use default now.
+
+  V0.74 (23rd July 1998)
+
+* Removed UseWindowFE option; now ignored by !PC too due to front-end changes
+    making it obsolete.
+
+  V0.75 (14th August 1998)
+
+* Added Floppy0/Floppy1 options back in again
+
+  V0.76 (4th September 1998)
+
+* Added SwitchLFB option 
+
+  v0.80 (1998.12.01)
+  
+* fettled MKdosdisc so it gets new partitions correct (old one had FAT16
+offset from correct position)
+
+  v0.81 (1998.12.04)
+
+* Fettled printing window so that you can't select turbodriver bodge without
+  directparallel
+    
+* Fettled Disc window so that draggin a disc on actually updates the config 
+
+  v0.82 (1999.01.07) 
+  
+* Put in new SCSI card host recognition code from Andreas 
+
+  v0.83 (1999.01.14)
+  
+* Added Scaletofit option back in.
+* Made Asicoptions options correct
+* Added some help text
+* Added 'revert to defaults' button
+
+  v0.84 (1999.01.26)
+  
+* Update from Andreas so that number of SCSI cards is correct (even if you
+  have none)
+* Latest MKDOSDisc (1999.01.26) that can create new partitions OK.
+
+  v0.85 (2000.02.04)
+* Uses 'Last' file in <Choices$dir>.PC now. To match !choosecfg

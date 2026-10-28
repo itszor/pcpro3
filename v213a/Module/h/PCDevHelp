@@ -1,0 +1,14 @@
+/* SWI numbers for !PC Support module */
+
+#define DVH_BASE (0x4CD00 | XOS_Bit)
+
+#define PCDevHelp_Init           (DVH_BASE+0x0)
+#define PCDevHelp_RegisterIO     (DVH_BASE+0x1)
+#define PCDevHelp_RegisterMem    (DVH_BASE+0x2)
+#define PCDevHelp_RegisterDMA    (DVH_BASE+0x3)
+#define PCDevHelp_RegisterEvent  (DVH_BASE+0x4)
+#define PCDevHelp_RegisterConfig (DVH_BASE+0x5)
+#define PCDevHelp_RegisterHPC    (DVH_BASE+0x6)
+#define PCDevHelp_GetStructAddr  (DVH_BASE+0x7)
+
+#define PCDEVHELP_VERSION_NUMBER 202

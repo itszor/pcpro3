@@ -1,0 +1,6 @@
+/* Security header file */
+
+extern int SYS_SerialNumber;
+
+extern bool EXT_Init(void);
+extern void EXT_Find(int *code);

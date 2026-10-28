@@ -1,0 +1,359 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.C.PALETTE  - Video Palette-related things
+*
+*
+*    27-02-92 INH  Original
+*        ...
+*    14-03-94      WinDrive 2 added
+*    28-03-95      Updated for 256-colour pal support
+*  11-03-1998 MB   Updated to support 8-bit DACs
+*/
+
+/* System includes */
+
+#include "sys.h.veneers"
+#include <stdio.h>
+#include "wimp.h"
+/*#include "colourtran.h"*/
+
+/* Our includes */
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "vid.h.palette"
+#include "vid.h.tables"
+#include "vid.h.modes"
+#include "vid.h.ports"
+#include "vid.h.vids"
+#include "vid.h.windrv"
+#include "sys.h.FEState"
+
+/* Globals ***************************************************** */
+
+
+     /* The PC's palette information is held in two parts; the first,
+        VGA_AttrRegs[0..15], holds a mapping from PC logical colours to
+        6-bit EGA colours. The second, VID_DACValues[] holds a mapping
+        from EGA colours to 18-bit analogue colour - it consists of 256
+        entries in the order (Red, Green, Blue).
+
+        The 6-bit EGA colour is converted to an 8-bit DAC entry using
+        a (you guessed it) paging mechanism controlled by Attribute regs
+        10h and 14h ( Attr_ModeCtrl & Attr_ColourSelect ).
+
+        DAC values are kept in the order (R, G, B) for each of the
+          256 possible entries. Note that only bits 0..5 of the DAC
+          value are significant.
+
+        MB: unless of course MDK decides to switch to 8-bit mode...
+     */
+
+BYTE  VID_DACValues  [0x300];
+
+     /* On pre-VIDC20 machines, 8bpp modes have an effectively fixed
+        palette; we can't directly emulate the PC's 256-entry palette.
+        The table below gives a translation from each of the PC's 256
+        colours to the nearest ARM equivalent. In full-screen mode,
+        bytes have to be translated through this table before being
+        written to screen RAM.
+
+        If the machine is palette-capable this is an identity table.
+     */
+
+BYTE  VID_256colourXlate[0x100];
+
+/* ************************************************ */
+
+/* Palette calculation is done by VID_UpdatePalette(). This will
+   recalculate the palette values, to give up to 256 entries in
+   SYS_FEState.ColourTable
+   comes in two parts, VID_RecalculatePalette()
+   and VID_SetPalette(). VID_RecalculatePalette() calculates the
+   RGB values for each of the 16 (4bpp modes) or 256 (8bpp modes)
+   PC pixel values, and writes it into SYS_FEState.ColourTable.
+
+   VID_SetPalette() re-sets the hardware palette; it is called whenever
+   the physical screen mode has been changed.
+*/
+
+
+static bool VID_Blinked;
+
+/* ************************************************ */
+
+/* SetPalette() sets the physical palette in full-screen mode */
+
+static void SetPalette(void)
+{
+  switch ( VID_PCbpp )
+  {
+    case 4:
+      VIDS_LoadPalette( 16, SYS_FEState.ColourTable );
+      break;
+
+    case 8:
+      if ( VID_256ClrNeedsTranslate ) /* Fixed palette */
+        VID_RedrawRequest(3);
+      else
+        VIDS_LoadPalette( 256, SYS_FEState.ColourTable );
+      break;
+
+    default:  /* 16/32bpp modes - Do nothing */
+      break;
+  }
+}
+
+/* UpdatePalette routines() ************************************ */
+
+static void SetPCColour ( int ClrNo, int SixBitColour )
+{
+  int b;
+
+  b = VGA_AttrRegs[Attr_ColourSelect] << 4;
+
+  if (VGA_AttrRegs[Attr_ModeCtrl] & 0x80 )
+    b = ( (SixBitColour & 0x0F) + ( b & 0xF0 ) ) * 3;
+  else
+    b = ( (SixBitColour & 0x3F) + ( b & 0xC0 ) ) * 3;
+
+  SYS_FEState.ColourTable[ClrNo] =
+     ((VID_DACValues[b] << 10) & 0xFF00) |      /* Red */
+     ((VID_DACValues[b+1] << 18) & 0xFF0000) |  /* Green */
+     ((VID_DACValues[b+2] << 26) & 0xFF000000); /* Blue */
+}
+
+/* ----------------------------- */
+
+static void DoVideoDisabled()
+{
+  int i, b;
+  b = VGA_AttrRegs[0x11];
+
+  for (i=0; i<16; i++)
+    SetPCColour ( i, b );
+}
+
+/* ----------------------------- */
+
+static void DoStraightTranslation ()
+{
+  int i;
+  int en = VGA_AttrRegs[Attr_ColourEnable];
+
+  if ( VID_VideoEnabled )
+  {
+    for (i=0; i<16; i++)
+      SetPCColour ( i, VGA_AttrRegs[i & en ]);
+  }
+  else
+    DoVideoDisabled();
+}
+
+/* ----------------------------- */
+
+/* For mono modes (i.e. ones which support blinking), we use a
+   lookup table to determine which Attribute register is used
+   to specify the colour for each of the 16 possible pixel values
+   on the ARM screen. In graphics modes, AR0-AR7 provide the colours
+   for pixel values 0..7 (repeated for 8..15) normally, and when a
+   blink is occuring, these values come from AR8-ARF. In text modes,
+   life is a little complicated: any given pixel on the screen may
+   be required to blink between two arbitrary colours, depending on
+   what the foreground & background colours for its character cell
+   are. This is v. hard to do in colour mode, but possible in mono,
+   where the range of possible colours is limited.
+
+   Each 4-bit pixel value is divided into two 2-bit fields which
+   specify its colour (a) normally and (b) blinking, as follows:
+
+   Pixel value = abcd
+
+   cd = 00 : AR0 normally
+        01 : AR7 normally
+        10 : AR8 normally
+        11 : ARF normally
+
+   ab = 00 : AR0 when blinked
+        01 : AR7 when blinked
+        10 : AR8 when blinked
+        11 : ARF when blinked
+
+  26/11/93 - Lotus 123R24 bug:
+    It turns out colour modes can have blinking enabled as well:
+    when this happens (AR 10h bit 3 set), pixel values 0..7 always come
+    from AR8..15, and pixel values 8..15 come from AR0..7 / AR8..15
+    alternately. We've chosen AR0..7 as the 'normal' (value displayed in
+    a window) values here.
+
+
+*/
+
+static BYTE MonoGraph_Norm[] =
+{ 0, 1, 2, 3, 4, 5, 6, 7, 0, 1, 2, 3, 4, 5, 6, 7 };
+
+static BYTE MonoGraph_Blink[] =
+{ 8, 9, 10, 11, 12, 13, 14, 15, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+static BYTE ColrGraph_Norm[] =
+{ 8, 9, 10, 11, 12, 13, 14, 15, 0, 1, 2, 3, 4, 5, 6, 7 };
+
+static BYTE ColrGraph_Blink[] =
+{ 8, 9, 10, 11, 12, 13, 14, 15, 8, 9, 10, 11, 12, 13, 14, 15 };
+
+static BYTE MonoText_Norm[] =
+{ 0, 7, 8, 15, 0, 7, 8, 15, 0, 7, 8, 15, 0, 7, 8, 15 };
+
+static BYTE MonoText_Blink[] =
+{ 0, 0, 0, 0, 7, 7, 7, 7, 8, 8, 8, 8, 15, 15, 15, 15 };
+
+
+static void DoBlinkTranslation ( BYTE *NormLookup, BYTE *BlinkLookup )
+{
+  int i;
+  int en = VGA_AttrRegs[Attr_ColourEnable];
+
+  if ( VID_VideoEnabled )
+  {
+    if ( VID_Blinked && VID_FullScreenActive ) /* A 'blink' is happening */
+    {
+      for (i=0; i<16; i++)
+        SetPCColour ( i, VGA_AttrRegs[BlinkLookup[ i & en ] ] );
+    }
+    else
+    {
+      for (i=0; i<16; i++)
+        SetPCColour ( i, VGA_AttrRegs[NormLookup [ i & en ] ] );
+    }
+  }
+  else
+    DoVideoDisabled();
+}
+
+/* ************************** */
+
+static void Do256ClrPalette(void)
+{
+  int i, b;
+
+  /* Give details to system */
+
+  if (VID_CRTCregs[CRTC_VESADACWidth] == 8)
+    for (i=b=0; i<256; i++, b+=3 )
+      SYS_FEState.ColourTable[i] =
+         ((VID_DACValues[b] << 8) & 0xFF00) |      /* Red */
+         ((VID_DACValues[b+1] << 16) & 0xFF0000) |  /* Green */
+         ((VID_DACValues[b+2] << 24) & 0xFF000000); /* Blue */
+  else
+    for (i=b=0; i<256; i++, b+=3 )
+      SYS_FEState.ColourTable[i] =
+         ((VID_DACValues[b] << 10) & 0xFF00) |      /* Red */
+         ((VID_DACValues[b+1] << 18) & 0xFF0000) |  /* Green */
+         ((VID_DACValues[b+2] << 26) & 0xFF000000); /* Blue */
+
+
+  if ( VID_256ClrNeedsTranslate )
+  {
+    /* Need to make a translate table for ARM 256-colour palette */
+    /* Generate 256->256 mapping table */
+
+    for ( i=0; i<256; i+=16 )
+    {
+      colourtran_select_table ( 27, /* Imply 16 src colours */
+          ( &SYS_FEState.ColourTable[i] ),
+               -1,                  /* Dst mode (current mode) */
+          -1,  /* =Current palette */
+          ( &VID_256colourXlate[i] ) );  /* Result */
+    }
+  }
+  else /* Can use identity table */
+  {
+    for (i=0; i<256; i++)
+      VID_256colourXlate[i]=i;
+  }
+}
+
+
+/* ******************************************************** */
+
+void VID_UpdatePalette(void)
+{
+  switch ( VID_ModeType )
+  {
+    case MODE_CGA45:
+    case MODE_CGA6:
+      DoStraightTranslation();
+      SYS_FEState.ColourTable[4] = 0;
+           /* Pixel value 4 is used to draw the borders */
+           /* So we should make it black */
+      break;
+
+    case MODE_256CLR:
+      Do256ClrPalette();
+      break;
+
+    case MODE_TEXT:
+      if ( VGA_AttrRegs [ Attr_ModeCtrl ] & 2 ) /* Mono mode */
+        DoBlinkTranslation ( MonoText_Norm, MonoText_Blink );
+      else
+        DoStraightTranslation();
+      break;
+
+    case MODE_VGA:
+      if ( (VGA_AttrRegs [ Attr_ModeCtrl ] & 8) == 0 ) /* No blinking */
+        DoStraightTranslation ();
+      else if ( VGA_AttrRegs [ Attr_ModeCtrl ] & 2 )   /* Mono mode */
+        DoBlinkTranslation ( MonoGraph_Norm, MonoGraph_Blink );
+      else
+        DoBlinkTranslation ( ColrGraph_Norm, ColrGraph_Blink );
+
+      break;
+
+    case MODE_VESA:
+      if ( VID_PCbpp == 8 )
+        Do256ClrPalette();
+      else if ( VID_PCbpp == 4 )
+        DoStraightTranslation();
+      /* Otherwise, do nothing: 16 and 32bpp modes need no palette */
+      break;
+
+    case MODE_WINDOWS: /* Windows driver mode: will be set by WINDRV */
+      break;
+
+    default:
+      return;
+  }
+
+  SYS_FEState.PaletteChanged = true;
+
+  if ( VID_FullScreenActive )
+    SetPalette();
+
+}
+
+
+/* ************************************************************* */
+
+static int LastBlinkTime;
+
+void VID_PaletteBlinkCheck ( void )
+{
+  int t;
+
+  /* If blinking disabled, don't bother */
+
+  if ( !VID_FullScreenActive ||
+       (VGA_AttrRegs[Attr_ModeCtrl] & 8) == 0 )
+    return;
+
+  t = SYS_GetTime();
+
+  if ( t - LastBlinkTime > 25 )  /* Blink period = 500ms */
+  {
+    LastBlinkTime = t;
+    VID_Blinked = ~VID_Blinked;
+    VID_PaletteChanged = true;
+  }
+}
+

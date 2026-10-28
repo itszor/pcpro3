@@ -1,0 +1,72 @@
+/*
+* 1999.01.07 W v0.82 Re-instated old scaletofit option in advanced options
+*/
+
+
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "utils.h"
+#include "vars.h"
+#include "adv.h"
+
+extern void do_adv_initialise(void)
+{
+  raise_error(event_register_toolbox_handler(adv_window, ActionButton_Selected, adv_window_click_handler, 0));
+}
+
+extern void setup_adv_window(void)
+{
+  update_adv_window();
+  raise_error(toolbox_show_object(0,adv_window,0,0,0,0));
+}
+
+extern void update_adv_window(void)
+{
+  raise_error(radiobutton_set_state(0,adv_window,ADV_L1CACHE_OFF+config.adv.l1cache,1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_L2CACHE_OFF+config.adv.l2cache,1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_L2CACHESIZE_128+(config.adv.l2size == 512),1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_ASICDISABLE_NEITHER+config.adv.asicoptions,1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_VIDRETRACE_NORMAL+config.adv.retraceemulation,1));
+  raise_error(optionbutton_set_state(0,adv_window,ADV_BUSMOUSE,config.adv.busmouse));
+  raise_error(numberrange_set_value(0,adv_window,ADV_BUSMOUSEINT,config.adv.busmouseint));
+  raise_error(writablefield_set_value(0,adv_window,ADV_NE2000OPTS,config.adv.ne2000advanced));
+  raise_error(numberrange_set_value(0,adv_window,ADV_NE2000INT,config.adv.ne2000int));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_PRESERVEVIDMEM_NEVER+config.adv.preservevidmem,1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_SHAREDMEM_ALLON+config.adv.sharedmemflags,1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_FLOPPY0+config.adv.floppy[0],1));
+  raise_error(radiobutton_set_state(0,adv_window,ADV_FLOPPY1+config.adv.floppy[1],1));
+  raise_error(optionbutton_set_state(0,adv_window,ADV_SCALETOFIT,config.adv.scaletofit));
+}
+
+#define GET_RADIO_SET(vv,ff) raise_error(radiobutton_get_state(0,adv_window,(ff),&x,(vv))); *(vv)-=(ff)
+
+extern int  adv_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int x;
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+
+  if (id_block->self_component == ADV_OK)
+  {
+    GET_RADIO_SET(&tmp_config.adv.l1cache, ADV_L1CACHE_OFF);
+    GET_RADIO_SET(&tmp_config.adv.l2cache, ADV_L2CACHE_OFF);
+    raise_error(radiobutton_get_state(0,adv_window,ADV_L2CACHESIZE_128,&tmp_config.adv.l2size,NULL));
+    if (tmp_config.adv.l2size) tmp_config.adv.l2size = 128; else tmp_config.adv.l2size = 512;
+    GET_RADIO_SET(&tmp_config.adv.asicoptions, ADV_ASICDISABLE_NEITHER);
+    GET_RADIO_SET(&tmp_config.adv.retraceemulation, ADV_VIDRETRACE_NORMAL);
+    raise_error(numberrange_get_value(0,adv_window,ADV_BUSMOUSEINT,&tmp_config.adv.busmouseint));
+    raise_error(optionbutton_get_state(0,adv_window,ADV_BUSMOUSE,&tmp_config.adv.busmouse));
+    raise_error(writablefield_get_value(0,adv_window,ADV_NE2000OPTS,tmp_config.adv.ne2000advanced,256,&x));
+    raise_error(numberrange_get_value(0,adv_window,ADV_NE2000INT,&tmp_config.adv.ne2000int));
+    GET_RADIO_SET(&tmp_config.adv.sharedmemflags, ADV_SHAREDMEM_ALLON);
+    GET_RADIO_SET(&tmp_config.adv.preservevidmem, ADV_PRESERVEVIDMEM_NEVER);
+    check_for_modified_data((int)&config.adv, (int)&tmp_config.adv, sizeof(config.adv));
+    GET_RADIO_SET(&tmp_config.adv.floppy[0], ADV_FLOPPY0);
+    GET_RADIO_SET(&tmp_config.adv.floppy[1], ADV_FLOPPY1);
+    raise_error(optionbutton_get_state(0,adv_window,ADV_SCALETOFIT,&tmp_config.adv.scaletofit));
+    config.adv = tmp_config.adv;
+  }
+  return(1);
+}

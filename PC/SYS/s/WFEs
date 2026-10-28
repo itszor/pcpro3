@@ -1,0 +1,208 @@
+;
+;    DivaPC ARM Assembler source
+;
+;    SYS.S.WFEs - Quick-draw routines for Windowed Front End
+;
+;    09-11-92 INH  Original
+;
+
+    GET SYS.S.STDDEFS
+
+OS_ReadVduVariables    EQU  &31
+OS_ReadModeVariable    EQU  &35
+
+    AREA |C$$Code|, CODE, READONLY
+
+    EXPORT  WFEs_XlateLine
+    EXPORT  WFEs_AlignVal
+    EXPORT  WFEs_XlatePtr
+    EXPORT  WFEs_LHmask
+    EXPORT  WFEs_RHmask
+    EXPORT  WFEs_MidCount
+
+    ; 'Translate Long' macro
+    ; If $val contains aabbccdd (hex),
+    ; this will look it up to give AABBCCDD into $val
+    ; each lookup (aa->AA, etc) is done via the table $table
+
+    MACRO
+    XlateL  $val, $table, $tmp
+    LDRB    $tmp, [$table, $val, LSR #24]         ; tmp := 000000AA
+    ORR     $val, $tmp, $val, LSL #8              ; val := bbccddAA
+    LDRB    $tmp, [$table, $val, LSR #24]         ; tmp := 000000BB
+    ORR     $val, $tmp, $val, LSL #8              ; val := ccddAABB
+    LDRB    $tmp, [$table, $val, LSR #24]         ; tmp := 000000CC
+    ORR     $val, $tmp, $val, LSL #8              ; val := ddAABBCC
+    LDRB    $tmp, [$table, $val, LSR #24]         ; tmp := 000000DD
+    ORR     $val, $tmp, $val, LSL #8              ; val := AABBCCDD
+    MEND
+
+
+    ALIGN
+
+WFEs_AlignVal      DCD 0           ; In R2
+WFEs_XlatePtr      DCD 0           ; In R3
+WFEs_LHmask        DCD 0
+WFEs_RHmask        DCD 0
+WFEs_MidCount      DCD 0
+
+WFEs_XlateLine  ; ( int *dest, int *src )
+
+ ; =================================================================
+ ; On entry: R0 = Pointer to dest
+ ;           R1 = Pointer to source
+
+ ; The routine copies one line of a source bitmap to a destination
+ ; bitmap, translating pixel colours on the way. Translation is done
+ ; using an 8-to-8 bit (i.e. 256-byte) lookup table, allowing either
+ ; 4-to-4, 8-to-8 copies.
+ ;
+ ; Alignment of source to destination is done as follows: the destination
+ ; data at address dest+n is made by taking the 64-bit value from address
+ ; src+n:src+n+1, and shifting it right by WFEs_AlignVal bit positions,
+ ; to give the destination data in the LS 32 bits.
+ ;
+ ; In general, during this routine
+ ;
+ ; R0 = dest pointer
+ ; R1 = source pointer
+ ; R2 = align value = number of bit positions by which
+ ;                    source data must be LSRed to align
+ ;                    it with destination bitmap
+ ; R3 = xlate table
+ ; R4 = (32-rotate value)
+ ; R5 = source 'leftover' bits. At the start of the loop, contains
+ ;             data from [src+n]. During the 'fetch', it is loaded with
+ ;             data from [src+n+1] which is left over until the next time
+ ;             around the loop.
+ ;
+ ; R6 = main work reg for data
+ ; R7 = temporary reg.
+ ; R8 = loop count
+
+           ; APCS procedure entry
+
+           MOV     IP, SP
+           STMFD   SP!, {R4-R8, FP, IP, LR, PC}
+           SUB     FP, IP, #4
+
+           LDR     R2, WFEs_AlignVal     ; R2 = AlignVal
+           LDR     R3, WFEs_XlatePtr     ; R3 = translate table
+           RSB     R4, R2, #32           ; R4 = (32-AlignVal)
+
+           LDR     R5, [R1]              ; R5 = [src]
+
+           ; Do LH edge of line
+
+           MOV     R6, R5, LSR R2        ; R6 := [src] >> AlignVal
+           LDR     R5, [R1, #4]!         ; R5 := [src+1], next src
+           ORR     R6, R6, R5, LSL R4    ; R6 := [src] >> AlignVal |
+                                         ;       [src+1] << (32-AlignVal)
+           XlateL  R6, R3, R7            ; Translate R6 by table in R3
+
+           LDR     R8, WFEs_LHmask       ; Get mask for LH edge
+           LDR     R7, [R0]              ; R7 := original DST data
+           BIC     R7, R7, R8            ; Retain old bits
+           AND     R6, R6, R8            ; Mask new bits
+           ORR     R6, R6, R7            ; merge
+           STR     R6, [R0], #4          ; Store new data, dest++
+
+           LDR     R8, WFEs_MidCount     ; Count of middle bits
+           CMP     R8, #0
+           BEQ     XL_NoMiddle
+
+           ; Middle bits loop
+
+XL_Loop    MOV     R6, R5, LSR R2        ; R6 := [src] >> AlignVal
+           LDR     R5, [R1, #4]!         ; R5 := [src+1], next src
+           ORR     R6, R6, R5, LSL R4    ; R6 := [src] >> AlignVal |
+                                         ;       [src+1] << (32-AlignVal)
+
+
+           XlateL  R6, R3, R7            ; Translate R6 by table in R3
+           STR     R6, [R0], #4          ; [dst] := R6 data
+
+           SUBS    R8, R8, #1            ; Loop
+           BNE     XL_Loop
+XL_NoMiddle                              ;
+
+           ; Do right-hand edge
+           LDR     R8, WFEs_RHmask       ; R8 := RH mask
+           CMP     R8, #0
+           BEQ     XL_Exit
+
+           MOV     R6, R5, LSR R2        ; R6 := [src] >> AlignVal
+           LDR     R5, [R1, #4]!         ; R5 := [src+1], next src
+           ORR     R6, R6, R5, LSL R4    ; R6 := [src] >> AlignVal |
+                                         ;       [src+1] << (32-AlignVal)
+           XlateL  R6, R3, R7            ; Translate R6 by table in R3
+
+           LDR     R7, [R0]              ; R7 := original DST data
+           BIC     R7, R7, R8            ; Retain old bits
+           AND     R6, R6, R8            ; Mask new bits
+           ORR     R6, R6, R7            ; merge
+           STR     R6, [R0], #4          ; Store new data, dest++
+
+          ; APCS exit
+XL_Exit
+           LDMDB  FP, {R4-R8, FP, SP, PC}^
+
+
+; Read screen parameters routine *********
+
+     EXPORT WFEs_SetParams
+     EXPORT WFEs_ScreenBase
+     EXPORT WFEs_ScreenWidthBytes
+     EXPORT WFEs_ScreenHeight
+     EXPORT WFEs_Xshift
+     EXPORT WFEs_Yshift
+     EXPORT WFEs_WIMPbpp
+
+WFEs_SetParams   ; (void) **********************
+
+     STMFD  SP!, {LR}
+     ADR    R0, ReadBaseBlk
+     ADR    R1, WFEs_ScreenBase
+     SWI    OS_ReadVduVariables
+     MOV    R0, #-1                   ; Current mode
+
+     MOV    R1, #6                    ; 'bytes per pixel row'
+     SWI    OS_ReadModeVariable
+     STR    R2, WFEs_ScreenWidthBytes
+
+     MOV    R1, #12                   ; Y pixels - 1
+     SWI    OS_ReadModeVariable
+     ADD    R2, R2, #1
+     STR    R2, WFEs_ScreenHeight
+
+     MOV    R1, #4                    ; X shift factor
+     SWI    OS_ReadModeVariable
+     STR    R2, WFEs_Xshift
+
+     MOV    R1, #5                    ; Y shift factor
+     SWI    OS_ReadModeVariable
+     STR    R2, WFEs_Yshift
+
+     MOV    R1, #9                    ; Log2 bits per pixel
+     SWI    OS_ReadModeVariable
+     MOV    R1, #1
+     MOV    R1, R1, LSL R2            ; Convert to actual bpp
+     STR    R1, WFEs_WIMPbpp
+
+     LDMFD  SP!, {PC}^
+
+ReadBaseBlk  DCD 149, -1
+
+
+WFEs_ScreenBase        DCD 0
+WFEs_ScreenWidthBytes  DCD 0
+WFEs_ScreenHeight      DCD 0
+WFEs_Xshift            DCD 0
+WFEs_Yshift            DCD 0
+WFEs_WIMPbpp           DCD 0
+
+
+
+    END
+
+

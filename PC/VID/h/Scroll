@@ -1,0 +1,15 @@
+/*
+*    DivaPC ARM C source
+*
+*    Vid.h.scroll - Exports for SCROLL module
+*
+*
+*    03-07-93 INH  Original
+*/
+
+extern void VID_Scroll ( int top, int left, int bottom, int right,
+                      int attrib, int charheight, int dist, int PCbase );
+extern void  VID_ClearBuffer ( void );
+
+
+

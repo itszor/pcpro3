@@ -1,0 +1,10 @@
+#include "kernel.h"
+
+extern int task_handle, child_task_handle, quit;
+
+extern void installer_progress(char *msg);
+extern void FERR(_kernel_oserror *e);
+extern void whinge(char *msg);
+
+/* this for special version for hang problem during 'finishing up'*/
+#define HANGDEBUG 0

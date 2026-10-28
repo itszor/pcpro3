@@ -1,0 +1,16 @@
+/*
+ * Name   : aspi.h
+ * Desc   : Handlers for ASPI component of PCConfig
+ * Author : Matthew Bloch
+ * Date   : 8-June-1998
+ */
+
+#ifndef __aspi_h
+#define __aspi_h
+
+extern int  do_aspi_initialise(void); /* returns 1 if no scsi cards */
+extern void setup_aspi_window(void);
+extern void update_aspi_window(void);
+extern int  aspi_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

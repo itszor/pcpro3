@@ -1,0 +1,4 @@
+RMEnsure DDEUtils 1.54 RMLoad System:Modules.DDEUtils
+Prefix <Obey$Dir>
+Makatic.Small @
+

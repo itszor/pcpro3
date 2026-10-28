@@ -1,0 +1,3 @@
+/* Auto */
+
+extern BOOL load_config_file(void);

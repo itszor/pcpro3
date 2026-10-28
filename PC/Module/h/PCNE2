@@ -1,0 +1,69 @@
+#define PCNE2_SWIBASE     0x48C00
+
+#define PCNE2_Initialise   (PCNE2_SWIBASE+0)
+#define PCNE2_Enable       (PCNE2_SWIBASE+1)
+#define PCNE2_Transmit     (PCNE2_SWIBASE+2)
+#define PCNE2_SetRxOptions (PCNE2_SWIBASE+3)
+
+/* Buffer size is 16K bytes */
+
+#define BUFSIZE          0x4000
+
+/* RAM address of start of buffer */
+
+#define RAMOFFSET        0x4000
+
+
+/* These define bit positions in the 'ISR' byte, corresponding to the
+   8390's interrupt status register. The PCNE2 module will only ever
+   set bits 0..3 of this byte. (It is up to the user to reset them )
+*/
+
+#define isrRX_OK           0x1
+#define isrTX_OK           0x2
+#define isrRX_FAIL         0x4
+#define isrTX_FAIL         0x8
+#define isrRX_OVERRUN      0x10
+#define isrERR_OVFLOW      0x20
+#define isrDMA_COMPLETE    0x40
+#define isrRESET           0x80
+
+/* Values for the RxStatus and TxStatus bytes. These are set by the
+   PCNE2 module to indicate RX and TX errors
+*/
+
+#define rxOK        0x1
+#define rxBADCRC    0x2
+#define rxMISSED    0x10
+#define rxMULTI     0x20
+
+#define txCLEAR     0x0
+#define txOK        0x1
+#define txABORTED   0x8
+
+struct BufHeader
+{
+  char  RxIntStatus;
+  char  TxIntStatus;
+
+  char  RxStatus;      /* Receive status register */
+  char  TxStatus;      /* Transmit status register */
+  char  TxInProgress;  /* Non-zero = TxInProgress */
+
+  char  NetAddr[6];    /* Set by PCNE2 - do not change */
+
+  int   RxCURR;        /* Current page to put Rx data in */
+  int   RxBNDRY;       /* Page # not to exceed when receiving packets */
+  int   RxPSTART;      /* Start of circular Rx buffer */
+  int   RxPSTOP;       /* Next page after end of Rx buffer */
+
+  int   OvflowCount;
+};
+
+/* Values passed to PCNE2_SetRxOptions */
+
+#define RCR_BROADCAST  0x4
+#define RCR_MULTICAST  0x8
+#define RCR_PROMISC    0x10
+
+

@@ -1,0 +1,43 @@
+ARM minidriver notes:
+
+In 256 colour mode: can change resolution on the fly, but not colour depth.
+Obviously we can do this really - but it's a metter of persuading windows...
+
+If you change resolution the screen is not always redrawn properly (bits of
+memory all over the place, or some windows furniture not re-drawn). Why?
+fixable? Caching problem?
+
+If !PC is started in Mtasking with the display driver loaded then when it
+tries to chnage to the VESA mode it stops with the 'you need to change to
+Mtask' message. That's fine, except the screen has already changed mode
+without clesring so there loads of nasty memory-scribble on the display.
+Maybe it just needs to clear the screen first?
+
+Also sometimes it writes over the top third of my real screen, before saying
+'direct screen access neeeded'. Matthew's problem, perhaps? If this can't be
+fixed then a redraw of the relevant screen area (from top to 'sizeof mode')
+would help. This may well be related to the above prob. As the area in
+question is cleared to black. Maybe things have got out of sync and the wrong
+screen area is being cleared?
+
+If you have this new driver in and !PC is set to strt-up in a window, then
+every time you get told 'direct access needed' when it starts. This is a bit
+naff, and it would be smart if the windows driver told !PC it was starting so
+!PC could just switch to single-task automatically. matthew/sean/dave need to
+liase to work out best way to do this.
+
+Error 'setup could not confirm directX compatibility from X-interceptor
+setup'. Ive got DirectX v5.2, and it wants 5. Maybe it's just picky.
+
+<yet another very long setup later>
+
+hooray - I got a game to work!!!!! Played swarm. It's quite fun :-)
+
+unlike matthew i've had no probs at all with crashes. It seems very stable. 
+
+I did notice a number of internal complaints from windows when running the
+debugger: I get three int3 traps during strt-up which windows obviously
+manages to ignore normally. This may be worth looking at?
+
+OK. 
+

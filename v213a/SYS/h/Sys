@@ -1,0 +1,67 @@
+/*
+*
+*     SYS.H.SYS - system-wide general functions header
+*
+*/
+
+#pragma check_printf_formats
+extern void SYS_trace     ( char *s, ... );
+#pragma no_check_printf_formats
+extern void SYS_tracedata ( BYTE *s, int len );
+extern void SYS_error   ( bool fatal, char *s, ... );
+
+extern int  SYS_GetTime ( void );
+
+#define SYS_HardReset      0
+#define SYS_PollChain      2
+#define SYS_Shutdown       3
+#define SYS_StartFE        4
+#define SYS_StopFE         5
+#define SYS_StartWinFE     6
+#define SYS_StopWinFE      7
+#define SYS_SetConfig      8
+#define SYS_GainFocus      9
+#define SYS_LoseFocus      10
+#define SYS_ConnectMouse   11
+
+
+#define SYS_nEvents   16
+
+extern void SYS_registerIO   (int first, int last,
+              RdFnPtr Rd8, RdFnPtr Rd16, WrFnPtr Wr8, WrFnPtr Wr16, int R12val );
+
+extern void SYS_registerMem  (int first, int last,
+              RdFnPtr Rd8, RdFnPtr Rd16, WrFnPtr Wr8, WrFnPtr Wr16, int R12val );
+
+extern void SYS_removeIO     (int first, int last);
+extern void SYS_removeMem    (int first, int last);
+
+extern void SYS_registerEvent ( int evtno, EvtFnPtr fn, int R12val );
+extern void SYS_registerHPC   ( int HPC_id, HPCFnPtr fn, int flags,
+                                                           int R12val );
+extern void SYS_registerCfg   ( CfgFnPtr fn, int R12val );
+
+extern void SYS_SetCallback ( Callback *pCB, OneIntFnPtr fn, int param );
+
+extern void SYS_Interrupt ( int IRQno );
+#define IRQ_CLEAR_BIT 0x10000
+extern bool SYS_IntAvailable ( int IRQno );
+
+extern void SYS_Activity ( int count );
+
+
+extern void SYS_callEvent ( int evtno   );
+extern bool SYS_callCfg   ( char *text );
+
+extern void SYS_DispatchHPC ( BYTE *buf );
+extern void SYS_DoCallbacks ( void );
+
+extern bool SYS_Init (void);
+
+#define SYS_BufSize 0x4000
+extern BYTE SYS_TempBuf[SYS_BufSize];
+
+extern bool SApresent;           /* True when SA detected on startup of !PC*/
+extern int RISCOSlevel;          /* Version of RISCOS in use */
+                                 /* 2 for RISCOS 2, 3 for ROS 3 */
+

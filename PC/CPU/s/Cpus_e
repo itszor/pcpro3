@@ -1,0 +1,636 @@
+; *********************************************************************
+;
+;  DIVAPC ARM Assembler source
+;
+;  CPU.S.CPUS_E  Assembler interface to Elvis podule
+;
+;  Versions
+;  1.23   22-12-93 INH   Derived from CPUS-8 for v1.23
+;  1.53   27-04-94       All interrupts added
+;  1.77   16-05-95       Now with pStopFlag support
+;  1.83   15-05-95       Added StopFlag in block in/out routines
+;  2.15 1997.10.14 RW    CPUs optimisation
+; *********************************************************************
+
+    GET SYS.S.STDDEFS
+
+; Definitions ---------------------------------------------------------
+
+; Address definitions for podule
+
+ISSR        EQU &00
+AddrMbx     EQU &04
+DataMbx     EQU &0C
+ISCtrl      EQU &14
+DIVACtrl    EQU &18
+Semaphore   EQU &1C
+
+; Bit definitions for podule registers
+
+ISS_Read_bit        EQU  &10            ; ISSR: high = read access
+ISS_Word_bit        EQU  &40            ; ISSR: high = word access
+ISS_Valid_bit       EQU  &80            ; ISSR: high = ISSR contents valid
+
+ISC_PowerGood_bit   EQU  &1
+DCR_EmulateIO_bit   EQU  &1
+DCR_8bitmode_bit    EQU  &10
+DCR_IrqEnable_bit   EQU  &2
+DCR_VidIrq_bit      EQU  &4
+DCR_FiqNotIrq_bit   EQU  &8
+
+; ---------------------------------------------------------------------
+
+        AREA |C$$Code|, CODE, READONLY
+
+        EXPORT      CPUS_StartReset
+        EXPORT      CPUS_FlushState
+        EXPORT      CPUS_ReleaseReset
+        EXPORT      CPUS_CauseInt
+
+        EXPORT	    CPUS_IntsAvailable
+        EXPORT      CPUS_TrySlot
+        EXPORT      CPU_HardwareID
+
+        EXPORT      CPUS_Run
+        EXPORT      CPU_BlockIn
+        EXPORT      CPU_BlockOut
+
+        EXPORT      CPUS_PoduleBase
+        EXPORT      CPUS_ErrorISSR
+        EXPORT      CPUS_ErrorAddress
+        EXPORT      CPUS_IOArray
+        EXPORT      CPUS_MemArray
+        EXPORT      CPUS_pStopFlag
+        ; New from RJW
+        EXPORT	Run_Poll
+        EXPORT	Run_Poll_PostRead8
+        EXPORT	Run_Poll_PostRead16
+
+
+        ALIGN
+
+CPUS_PoduleBase     DCD 0           ; Address of base of podule
+CPUS_IOArray        DCD 0           ; Array of handlers for I/O space
+CPUS_MemArray       DCD 0           ; Array of handlers for memory space
+CPUS_pStopFlag      DCD 0           ; Pointer to flag: non-zero means
+				    ; stop the emulation
+
+CPUS_ErrorISSR      DCD 0             ; ISSR contents if an error
+CPUS_ErrorAddress   DCD 0             ; Mailbox Address if an error
+Run_ModeSave DCD 0
+Run_MaskVal  DCD &FFFF
+
+CPUS_Run ; (void) *****************************************
+        ; This may be called either from any processor mode, and must be
+        ; expected to restore the ARM to that mode afterwards
+
+        ; APCS procedure entry
+
+        MOV    IP, SP
+        STMFD  SP!, {R4-R9, FP, IP, LR, PC}
+        SUB    FP, IP, #4
+
+        ; Enter OS and initialise
+
+        MOV    R0, PC
+        STR    R0, Run_ModeSave      ; R0 contains CPU mode to return to
+        EnterSVCmode
+
+         ; Initialise
+
+        MOV    R0, #0
+        STR    R0, CPUS_ErrorISSR
+        STR    R0, CPUS_ErrorAddress
+
+        LDR    R4, CPUS_pStopFlag
+        LDR    R5, CPUS_PoduleBase
+        LDR    R6, CPUS_MemArray
+        LDR    R7, CPUS_IOArray
+        LDR    R8, Run_MaskVal
+
+        B      Run_Poll
+
+        ; Start of main polling loop ***********************************
+
+        ; At this point
+        ;  R4 = address of stop flag
+        ;  R5 = podule base
+        ;  R6 = MemArray base
+        ;  R7 = IOArray base
+        ;  R8 = 0xFFFF
+
+        ; The loop is entered for the first time at label 'Run_Poll'
+        ; While waiting for an access to occur, it loops back to 'Run_Wait'
+
+Run_Wait
+        LDR    R3, [R4]               ; Has a callback routine stopped
+        CMP    R3, #0                 ; the emulation? Exit if so.
+        BNE    Run_Exit
+Run_Poll
+        LDRB   R3, [R5, # ISSR ]      ; Get ISSR contents into R3
+
+        TST    R3, # ISS_Valid_bit    ; If bit 7 is still high
+        ANDNES R1, R3, #&0F           ; and bits 0..3 are non-zero...
+        BEQ    Run_Wait               ; an access is taking place:
+                                      ; R1 contains address space code
+
+        LDR    R0, [R5, # AddrMbx ]   ; Get access address into R0
+        AND    R0, R0, R8
+
+        CMP    R1, # &0A              ; If R1 >= 0Ah it's a memory access
+        BLO    Run_IOorOther          ; else I/O or an error
+
+                                      ; Memory accesses:
+        ORR    R0, R0, R1, LSL #16    ; Get full PC memory address into R0
+        SUB    R2, R0, # &A0000       ; ASSUME: mem_base is at 0a0000h
+        MOV    R2, R2, LSR #14        ; Get index into handler array
+                                      ; ASSUME: mem chunks are 2^14 bytes
+                                      ; R2 = chunk no.
+        ADD    R2, R2, R2, LSL #2     ; R2 = chunk no * 5
+        ADD    R2, R6, R2, LSL #2     ; R2 = MemBase + (chunk no * 20)
+                                      ;    = address of handler structure
+                                      ; ASSUME: each handler is 20 bytes
+
+        ; Dispatch memory handler **************
+
+        ; At this point
+        ;  R0 = PC address
+        ;  R2 = Address of relevant Handler struct
+        ;  R3 = ISSR value for access
+        ;  R4 = timeout count
+        ;  R5 = podule base
+        ;  R6 = MemArray base
+        ;  R7 = IOArray base
+        ;  R8 = 0xFFFF
+
+Run_Dispatch
+        LDR    R12, [R2, #16]         ;ASSUME: R12 value is at handler+16
+        TST    R3, #ISS_Read_bit
+        BNE    Run_Read
+
+        ; Write *************
+
+Run_Write
+        LDR    R1, [R5, #DataMbx]     ;Get data and release 386
+        TST    R3, #ISS_Word_bit
+        BNE    Run_WriteW
+
+        ; Write byte ****
+
+Run_WriteB
+        TST    R0, #1                 ;Is it an odd-address byte write?
+        MOVNE  R1, R1, LSR #8         ;If so, data comes from bits 8-15
+        AND    R1, R1, # &FF          ;Neaten Up
+        LDR    R2, [R2, #8]           ;ASSUME: Write8 is at handler+8
+        MOV    LR, PC
+        MOV    PC, R2                 ;Call function R0=addr, R1=data
+        B      Run_Wait
+
+        ; Write word ****
+
+Run_WriteW
+        AND    R1, R1, R8             ;Neaten up
+        LDR    R2, [R2, #12]          ;ASSUME: Write16 is at handler+12
+        MOV    LR, PC
+        MOV    PC, R2                 ;Call function R0=addr, R1=data
+        B      Run_Wait
+
+        ; Read *************
+Run_Read
+        TST    R3, #ISS_Word_bit
+        BNE    Run_ReadW
+
+        ; Read byte ****
+
+Run_ReadB
+        LDR    R2, [R2]               ;ASSUME: Read8 is at handler+0
+        MOV    LR, PC
+        MOV    PC, R2                 ;Call function
+Run_Poll_PostRead8
+        STRB   R0, [R5, #DataMbx]     ;Deliver to 386 (multiple copies)
+        B      Run_Wait               ;and we're away
+
+        ; Read word ****
+
+Run_ReadW
+        LDR    R2, [R2, #4]           ;ASSUME: Read16 is at handler+4
+        MOV    LR, PC
+        MOV    PC, R2                 ;Call function
+Run_Poll_PostRead16
+        MOV    R0, R0, LSL #16        ;Shift up for podules
+        STR    R0, [R5, #DataMbx]     ;Deliver to 386
+        B      Run_Wait               ;and we're away
+
+        ; I/O dispatch *************************************
+
+        ; enter here with
+        ;  R3 = ISSR contents
+        ;  R1 = bottom 4 bits of R3
+        ;  R0 = address from mailbox, neatened to 16 bits
+        ;  R7 = Base of I/O handlers array
+
+Run_IOorOther
+        AND    R2, R0, # &3FC         ;R2 = index of I/O chunk*4
+                                      ;ASSUME: I/O chunks are 4 bytes
+        ADD    R2, R2, R2, LSL #2     ;R2 = chunk * 20
+        ADD    R2, R7, R2             ;R2 = R7 + chunk * 20
+                                      ;ASSUME: Handlers are 20 bytes long
+        CMP    R1, #1                 ;Is it code for I/O access?
+        BEQ    Run_Dispatch           ;Then, treat as memory accesses
+
+Run_AccessError
+        STR    R3, CPUS_ErrorISSR     ;Save what went wrong for trace
+        STR    R0, CPUS_ErrorAddress  ;purposes.
+
+        MOV    R0, #0                 ;Give a dummy read result
+        TST    R3, #ISS_Read_bit      ;or clear the write port
+
+        STRNEB R0, [R5, #DataMbx]
+        LDREQB R0, [R5, #DataMbx]	; & Drop through into exit...
+
+        ; Exit points ****************************************
+
+Run_Exit
+        LDR    R0, Run_ModeSave
+        TEQP   R0, #0
+        MOVNV  R0, R0
+
+        ; APCS exit
+
+        LDMDB  FP, {R4-R9, FP, SP, PC}^
+
+
+       ; End of CPUS_Run *******************************************
+
+
+
+
+  ; ****************************************************************
+
+  ; Block In/Out routines
+
+  ; The idea of these is to speed up long memory transfers which the 386
+  ; does with a block IO instruction. We can save time over the normal
+  ; callback method of handling the port input or output because a whole
+  ; series of consecutive accesses are made to the same port.
+
+  ; The two routines CPU_BlockIn and CPU_BlockOut are passed
+  ; R0 = port number, R1 = pointer to data block on ARM side,
+  ; R2 = maximum length of said data block.
+  ; They will poll the mailbox: if an access takes place to the specified
+  ; port number (either byte or word), the data is moved to or from the
+  ; data block at R1. The routines will return when either
+
+  ; 1) a read or write past the specified 'maxlen' is attempted (this is
+  ; an error).
+
+  ; 2) a read or write to a location which is not the specified port
+  ;     (not an error)
+
+  ; 3) a timeout occurs waiting for an access (an error)
+
+
+CPU_BlockIn ; ( int ioport, BYTE * pointer, int maxlen )
+             ; returns int result (in R0 ) saying how many
+             ; bytes were successfully read in. Heavily optimised
+             ; for word accesses. Must be called in SVC mode
+             ; IO port must be even for byte accesses to work!!
+
+       STMFD   SP!, {R4-R8, LR}
+
+       ADR     R5, CPUS_PoduleBase
+       LDR     R5, [R5]
+
+       MOV     R3, #0
+       BICS    R2, R2, #1
+       BEQ     BI_Exit
+
+       MOV     R0, R0, LSL #16
+       ORR     R0, R0, # (ISS_Valid_bit + ISS_Read_bit + ISS_Word_bit + 1)
+
+       LDR     R7, CPUS_pStopFlag  ; R7 = stop flag address
+
+       ; Main loop
+       ; At this point
+       ; R0 = IO port << 16 + ISSR pattern for word write
+       ; R1 = Read pointer
+       ; R2 = maxlen  ( at least 1 )
+       ; R3 = no. read so far
+       ; R5 = Podule base
+
+       ; R4, R6 = working regs
+       ; R7 -> stop flag, non-zero to stop
+       ; R8 = next data word << 16
+
+BI_Wait
+       LDRB    R4, [R1], #1              ; Get bytes & increment pointer
+       LDRB    R6, [R1], #1
+       ORR     R4, R4, R6, LSL #8
+       MOV     R8, R4, LSL #16           ; R8 = next word of data
+
+BI_Poll
+       LDRB    R4, [R5, #ISSR]           ; Read ISSR
+       AND     R4, R4, # (ISS_Valid_bit + ISS_Read_bit + ISS_Word_bit + &F)
+       LDR     R6, [R5, #AddrMbx]
+       ORR     R4, R4, R6, LSL #16       ; R4 = ISSR + Address << 16
+
+       CMP     R0, R4                    ; Is it required I/O port?
+       BNE     BI_ByteOrOther            ; If not, exit
+
+       STR     R8, [R5, #DataMbx]       ; Deliver to 386
+       ADD     R3, R3, #2                ; Add 2 to total bytes done
+       CMP     R3, R2                    ; Have we exceeded limit?
+       BLO     BI_Wait
+       B       BI_Exit
+
+BI_ByteOrOther                           ; Enter here if anything other
+                                         ; than a word read, with R4 =
+                                         ; ISSR contents + addr << 16
+
+       TST     R4, # ISS_Valid_bit       ; Was there an access??
+       BNE     BI_CheckByte              ; If so, check for byte I/O
+
+       LDR     R6, [R7]                  ; If not, check stop flag
+       CMP     R6, #0
+       BEQ     BI_Poll                   ; If OK, retry
+       B       BI_Exit
+
+BI_CheckByte
+       ORR     R4, R4, # ISS_Word_bit
+       CMP     R0, R4                    ; Is it an I/O byte read ??
+       BNE     BI_Exit
+       MOV     R8, R8, LSR #16           ; Data we want is in R8[16..23]
+       STRB    R8, [R5, #DataMbx]       ; Deliver to podules
+       SUB     R1, R1, #1                ; Adjust R1 for next byte
+
+       ADD     R3, R3, #1                ; Done one more byte
+       CMP     R3, R2                    ; Is that it?
+       BLO     BI_Wait
+BI_Exit
+       MOV     R0, R3                    ; Return number of bytes read
+       LDMFD   SP!, {R4-R8, PC}^
+
+
+      ; ********************************************************
+
+
+
+CPU_BlockOut ; ( int ioport, char *pointer, int maxlen )
+
+             ; returns int result (in R0 ) saying how many
+             ; bytes were successfully written in. Heavily optimised
+             ; for word accesses. Must be called in SVC mode
+             ; IO port must be even for byte accesses to work!!
+
+       STMFD   SP!, {R4-R7, LR}
+
+       ADR     R5, CPUS_PoduleBase
+       LDR     R5, [R5]
+
+       MOV     R3, #0
+       BICS    R2, R2, #1
+       BEQ     BO_Exit
+
+       MOV     R0, R0, LSL #16
+       ORR     R0, R0, # (ISS_Valid_bit+ISS_Word_bit+1)
+
+       LDR     R7, CPUS_pStopFlag  ; R7 = stop flag address
+
+       ; Main loop
+       ; At this point
+       ; R0 = IO port << 16 + ISSR code for Word Write
+       ; R1 = Read pointer
+       ; R2 = maxlen  ( at least 1 )
+       ; R3 = no. read so far
+       ; R5 = Podule base
+
+       ; R4, R6 = working regs
+       ; R7 -> stop flag, non-zero to stop
+
+BO_Wait
+       LDRB    R4, [R5, #ISSR]           ; Wait for Valid bit to go high
+
+       AND     R4, R4, # (ISS_Valid_bit + ISS_Read_bit + ISS_Word_bit + &F)
+                                         ; Is it an I/O word read?
+
+       LDR     R6, [R5, #AddrMbx]
+       ORR     R4, R4, R6, LSL #16       ; R4 = ISSR+(addr<<16)
+
+       CMP     R0, R4                    ; Is it required I/O port?
+       BNE     BO_ByteOrOther            ; If not, exit
+
+       LDR     R4, [R5, #DataMbx]        ; Get bytes & release 386
+       STRB    R4, [R1], #1              ; Store bytes & increment pointer
+       MOV     R4, R4, LSR #8
+       STRB    R4, [R1], #1
+
+       ADD     R3, R3, #2                ; Add 2 to total bytes done
+       CMP     R3, R2                    ; Have we exceeded limit?
+       BLO     BO_Wait
+       B       BO_Exit
+
+BO_ByteOrOther                           ; Enter here if anything other
+                                         ; than a word read, with R4 =
+                                         ; ISSR contents
+       TST     R4, # ISS_Valid_bit
+       BNE     BO_CheckByte
+
+       LDR     R6, [R7]                  ; Check timeout flag
+       CMP     R6, #0
+       BEQ     BO_Wait                   ; If OK, retry
+       B       BO_Exit
+
+BO_CheckByte
+       ORR     R4, R4, # ISS_Word_bit
+       CMP     R0, R4                    ; Is it I/O byte write to the port?
+       BNE     BO_Exit                   ; If not, exit
+
+       LDRB    R4, [R5, #DataMbx]        ; Get data & release 386
+       TST     R0, # &10000              ; Was it odd-address?
+       MOVNE   R4, R4, LSR #8
+       STRB    R4, [R1], #1              ; Store & increment pointer
+
+       ADD     R3, R3, #1                ; Done one more byte
+       CMP     R3, R2                    ; Is it enough??
+       BLO     BO_Wait
+
+BO_Exit
+
+       MOV     R0, R3
+       LDMFD   SP!, {R4-R7, PC}^
+
+ ; Hardware initialise routines ---------------------------------------------
+
+ ; These were moved from CPU.C.CPU to CPU.S.CPUS so that compiling for
+ ; old Divas, Diva-IIs and 8-bit Divas could be done just by replacing the
+ ; CPU.S.CPUS module.
+
+       ; Start Reset routine *********************************
+
+       ; This initialises the card hardware, & holds the CPU in a reset
+       ; state. This is not released until ReleaseReset is called.
+
+CPUS_ISCreg    DCD  0                       ; ISC register
+CPUS_DCreg     DCD  0                       ; Diva Ctrl reg
+
+CPUS_StartReset ; ( void )
+
+        MOV     R3, LR
+        ADR     R1, CPUS_PoduleBase
+        LDR     R1, [R1]
+
+        EnterSVCmode
+
+        ; Initialise Diva Control register
+
+        MOV     R0, # 0 		; not DCR_EmulateIO_bit
+        STR     R0, CPUS_DCreg
+        STRB    R0, [R1, #DIVACtrl]
+
+        ; Set PowerGood & all INT lines low
+
+        MOV     R0, #0
+        STR     R0, CPUS_ISCreg
+        STRB    R0, [R1, #ISCtrl]
+
+
+        MOVS    PC, R3
+
+
+       ; ReleaseReset routine *********************************
+
+       ; This releases the CPU from the reset state & allows the card to run
+
+CPUS_ReleaseReset ; ( void )
+
+        MOV     R3, LR
+        ADR     R1, CPUS_PoduleBase
+        LDR     R1, [R1]
+
+        LDR     R0, CPUS_ISCreg
+
+        EnterSVCmode
+
+        ; Set PowerGood bit
+
+        ORR     R0, R0, #ISC_PowerGood_bit
+        STR     R0, CPUS_ISCreg
+        STRB    R0, [R1, #ISCtrl]
+
+        MOVS    PC, R3
+
+
+        ; ********************************************
+
+CPUS_FlushState   ; (void)  Used to reset DIVA's state machine
+                  ; Not needed on CALLASes
+
+       MOVS     PC, LR
+
+
+  ; ****************************************************************
+
+IRQ_CLEAR_BIT EQU &10000
+
+CPUS_CauseInt ;
+              ; Enter with R0 = IRQ line to be wiggled
+	      ; R0 bit 16 is clear to reset the line
+        MOV     R3, LR			; R3 = return address
+
+        TST     R3, #3    		; Are we in user mode?
+        SWIEQ   OS_EnterOS		; If so, better enter SVC mode
+
+	BIC	R1, R0, # IRQ_CLEAR_BIT ; R1 = IRQ line
+	CMP	R1, #15
+	BHI     CPUS_CI_Exit            ; If not 0..15, exit
+
+        ADR     R2, CPUS_CI_IntBits	; Get R1 = bit mask
+        LDR     R1, [R2, R1, LSL #2]
+
+        LDR     R2, CPUS_ISCreg         ; Get current ISC reg contents
+	BIC	R2, R2, R1		; Set bit low into R2
+	ORR	R1, R2, R1		; Set bit high into R1
+
+	TST	R0, #  IRQ_CLEAR_BIT	; Are we just clearing the IRQ?
+	MOVNE	R1, R2			; If so, keep bit low
+
+        ADR     R0, CPUS_PoduleBase	; R0->podule base
+        LDR     R0, [R0]
+
+        STRB    R2, [R0, #ISCtrl]           ;for a few us
+        STRB    R2, [R0, #ISCtrl]           ;for a few us
+        STRB    R2, [R0, #ISCtrl]           ;for a few us
+        STR     R1, CPUS_ISCreg
+        STRB    R1, [R0, #ISCtrl]
+CPUS_CI_Exit
+        MOVS    PC, R3
+
+CPUS_CI_IntBits   DCD  0,    &2,   0,    &4
+                  DCD  &8,   &10,  &20,  &40
+                  DCD  0,    &4,   &8,   &20
+                  DCD  &40,  0,    &80,  &80
+                  DCD  -1
+
+  ; ****************************************************************
+
+
+CPUS_IntsAvailable ; (void) returns 'int' bit-map of which IRQs are
+                   ; usable
+
+        STMFD   SP!, {LR}
+
+        MOV     R0, #0
+        MOV     R1, #1
+        ADR     R2, CPUS_CI_IntBits
+CPUS_IA_Loop
+        LDR     R3, [R2], #4
+        CMPS    R3, #0
+        ORRGT   R0, R0, R1
+        MOV     R1, R1, LSL #1
+        BGE     CPUS_IA_Loop
+
+        LDMFD   SP!, {PC}^
+
+; Try podule routine ---------------
+
+XPodule_ReadHeader EQU &60281
+
+CPUS_TrySlot   ; Takes (int), returns 1 if podule is in that slot
+               ; else 0
+
+        STMFD    SP!, {LR}
+
+        MOV      R3, R0
+        ADR      R2, TrySlotBuf
+        SWI      XPodule_ReadHeader  ; Read podule header
+        MOV      R0, #0
+        BVS      CPUS_TS_Exit        ; If error, return 0
+
+        ; Get product/manufacturer code from bytes 3..6
+
+        ADR      R2, TrySlotBuf
+        LDRB     R0, [R2, #3]
+        LDR      R1, [R2, #4]
+        ORR      R1, R0, R1, LSL #8
+
+        MOV      R0, #0
+        LDR      R2, OurCode
+        CMPS     R1, R2
+        MOVEQ    R0, #1
+
+CPUS_TS_Exit
+        LDMFD    SP!, {PC}^
+
+TrySlotBuf DCD 0, 0, 0, 0, 0   ; Buffer for ReadHeader result
+
+OurCode    DCD &004200EA
+
+; Hardware ID ----------------------
+
+CPU_HardwareID DCD CPUS_Name
+CPUS_Name      DCB "16-bit ASIC (Elvis)"
+
+        END
+
+
+

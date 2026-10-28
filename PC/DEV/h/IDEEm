@@ -1,0 +1,306 @@
+/*
+*    !PC hard drive emulation
+*
+*    structs 'n' stuff
+*/
+
+//#include "kernel.h"
+
+/* Macros for storing shorts / triples(!) / longs the wrong way up */
+#define INV2(v) (((v>>8)&0xff)|((v&0xff)<<8))
+#define INV3(v) (((v>>16)&0xff)|((v&0xff)<<16)|(v&0xff00))
+#define INV4(v) (((v>>24)&0xff)|((v>>8)&0xff00)| \
+                 ((v<<8)&0xff0000)|((v<<24)&0xff000000))
+
+/* Standard IDE commands (must implement) */
+#define IDE_CMD_CALIBRATE    0x10
+#define IDE_CMD_READSECTOR   0x20
+#define IDE_CMD_WRITESECTOR  0x30
+#define IDE_CMD_VERIFYSECTOR 0x40
+#define IDE_CMD_FORMATTRACK  0x50
+#define IDE_CMD_SEEK         0x70
+#define IDE_CMD_DIAGNOSTICS  0x90
+#define IDE_CMD_DRIVEPARAMS  0x91
+
+/* Common optional commands */
+#define IDE_CMD_READSBUFFER  0xE4
+#define IDE_CMD_WRITESBUFFER 0xE8
+#define IDE_CMD_IDENTIFY     0xEC
+
+/* ATAPI commands */
+#define IDE_CMD_ATAPIRESET   0x8
+#define IDE_CMD_ATAPIID      0xA1
+#define IDE_CMD_ATAPIPKT     0xA0
+
+/* Base I/O ports of our two IDE controllers */
+#define IDE_CONTROLBASE0    0x1F0
+#define IDE_CONTROLBASE1    0x170
+
+/* Register offsets from controller base (0x1f0 / 0x170) */
+#define IDE_REG_DATA        0x0
+#define IDE_REG_ERROR       0x1
+#define IDE_REG_FEATURES    0x1
+#define IDE_REG_SECCOUNT    0x2
+#define IDE_REG_SECNUM      0x3
+#define IDE_REG_CYLINDERLSB 0x4
+#define IDE_REG_CYLINDERMSB 0x5
+#define IDE_REG_DRIVEHEAD   0x6
+#define IDE_REG_STATUS      0x7
+#define IDE_REG_COMMAND     0x7
+/* and some absolute I/O addresses */
+#define IDE_REG_STATUS2     0x3F6
+#define IDE_REG_OUTPUT      0x3F6
+#define IDE_REG_ADDRESS     0x3F7
+
+/* error byte flags */
+#define ERROR_BBK 128  /* bad block detected       */
+#define ERROR_UNC 64   /* uncorrectable data error */
+#define ERROR_MC  32   /* media change             */
+#define ERROR_NID 16   /* ID not found             */
+#define ERROR_MCR 8    /* media change requested   */
+#define ERROR_ABT 4    /* command aborted          */
+#define ERROR_NT0 2    /* track 0 not found        */
+#define ERROR_NDM 1    /* address mark not found   */
+
+/* status byte flags */
+#define STATUS_BSY 128 /* busy                     */
+#define STATUS_RDY 64  /* drive ready              */
+#define STATUS_WFT 32  /* write fault              */
+#define STATUS_SKC 16  /* seek complete            */
+#define STATUS_DRQ 8   /* data request             */
+#define STATUS_COR 4   /* correctable error        */
+#define STATUS_IDX 2   /* head over index mark     */
+#define STATUS_ERR 1   /* error has occurred       */
+
+// during the duration of a PACKET command, the sec_count register gets
+// used to indicate status; these are the possible values:
+#define SCP_DATA_TO_DEVICE    0
+#define SCP_COMMAND_TO_DEVICE 1
+#define SCP_DATA_FROM_DEVICE  2
+#define SCP_COMMAND_FINISHED  3
+
+/* for the configuration register in the IDE identify block */
+#define IDECFG_REMOVABLE      (1<<7)
+#define IDECFG_ATA            (1<<15)
+
+// each device on our fake IDE controller should be one of these
+
+#define EM_NULL   0 // nothing attached
+#define EM_HD     1 // emulate ATA-based hard drive
+#define EM_CDROM  2 // emulate ATAPI-based CD-ROM drive
+#define EM_FLOPPY 3 // emulate ATAPI-based floppy drive
+
+// SCSI commands we support
+#define SCSI_TEST_UNIT_READY  0x00
+#define SCSI_REQUEST_SENSE    0x03
+#define SCSI_INQUIRY          0x12
+#define SCSI_RESERVE          0x16
+#define SCSI_RELEASE          0x17
+#define SCSI_SEND_DIAGNOSTIC  0x1D
+#define SCSI_PREVENTALLOW     0x1E
+#define SCSI_READ_CAPACITY    0x25
+#define SCSI_READ             0x28
+#define SCSI_READ_TOC         0x43
+#define SCSI_MODE_SENSE       0x5A
+
+// SCSI mode parameter pages we support
+#define SCSI_PAGENUM_CDROM_AUDIO 0xE
+
+// Phases for PACKET command
+#define PHASE_PACKET_COMMAND  0
+#define PHASE_PACKET_RESULT   1
+
+// Page flags
+#define PAGE_CURRENT    0
+#define PAGE_MASK       1
+#define PAGE_DEFAULT    2
+#define PAGE_SAVED      3
+
+struct toc_track {
+  unsigned char res0;
+  unsigned char adr_control;
+  unsigned char number;
+  unsigned char res3;
+  unsigned long address;
+};
+
+struct toc_data {
+  unsigned short   data_length;
+  unsigned char    first;
+  unsigned char    last;
+  struct toc_track track[100];
+};
+
+struct scsi_6_mode_parameter_header {
+  unsigned char total_length;
+  unsigned char medium;
+  unsigned char blah;
+  unsigned char bd_length;
+};
+
+#define CD_MEDIUM_DATA  1
+#define CD_MEDIUM_AUDIO 2
+#define CD_MEDIUM_MIXED 3
+struct scsi_10_mode_parameter_header {
+  unsigned short total_length;
+  unsigned char medium;
+  unsigned char blah;
+  unsigned char res4, res5;
+  unsigned short bd_length;
+};
+
+struct scsi_block_descriptor {
+  unsigned char write_density;
+  unsigned char num_blocks_hi, num_blocks_mid, num_blocks_lo;
+  unsigned char reserved;
+  unsigned char block_len_hi, block_len_mid, block_len_lo;
+};
+
+struct scsi_page_cdrom_audio {
+  unsigned char page_id;  // always =0xE
+  unsigned char page_len; // always =0xE
+  unsigned char flags;
+  unsigned char res2, res3;
+  unsigned char lba_factor; // hi bit is APRV (?)
+  unsigned short lbas_per_sec;
+  unsigned char out0_sel;
+  unsigned char port0_vol;
+  unsigned char out1_sel;
+  unsigned char port1_vol;
+  unsigned char out2_sel;
+  unsigned char port2_vol;
+  unsigned char out3_sel;
+  unsigned char port3_vol;
+};
+
+/* This structure is meant to completely define the state of either of
+** our virtual IDE controllers
+*/
+struct ide_controller {
+  /* Simple(ish) read or write-only registers */
+  unsigned int     error;
+  unsigned int     status;
+  unsigned int     sec_count; /* because writing 0 means 256 sectors */
+  unsigned int     sec_num;
+  unsigned int     cylinder;
+  unsigned int     drivehead;
+
+  unsigned int     use_irq, irq_number;
+
+  /* PIO emulation */
+  unsigned int       buffer_next, buffer_limit;
+  unsigned char      command_last, command_last_sub;
+  char               hpc_header[32]; // some paranoia here!
+  char               buffer[1024];  // also used as scratch space for cmds
+};
+
+// stuff which doesn't get zeroed every time we reset the above struct
+//
+struct ide_controller_info {
+  // geometry of each emulated drive on a controller
+  unsigned int       ncyls[2], nsecs[2], nheads[2];
+  // what sort of devices are attached (see EM_ constants...), and which
+  // !PC device no. we're using to fake it
+  unsigned int       em[2], drive[2];
+  // mode pages for ATAPI devices
+  struct {
+    struct scsi_page_cdrom_audio cdrom_audio[4];
+  } page[2]; // [device no.][page type]
+};
+
+/* We load the sector buffer with one of these structures in response to
+** an 0xEC (identify) command.  Most of it is bollocks, but some values will
+** need to be filled in to fool Windows sufficiently.
+*/
+struct ide_identify_block {
+  unsigned short configuration;
+  unsigned short cylinders;
+  unsigned short res2;
+  unsigned short heads;
+  unsigned short ret4_5[2];
+  unsigned short sectors;
+  unsigned short ret7_9[3];
+  char	         serial_number[20];
+  unsigned short ret20_21[2];
+  unsigned short obs22;
+  char	         firmware[8];
+  char	         model[40];
+  unsigned char	 m_sectors_between_interrupts;
+  unsigned short capabilities1;
+  unsigned short capabilities2;
+  unsigned short pio_supported;
+  unsigned short ret52;
+  unsigned short miscvalid;
+  unsigned short log_cylinders;
+  unsigned short log_heads;
+  unsigned short log_sectors;
+  unsigned short sector_capacity_hi;
+  unsigned short sector_capacity_lo;
+  unsigned short mult_sectors_current;
+  unsigned short lba_sectors;
+  unsigned short ret62;
+  unsigned short mword_dma_suppoted;
+  unsigned short advanced_pio_supported;
+  unsigned short mword_dma_cycle1;
+  unsigned short mword_dma_cycle2;
+  unsigned short pio_cycle1;
+  unsigned short pio_cycle2;
+  unsigned short res69_70[2];
+  unsigned short res71_74[4];
+  unsigned short queue_depth;
+  unsigned short res76_79[4];
+  unsigned short atapi_major;
+  unsigned short atapi_minor;
+  unsigned short cmdsets_supported1;
+  unsigned short cmdsets_supported2;
+  unsigned short cmdsets_supported3;
+  unsigned short cmdsets_enabled1;
+  unsigned short cmdsets_enabled2;
+  unsigned short cmdsets_default;
+  unsigned short ultra_dma_supported;
+  unsigned short res89_126[38];
+  unsigned short removable_notification;
+  unsigned short security;
+  unsigned short res129_255[127];
+};
+
+struct ide_identify_pkt_block {
+  unsigned short configuration;
+  unsigned short res1_9[9];
+  char	         serial_number[20];
+  unsigned short res20_22[3];
+  char	         firmware[8];
+  char	         model[40];
+  unsigned short res47_48[2];
+  unsigned short capabilities;
+  unsigned short res50;
+  unsigned short pio_supported;
+  unsigned short res52;
+  unsigned short miscvalid;
+  unsigned short res54_62[9];
+  unsigned short mword_dma_suppoted;
+  unsigned short advanced_pio_supported;
+  unsigned short mword_dma_cycle1;
+  unsigned short mword_dma_cycle2;
+  unsigned short pio_cycle1;
+  unsigned short pio_cycle2;
+  unsigned short res69_70[2];
+  unsigned short packet_bus_release_time;
+  unsigned short service_bsy_clear_time;
+  unsigned short res73_74[2];
+  unsigned short queue_depth;
+  unsigned short res76_79[4];
+  unsigned short atapi_major;
+  unsigned short atapi_minor;
+  unsigned short cmdsets_supported1;
+  unsigned short cmdsets_supported2;
+  unsigned short cmdsets_supported3;
+  unsigned short cmdsets_enabled1;
+  unsigned short cmdsets_enabled2;
+  unsigned short cmdsets_default;
+  unsigned short ultra_dma_supported;
+  unsigned short res89_126[38];
+  unsigned short removable_notification;
+  unsigned short security;
+  unsigned short res129_255[127];
+};

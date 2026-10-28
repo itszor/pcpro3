@@ -1,0 +1,129 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.C.FDDEm -- Hardware emulation of floppy drive
+*
+*   08-02-1998  MB    Test version
+*/
+
+#define DEBUG 0
+
+#include <stdio.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.StdTypes"
+#include "sys.h.Sys"
+#include "sys.h.hrdstate"
+#include "dev.h.FDDEm"
+
+int fdc_command_length[] = {
+  -1, -1, 8, 2, 1, 8, 8, 2, 0, 8, 1, -1, 8, 5, -1, 2
+};
+
+static unsigned char                fdc_reg_output = 0;
+static unsigned char                fdc_reg_data = 0;
+static struct fdc_reg_status_struct fdc_reg_status;
+
+static struct fdc_command           current_cmd;
+static int                          cmd_ptr;
+
+static void FDDEm_Error(void)
+{
+
+}
+
+static void FDDEm_Reset(void)
+{
+  fdc_reg_status.mrq  = 1; /* Data register ready */
+  fdc_reg_status.ndma = 1; /* Not in DMA mode */
+  fdc_reg_status.dio  = 0; /* Waiting for command */
+  cmd_ptr = 0;
+}
+
+static int  FDDEm_Read8(int addr)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return(0);
+  if (DEBUG)
+    SYS_trace("FDDEm Read8: %Xh", addr);
+
+  switch(addr)
+  {
+    case FDC_OUTPUT :
+      /* Return the last value put in */
+      return(fdc_reg_output);
+      break;
+    case FDC_STATUS :
+      return( *(int*)&fdc_reg_status);
+      break;
+    case FDC_DATA   :
+      return(fdc_reg_data);
+      break;
+    case FDC_INPUT  :
+      break;
+  }
+  return(0xFF);
+}
+
+static void FDDEm_Write8(int addr, int data)
+{
+  if (addr != 0x3F2 && addr != 0x3F4 && addr != 0x3F5 && addr != 0x3F7)
+    return;
+  if (DEBUG)
+    SYS_trace("FDDEm write8: %Xh -> %Xh", data, addr);
+
+  switch(addr)
+  {
+    case FDC_OUTPUT :
+      current_cmd.type.cmd = -1;
+      fdc_reg_output = data;
+      /* Motor control / drive selection
+         Let's just reset the controller and keep the value */
+      break;
+    case FDC_STATUS :
+      SYS_trace("God is not with us: status register written to");
+      break;
+    case FDC_DATA   :
+      if (fdc_reg_status.dio == 0)
+      {
+        * ((char*)&current_cmd + cmd_ptr++) = data;
+        if (cmd_ptr > fdc_command_length[0])
+          { FDDEm_Error(); return; }
+      }
+      break;
+    case FDC_INPUT  :
+      SYS_trace("God is not with us: input register written to");
+      break;
+  }
+}
+
+static void FDDEm_DMANotify(uint mode, uint PCaddr, uint len)
+{
+  if (DEBUG)
+    SYS_trace("FDDEm DMANotify mode=%d PCaddr=%X len=%d", mode, PCaddr, len);
+}
+
+static uint FDDEm_DMATransfer(uint mode, uint PCaddr, uint len, BYTE *ARMaddr)
+{
+  if (DEBUG)
+    SYS_trace("FDDEm DMATransfer mode=%d PCaddr=%X len=%d ARMaddr=%X", mode, PCaddr, len, ARMaddr);
+  return(0);
+}
+
+extern bool FDDEm_Init(void)
+{
+  DMA_handler h;
+
+  h.NotifyFn   = FDDEm_DMANotify;
+  h.TransferFn = FDDEm_DMATransfer;
+  h.R12_val    = 0;
+
+  SYS_registerIO(0x3F0, 0x3F7, FDDEm_Read8, FDDEm_Read8, FDDEm_Write8, FDDEm_Write8, NULL);
+  SYS_State.DMAhandlers[3] = h;
+
+  FDDEm_Reset();
+  return(true);
+}
+

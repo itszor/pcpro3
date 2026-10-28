@@ -1,0 +1,16 @@
+Set DivaCode$Dir <Obey$Dir>
+
+Set Alias$CheckToolbox RMEnsure %%0 %%1 RMLoad System:Modules.Toolbox.%%0|MRMEnsure %%0 %%1 Error 0 Your %%0 module is out of date.
+CheckToolbox Toolbox  1.43
+CheckToolbox Window   1.54
+Unset Alias$CheckToolbox
+
+RMEnsure PlayIt 1.35 RMLoad <Obey$Dir>.PlayIt <Obey$Dir>.Standard
+
+Wimpslot -min 32k -max 32k
+RMEnsure DivaCode 0.00 RMLoad <DivaCode$Dir>.DivaCode
+
+| You can comment out this next line if you just need to use the SWI
+| interface to print labels
+|
+Desktop_DivaCode

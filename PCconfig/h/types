@@ -1,0 +1,150 @@
+#ifndef __types_h
+#define __types_h
+
+#ifndef BOOL
+#define BOOL int
+#endif
+
+#ifndef TRUE
+#define TRUE 1
+#define FALSE 0
+#endif
+
+typedef struct
+{
+  int size;
+  int flags;
+  int xres;
+  int yres;
+  int pixel_depth;
+  int frame_rate;
+  char mode_name[30];
+}big_mode_structure;
+
+typedef struct
+{
+  int min_pixel_depth;
+  int max_pixel_depth;
+  int xres;
+  int yres;
+  char mode_name[20];
+}small_mode_structure;
+
+typedef struct
+{
+  int  drives;
+  BOOL drive_c_use_partition;
+  BOOL drive_d_use_partition;
+  int  drive_c_direct_scsi_id;
+  int  drive_d_direct_scsi_id;
+  char drive_c_path_name[256];
+  char drive_d_path_name[256];
+  int  drive_c_scsi_heads;
+  int  drive_c_scsi_sectors;
+  int  drive_d_scsi_heads;
+  int  drive_d_scsi_sectors;
+}hd;
+
+typedef struct
+{
+  int  memory_allocated;
+  int  display_min;
+  BOOL includevram;
+}mem;
+
+typedef struct
+{
+  int printing_options;
+  BOOL direct_parallel;
+  BOOL turbodriverbodge;
+}print;
+
+typedef struct
+{
+  BOOL direct_serial;
+}ser;
+
+typedef struct
+{
+  int colours;
+  int mode_number;
+  BOOL use_palette;
+  int fastvideo;
+  int frameskip;
+  BOOL switchlfb;
+}win;
+
+/*typedef struct
+{
+  int start_up_option;
+}start;*/
+
+typedef struct
+{
+  int start_up_option;
+  int switching_option;
+  int foreground_slice;
+  int background_slice;
+  int background_holdoff;
+  BOOL toolbar;
+}swch;
+
+typedef struct
+{
+  BOOL boot_from_floppy;
+  BOOL disable_floppies;
+}boot;
+
+typedef struct
+{
+  BOOL iso, ipx, tcpip;
+}netwk;
+
+typedef struct
+{
+  unsigned int  reserve;
+  unsigned int  force;
+  unsigned int  ignore;
+  int  aspibuffer; // bit 0 = restrict size, bit 1 = 64K ext buffer
+}aspi_struct;
+
+typedef struct
+{
+  int  l1cache;
+  int  l2cache;
+  int  l2size;
+  int  asicoptions;
+  int  retraceemulation;
+  int  busmouse;
+  int  busmouseint;
+  char ne2000advanced[64];
+  int  ne2000int;
+  int  sharedmemflags;
+  int  preservevidmem;
+  int  floppy[2];
+  int  scaletofit;
+}adv_struct;
+
+typedef struct
+{
+  char name[64];
+  hd discs;
+  mem memory;
+  print printing;
+  ser serial;
+  win windows;
+  /*start start_up;*/
+  swch switching;
+  boot booting;
+  netwk network;
+  adv_struct adv;
+  aspi_struct aspi;
+}options;
+
+typedef struct
+{
+  char fname[11];
+  char long_name[64];
+}configpair;
+
+#endif

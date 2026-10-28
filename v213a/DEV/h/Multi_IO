@@ -1,0 +1,11 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.MULTIIO - header file
+*
+*/
+
+
+/* EXPORTED ROUTINES */
+
+extern void MUL_Init ( void );

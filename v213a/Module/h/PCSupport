@@ -1,0 +1,27 @@
+/* SWI numbers for !PC Support module */
+
+#define MOD_BASE (0x44680 | XOS_Bit)
+
+#define PCSupport_KeyInstall      (MOD_BASE+0x0)
+#define PCSupport_KeyRelease      (MOD_BASE+0x1)
+#define PCSupport_KeyCount        (MOD_BASE+0x2)
+#define PCSupport_KeyGet          (MOD_BASE+0x3)
+#define PCSupport_KeyFlush        (MOD_BASE+0x4)
+#define PCSupport_KeySetLEDs      (MOD_BASE+0x5)
+
+#define PCSupport_MouInstall      (MOD_BASE+0x6)
+#define PCSupport_MouRemove       (MOD_BASE+0x7)
+#define PCSupport_MouGetState     (MOD_BASE+0x8)
+
+#define PCSupport_ModeSetup       (MOD_BASE+0x9)
+#define PCSupport_LockCard        (MOD_BASE+0xa)
+#define PCSupport_CallbackSetup   (MOD_BASE+0xb)
+#define PCSupport_SetCallback     (MOD_BASE+0xc)
+#define PCSupport_GetCallback     (MOD_BASE+0xd)
+#define PCSupport_IrqRequest      (MOD_BASE+0xe)
+#define PCSupport_DmaRequest      (MOD_BASE+0xf)
+
+#define PCSupport_ModuleInfo      (MOD_BASE+0x10)
+#define PCSupport_GetInternalAddr (MOD_BASE+0x11)
+
+

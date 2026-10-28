@@ -1,0 +1,17 @@
+/*
+ * Name   : printing.h
+ * Desc   : Handlers for printing component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 1-Jun-1995
+ */
+
+#ifndef __printing_h
+#define __printing_h
+
+extern void do_printing_initialise(void);
+extern void setup_printing_window(void);
+extern void update_printing_window(void);
+extern int printing_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+
+#endif

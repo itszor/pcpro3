@@ -1,0 +1,56 @@
+/*
+ * Name   : Windows.h
+ * Desc   : Handlers for Windows component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 31-May-1995
+ */
+
+#include "types.h"
+#ifndef __windows_h
+#define __windows_h
+
+/*extern big_mode_structure buffer_mode;*/
+
+extern void setup_windows_window(void);
+
+extern void do_windows_initialise(void);
+
+extern void update_windows_window(void);
+
+extern int check_colours_valid(int cols);
+
+extern int windows_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+
+/*********************************************************************
+ * This function checks the suggested resolution against the current *
+ * colour depth selection. If the colour depth is too great for this *
+ * resolution, the depth is decremented and re-checked.              *
+ *                                                                   *
+ * RETURNS: int colour_depth for this resolution                     *
+ *********************************************************************/
+
+extern int check_resolution_valid(int cols);
+
+extern int calculate_memory_for_mode(int num);
+
+/****************************************************
+ * Find all modes available and add only those that *
+ * are suitable for use with Windows to modes[]     *
+ ****************************************************/
+
+extern void find_modes(void);
+
+extern void find_riscos_three_modes(void);
+
+extern int get_mode_number(char *string);
+
+extern BOOL mode_suitable_for_windows(big_mode_structure);
+
+extern void build_modes_menu(void);
+
+extern void do_windows_initialise(void);
+
+extern int windows_menu_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

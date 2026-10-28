@@ -1,0 +1,495 @@
+/*
+ * PCConfig application
+ *
+ * Version: 0.46 Wed 23rd August 1995
+ *
+ * © Dean Murphy
+ */
+#include "stdlib.h"
+#include "debugit.h"
+#include "toolbox.h"
+#include "event.h"
+#include "gadgets.h"
+#include "swis.h"
+#include "stdio.h"
+#include "string.h"
+#include "utils.h"
+
+#include "vars.h"
+#include "windows.h"
+
+static int multiplier = 25;
+
+extern int total_modes                 = 0;
+extern small_mode_structure modes[100] = 0;
+static big_mode_structure buffer_mode  = 0;
+
+static int low_memory_limit   = 0;
+static int high_memory_limit  = 0;
+
+void setup_windows_window(void)
+{
+  update_windows_window();
+  toolbox_show_object(0,windows_window,0,0,0,0);
+}
+
+void do_windows_initialise(void)
+{
+
+  raise_error(event_register_toolbox_handler(windows_window, StringSet_ValueChanged, windows_menu_handler, 0));
+  raise_error(event_register_toolbox_handler(windows_window, ActionButton_Selected,windows_window_click_handler,0));
+  raise_error(event_register_toolbox_handler(windows_window, OptionButton_StateChanged,windows_window_click_handler,0));
+
+  find_modes();
+  /*find_riscos_three_modes();*/
+  build_modes_menu();
+
+  multiplier = atoi(lookup_token("mul"));
+
+  raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_COLOURS_MENU,tmp_config.windows.colours));
+  raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_RESOLUTION_MENU,tmp_config.windows.mode_number));
+}
+
+void update_windows_window(void)
+{
+  
+  int tmp;
+  /*int min_val,max_val;*
+
+  raise_error(numberrange_get_bounds(3,windows_window,WINDOWS_USER_ALLOCATED,&low_memory_limit,&high_memory_limit,NULL,NULL));
+  DEBUG debug_output("windows","Lower bound = %d\n",min_val);
+  DEBUG debug_output("windows","Upper bound = %d\n",max_val);*/
+
+  tmp_config.windows.mode_number = config.windows.mode_number;
+  tmp_config.windows.colours     = config.windows.colours;
+  tmp_config.windows.use_palette = config.windows.use_palette;
+
+  raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_COLOURS_MENU,tmp_config.windows.colours));
+  raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_RESOLUTION_MENU,tmp_config.windows.mode_number));
+
+  if(tmp_config.windows.colours == 1)
+   raise_error(gadget_set_flags(0,windows_window,WINDOWS_USE_PALETTE,0));
+  else
+   raise_error(gadget_set_flags(0,windows_window,WINDOWS_USE_PALETTE,(unsigned)1<<31));
+
+   raise_error(optionbutton_set_state(0,windows_window,WINDOWS_USE_PALETTE,tmp_config.windows.use_palette));
+   raise_error(optionbutton_set_state(0,windows_window,WINDOWS_SWITCHLFB,tmp_config.windows.switchlfb));
+
+  /*tmp_config.windows.memory_allocated = config.windows.memory_allocated;*/
+
+  tmp = calculate_memory_for_mode(multiplier)/1024;
+
+  low_memory_limit = calculate_memory_for_mode(0)/1024;
+
+  /*raise_error(numberrange_set_bounds(1,windows_window,WINDOWS_USER_ALLOCATED,low_memory_limit,0,0,0));*/
+
+  if(tmp < low_memory_limit)
+   tmp = low_memory_limit;
+
+  if(tmp > high_memory_limit)
+   tmp = high_memory_limit;
+  
+  /*{
+  char buff[6];
+  sprintf(buff,"%d\0",tmp);
+  raise_error(displayfield_set_value(0,windows_window,WINDOWS_MEMORY_SUGGESTED,buff));
+
+  raise_error(numberrange_set_value(0,windows_window,WINDOWS_USER_ALLOCATED,tmp_config.windows.memory_allocated));
+  }*/
+
+  raise_error(numberrange_set_value(0,windows_window,WINDOWS_FRAMESKIP,tmp_config.windows.frameskip));
+  raise_error(optionbutton_set_state(0,windows_window,WINDOWS_FASTVIDEO,tmp_config.windows.fastvideo));
+}
+
+int check_colours_valid(int cols)
+{
+  int x = tmp_config.windows.mode_number;
+
+  DEBUG debug_output("check_colours_valid","CCV: On entry: Colours     = %d\n",cols);
+  DEBUG debug_output("check_colours_valid","CCV:           Mode Number = %d\n\n",x);
+
+  for(;;)
+  {
+    if(cols+2 > modes[x].max_pixel_depth)
+    {
+      x -= 1;
+      /*if(x<0) break;*/
+    }
+    else
+      break;
+  }
+
+  DEBUG debug_output("check_colours_valid","CCV: On exit: Mode Number = %d\n",x);
+  DEBUG debug_output("check_colours_valid","CCV:          Max Colours = %d\n",modes[x].max_pixel_depth);
+
+  /* If no mode is available for the number of colours specified, return -1
+     so caller can reduce number of colours required. */
+/*
+  if(x<0)
+   return -1;
+   */
+
+  return x;
+}
+
+/*********************************************************************
+ * This function checks the suggested resolution against the current *
+ * colour depth selection. If the colour depth is too great for this *
+ * resolution, the depth is decremented and re-checked.              *
+ *                                                                   *
+ * RETURNS: int colour_depth for this resolution                     *
+ *********************************************************************/
+
+int check_resolution_valid(int cols)
+{
+  int x = tmp_config.windows.mode_number;
+
+  DEBUG debug_output("check_resolution_valid","CRV: On entry, mode = %d\n",x);
+  DEBUG debug_output("check_resolution_valid","CRV: Max colours for this mode = %d\n",modes[x].max_pixel_depth);
+
+  for(;;)
+  {
+    if(cols+2 > modes[x].max_pixel_depth)
+     cols -= 1;
+    else
+     break;
+  }
+
+  DEBUG debug_output("check_resolution_valid","CRV: On exit, max colours for this mode = %d\n",cols);
+
+  return cols;
+}
+
+int calculate_memory_for_mode(int plus_percent)
+{
+  float temp;
+  int per;
+
+  per = 100 + plus_percent;
+
+  temp = (unsigned)(modes[tmp_config.windows.mode_number].xres * modes[tmp_config.windows.mode_number].yres);
+
+  DEBUG debug_output("cms","Screen mode number = %d\n",tmp_config.windows.mode_number);
+  DEBUG debug_output("cms","x res = %d\n",modes[tmp_config.windows.mode_number].xres);
+  DEBUG debug_output("cms","y res = %d\n",modes[tmp_config.windows.mode_number].yres);
+  DEBUG debug_output("cms","Colours = %d\n",tmp_config.windows.colours);
+
+  switch(tmp_config.windows.colours)
+  {
+    case 0:
+    return (int)((temp / 2)*per)/100;
+    break;
+
+    case 1:
+    return (int)(temp*per)/100;
+    break;
+
+    case 2:
+    return (int)((temp * 2)*per)/100;
+    break;
+
+    case 3:
+    return (int)((temp * 4)*per)/100;
+    break;
+  }
+  return (int)(temp*per)/100;
+}
+/*
+
+This commented out bit is just some cobbled together bits and pieces to make
+it RISC OS 3.1 compatibile, it doesn't work yet.
+
+void find_riscos_three_modes(void)
+{
+  int count, small_mode_count = -1;
+  int last_xres = 0, last_yres = 0;
+  int xeig, yeig,x,bpp,xres,yres;
+
+  _kernel_swi_regs r;
+
+  for(x=15 ; x<=127 ; x++)
+  {
+    r.r[0] = x;
+    r.r[1] = 4;
+    _kernel_swi(OS_ReadModeVariable,&r,&r);
+    xeig = r.r[2];
+    r.r[1] = 5;
+    _kernel_swi(OS_ReadModeVariable,&r,&r);
+    yeig = r.r[2];
+    r.r[1] = 9;
+    _kernel_swi(OS_ReadModeVariable,&r,&r);
+    bpp = r.r[2];
+    r.r[1] = 11;
+    _kernel_swi(OS_ReadModeVariable,&r,&r);
+    xres = r.r[2];
+    r.r[1] = 12;
+    _kernel_swi(OS_ReadModeVariable,&r,&r);
+    yres  = r.r[2];
+
+    if(xres != last_xres || yres != last_yres)
+    {
+      if((xres << xeig) >= MINIMUM_X_RESOLUTION && (yres << yeig) >= MINIMUM_Y_RESOLUTION)
+      {
+        small_mode_count++;
+        modes[small_mode_count].xres = xres;
+        modes[small_mode_count].yres = yres;
+        modes[small_mode_count].min_pixel_depth = pow((double)bpp, (double)2);
+        sprintf(modes[small_mode_count].mode_name,"%d x %d\0",xres, yres);
+        last_xres = xres;
+        last_yres = yres;
+      }
+     }
+     else
+        modes[small_mode_count].max_pixel_depth = pow((double)bpp, (double)2);
+
+    count++;
+
+    DEBUG debug_output("wincount","310 Modes found = %d\n",small_mode_count);
+
+    if(count == 255 || r.r[1] != 0)
+     break;
+  }
+
+  total_modes = small_mode_count;
+
+  if(small_mode_count == -1)
+  {
+    raise_error(gadget_set_flags(0,windows_window, WINDOWS_RESOLUTION_MENU,(unsigned)1<<31));
+    raise_error(gadget_set_flags(0,windows_window, WINDOWS_COLOURS_MENU,(unsigned)1<<31));
+  }
+
+  for(count = 0;count<total_modes;count++)
+  {
+    DEBUG debug_output("find_modes","MODE %d = %s\n",count, modes[count].mode_name);
+    DEBUG debug_output("find_modes","Max pixel depth for this mode = %d\n",modes[count].max_pixel_depth);
+  }
+}
+*/
+
+/****************************************************
+ * Find all modes available and add only those that *
+ * are suitable for use with Windows to modes[]     *
+ ****************************************************/
+
+void find_modes(void)
+{
+  int count = 0, small_mode_count = -1;
+  int last_xres = 0,last_yres = 0;
+
+  _kernel_swi_regs r;
+
+  for(;;)
+  {
+    r.r[0] = 2;
+    r.r[2] = count;
+    r.r[6] = (int)&buffer_mode;
+    r.r[7] = 50;
+    _kernel_swi(OS_ScreenMode, &r,&r);
+
+        //fprintf(stderr, "mode %d x %d\n", buffer_mode.xres, buffer_mode.yres);
+    if(buffer_mode.xres != last_xres || buffer_mode.yres != last_yres)
+    {
+      if(mode_suitable_for_windows(buffer_mode))
+      {
+        small_mode_count++;
+        modes[small_mode_count].xres = buffer_mode.xres;
+        modes[small_mode_count].yres = buffer_mode.yres;
+        modes[small_mode_count].min_pixel_depth = buffer_mode.pixel_depth;
+        sprintf(modes[small_mode_count].mode_name,"%d x %d\0",buffer_mode.xres, buffer_mode.yres);
+        //fprintf(stderr, "mode %d x %d\n", buffer_mode.xres, buffer_mode.yres);
+        /*strcpy(modes[small_mode_count].mode_name, buffer_mode.mode_name);*/
+        last_xres = buffer_mode.xres;
+        last_yres = buffer_mode.yres;
+      }
+    }
+    else
+      modes[small_mode_count].max_pixel_depth = buffer_mode.pixel_depth;
+
+
+    count++;
+
+    DEBUG debug_output("wincount","Modes found = %d\n",small_mode_count);
+
+    if(/*count == 255 || */r.r[1] != 0)
+     break;
+
+  }
+
+  total_modes = small_mode_count;
+
+  if(small_mode_count == -1)
+  {
+    /* Panic, there are no screen modes available */
+    /*raise_error(gadget_set_flags(0,windows_window, WINDOWS_RESOLUTION_MENU,(unsigned)1<<31));
+    raise_error(gadget_set_flags(0,windows_window, WINDOWS_COLOURS_MENU,(unsigned)1<<31));*/
+  }
+
+  for(count = 0;count<total_modes;count++)
+  {
+    DEBUG debug_output("find_modes","MODE %d = %s\n",count, modes[count].mode_name);
+    DEBUG debug_output("find_modes","Max pixel depth for this mode = %d\n",modes[count].max_pixel_depth);
+  }
+}
+
+int get_mode_number(char *string)
+{
+  int x,hit = 0;
+
+  for(x=0;x<=total_modes;x++)
+  {
+    if(strcmp(string,modes[x].mode_name)==0)
+     return(x);
+    hit++;
+  }
+  return(-1);
+}
+
+BOOL mode_suitable_for_windows(big_mode_structure mode)
+{
+  /* Only square pixel modes of resolution 640 x 480
+     or greater are suitable for windows */
+
+  if((mode.xres >= MINIMUM_X_RESOLUTION &&
+      mode.yres >= MINIMUM_Y_RESOLUTION)&&
+     (mode.xres / mode.yres < 2))
+   return TRUE;
+
+  return FALSE;
+}
+
+void build_modes_menu(void)
+{
+  int count = 0;
+  char buffer[255];
+  buffer[0] = '\0';
+  for(count = 0; count <= total_modes; count++)
+  {
+    strcat(buffer, modes[count].mode_name);
+    strcat(buffer,",");
+  }
+  buffer[strlen(buffer)-1] = '\0';
+  stringset_set_available(0, windows_window, WINDOWS_RESOLUTION_MENU,buffer);
+}
+
+
+int windows_menu_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+  int x,colours = 0, mode_num;
+  int old_colours = 0;
+  /*char buff[20];*/
+  
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+
+  old_colours = tmp_config.windows.colours;
+
+  DEBUG debug_output("windows_menu_handler","On entry:\n");
+  DEBUG debug_output("windows_menu_handler","mode number = %d\n",tmp_config.windows.mode_number);
+  DEBUG debug_output("windows_menu_handler","colours     = %d\n",tmp_config.windows.colours);
+
+  switch(id_block->self_component)
+  {
+    case WINDOWS_RESOLUTION_MENU:
+      raise_error(stringset_get_selected(1,windows_window,WINDOWS_RESOLUTION_MENU,&mode_num));
+      DEBUG debug_output("windows_menu_handler","getselected returns mode number %d\n",mode_num);
+      if(mode_num != tmp_config.windows.mode_number)
+      {
+        tmp_config.windows.mode_number = mode_num;
+        colours = check_resolution_valid(tmp_config.windows.colours);
+        if(colours != tmp_config.windows.colours)
+        {
+          raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_COLOURS_MENU,colours));
+          tmp_config.windows.colours = colours;
+        }
+      }
+    break;
+    case WINDOWS_COLOURS_MENU:
+     raise_error(stringset_get_selected(1,windows_window,WINDOWS_COLOURS_MENU,&colours));
+
+     while((x = check_colours_valid(colours--)) < 0);
+     colours++;
+     raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_COLOURS_MENU,colours));
+
+     if(x != tmp_config.windows.mode_number)
+     {
+       tmp_config.windows.mode_number = x;
+
+       raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_COLOURS_MENU,colours));
+       raise_error(my_stringset_set_selected(1,windows_window,WINDOWS_RESOLUTION_MENU,tmp_config.windows.mode_number));
+     }
+     tmp_config.windows.colours     = colours;
+    break;
+  }
+
+  low_memory_limit = calculate_memory_for_mode(0)/1024;
+  /*tmp_config.windows.memory_allocated = calculate_memory_for_mode(multiplier)/1024;*/
+
+  /*if(tmp_config.windows.memory_allocated < low_memory_limit)
+   tmp_config.windows.memory_allocated = low_memory_limit;
+
+  if(tmp_config.windows.memory_allocated > high_memory_limit)
+   tmp_config.windows.memory_allocated = high_memory_limit;
+
+  sprintf(buff,"%d\0",tmp_config.windows.memory_allocated);*/
+
+  /*raise_error(displayfield_set_value(0,windows_window,WINDOWS_MEMORY_SUGGESTED,buff));*/
+
+  /*raise_error(numberrange_set_bounds(1,windows_window,WINDOWS_USER_ALLOCATED,calculate_memory_for_mode(0)/1024,0,0,0));*/
+
+  DEBUG debug_output("windows_menu_handler","On exit:\n");
+  DEBUG debug_output("windows_menu_handler","mode number = %d\n",tmp_config.windows.mode_number);
+  DEBUG debug_output("windows_menu_handler","colours     = %d\n",tmp_config.windows.colours);
+  /*DEBUG debug_output("windows_menu_handler","memory      = %d\n",tmp_config.windows.memory_allocated);*/
+  DEBUG debug_output("windows_menu_handler","function returns: %d\n",calculate_memory_for_mode(multiplier)/1024);
+
+  if(old_colours != tmp_config.windows.colours)
+  {
+    if(colours == 1)
+      raise_error(gadget_set_flags(0,windows_window,WINDOWS_USE_PALETTE,0));
+    else
+      raise_error(gadget_set_flags(0,windows_window,WINDOWS_USE_PALETTE,(unsigned)1<<31));
+  }
+
+  return(1);
+}
+
+int windows_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+{
+ NotUsed (handle);
+ NotUsed (event);
+ NotUsed (event_code);
+ 
+ if(id_block->self_component == WINDOWS_OK)
+  {
+    /*raise_error(numberrange_get_value(0,windows_window,WINDOWS_USER_ALLOCATED,&tmp_config.windows.memory_allocated));*/
+
+    raise_error(numberrange_get_value(0,windows_window,WINDOWS_FRAMESKIP,&tmp_config.windows.frameskip));
+    raise_error(optionbutton_get_state(0,windows_window,WINDOWS_FASTVIDEO,&tmp_config.windows.fastvideo));
+    raise_error(optionbutton_get_state(0,windows_window,WINDOWS_SWITCHLFB,&tmp_config.windows.switchlfb));
+    check_for_modified_data((int)&config.windows, (int)&tmp_config.windows, sizeof(config.windows));
+
+    config.windows = tmp_config.windows;
+
+    DEBUG debug_output("windows_window_click_handler","WWCH: config.windows.colours = %d\n",config.windows.colours);
+    DEBUG debug_output("windows_window_click_handler","WWCH: config.windows.mode_number = %d\n",config.windows.mode_number);
+  }
+
+  if(id_block->self_component == WINDOWS_USE)
+  {
+    /*char buffer[20];
+    raise_error(displayfield_get_value(0,windows_window, WINDOWS_MEMORY_SUGGESTED, buffer,20,0));
+    raise_error(numberrange_set_value(0,windows_window, WINDOWS_USER_ALLOCATED, atoi(buffer)));*/
+  }
+
+  if(id_block->self_component == WINDOWS_USE_PALETTE)
+  {
+    int state;
+    raise_error(optionbutton_get_state(0,windows_window,WINDOWS_USE_PALETTE,&state));
+    if(state)
+     tmp_config.windows.use_palette = TRUE;
+    else
+     tmp_config.windows.use_palette = FALSE;
+  }
+  return(1);
+}

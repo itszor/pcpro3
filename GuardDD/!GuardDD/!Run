@@ -1,0 +1,2 @@
+Set GuardDD$Dir <Obey$Dir>
+RMLoad <GuardDD$Dir>.GuardDD

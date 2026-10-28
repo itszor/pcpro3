@@ -1,0 +1,11 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.KBD - header file
+*
+*/
+
+
+/* EXPORTED ROUTINES */
+
+extern bool KBD_Init ( void );

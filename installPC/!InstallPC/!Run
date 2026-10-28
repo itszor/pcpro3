@@ -1,0 +1,44 @@
+| InstallPC
+|
+RMEnsure UtilityModule  3.50 Error 0 !PC will only work on an Acorn RISC PC; there's no point in installing it on anything else.
+
+If "<Wimp$ScrapDir>"="" Then Error 0 Can't find your !Scrap folder -- has the machine been properly booted?
+If "<Boot$Dir>"="" Then Error 0 Can't find your !Boot folder -- has the machine been properly booted?
+
+IfThere System:400.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:370.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:360.Modules.Toolbox Then Error 0 You appear to have Toolbox modules installed in the wrong place; please run !UpdateSys to correct this.
+IfThere System:SysPaths Then | Else Error 0 Your !System structure seems out-of-date; please run !UpdateSys to correct this
+Set InstallPCUnplugFound 0
+
+IfThere Boot:Choices.Boot.PreDesk.UnplugTBox Then Set InstallPCUnplugFound 1
+IfThere Boot:Utils.UnplugTBox Then Set InstallPCUnplugFound 1
+RMEnsure UtilityModule 4.00 If "<InstallPCUnplugFound>"="0" Then Error 0 Your !System structure seems out-of-date; please run !UpdateSys to correct this
+Unset InstallPCUnplugFound
+
+Set InstallPC$Dir <Obey$Dir>
+Set InstallPCRes$Path <Obey$Dir>.Resources.
+Set InstallPCApp$Path <Wimp$ScrapDir>.
+
+Wimpslot -min 32k -max 32k
+Unset Diva$Active
+Run InstallPCRes:DivaActive
+If "<Diva$Active>"="Yes" Then Error 0 Running the installer while !PC is still running is a very bad idea.  Please quit !PC and try again.
+Unset ReadWrite
+Run InstallPCRes:TestZip
+IF "<ReadWrite>"="No" Then Error 0 Please move !InstallPC out of an archive before attempting to run it!
+
+Unset InstallPC$ToolboxMod
+RMEnsure Toolbox  0.00 RMLoad System:Modules.Toolbox.Toolbox
+RMEnsure Window   0.00 RMLoad System:Modules.Toolbox.Window
+
+RMEnsure Toolbox  1.36 Set InstallPC$ToolboxMod Toolbox 1.36
+RMEnsure Window   1.43 Set InstallPC$ToolboxMod Window 1.43
+
+If "<InstallPC$ToolboxMod>"<>"" Then Error 0 Some or all of your Toolbox modules are outdated; please run !UpdateSys' to rectify this situation.
+
+Wimpslot -min 256k -max 256k
+
+Run <InstallPC$Dir>.!Runimage 2>null:$
+|Run <InstallPC$Dir>.!Runimage 2><InstallPC$Dir>.^.stderr
+

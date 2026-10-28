@@ -1,0 +1,37 @@
+
+struct old_ide_identify_block {
+  unsigned short int   configuration;
+  unsigned short int   cylinders;
+  unsigned short int   res1;
+  unsigned short int   heads;
+  unsigned short int   bytes_per_track;
+  unsigned short int   bytes_per_sector;
+  unsigned short int   sectors;
+  unsigned short int   vend0;
+  unsigned short int   vend1;
+  unsigned short int   vend2;
+  char                 serial_number[20];
+  unsigned short int   buffer_type;
+  unsigned short int   buffer_size; /* div 512 */
+  unsigned short int   ecc_buffer_size;
+  char                 firmware[8];
+  char                 model[40];
+  unsigned short int   m_sectors_between_interrupts; /* bottom 8 bits only */
+  unsigned short int   flags1;
+  unsigned short int   flags2;
+  unsigned short int   vend4;
+  unsigned short int   pio_cycle_time; /* top 8 bits */
+  unsigned short int   dma_cycle_time; /* top 8 bits */
+  unsigned short int   vend5;
+  unsigned short int   log_cylinders;
+  unsigned short int   log_heads;
+  unsigned short int   log_sectors_per_track;
+  unsigned long  int   bytes_per_logical_sector;
+  unsigned short int   sectors_between_interrupts; /* bottom 8 bits only */
+  unsigned long  int   lba_sectors;
+  unsigned char        single_dma_supported;
+  unsigned char        single_dma_active;
+  unsigned char        multi_dma_supported;
+  unsigned char        multi_dma_active;
+  /* 512 byte block, the rest reserved */
+};

@@ -1,0 +1,27 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.PALETTE   - Video Palette-related things
+*
+*
+*    08-01-92 INH  Original
+*/
+
+extern void  VID_UpdatePalette( void );
+/* Called when the palette or mode has changed */
+
+extern void  VID_PaletteBlinkCheck ( void );
+/* Called on poll event to check blinking */
+
+extern BYTE  VID_DACValues  [0x300];
+extern BYTE  VID_256colourXlate [256];
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,15 @@
+; CMHG file for !PC device module help module
+; 
+; 22-02-96 INH  Original
+
+help-string:  PC_Device_Help 2.02
+
+title-string: PCDevHelp
+
+initialisation-code: PCDVH_Init
+
+swi-handler-code:      PCDVH_SWI
+swi-chunk-base-number: 0x4CD00 
+swi-decoding-table:    PCDevHelp,
+   Init, RegisterIO, RegisterMem, RegisterDMA, RegisterEvent,
+   RegisterConfig, RegisterHPC, GetStructAddr

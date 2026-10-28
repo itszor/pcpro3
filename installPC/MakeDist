@@ -1,0 +1,29 @@
+Set PCSBoot <Obey$Dir>.!InstallPC.Resources.Boot
+Set PCSSoftware <Obey$Dir>.!InstallPC.Resources.Software
+Set PCSNetlinks <Obey$Dir>.!InstallPC.Resources.Netlinks
+
+Prefix <Obey$Dir>
+
+Echo ** Boot
+Copy ^.GuardDD.!GuardDD Boot.Choices.Boot.PreDesk.!GuardDD ~CF~V
+Copy ^.PCSleep.PCSleep Boot.Choices.Boot.PreDesk.PCSleep ~CF~V
+Prefix <Obey$Dir>.Boot
+zip -r -u -I <PCSBoot> *
+
+Echo ** Software
+Prefix <Diva$Dir>.^
+zip -r -u -I <PCSSoftware> !PC !PCConfig !MkBootDsc BugRep -x !PC.PCBits.ARMEdit.* !PC.PCBits.NetLinks.* !PC.PCBits.Sound.*
+
+Echo ** NetLinks
+Prefix <Diva$Dir>.PCBits
+zip -r -u -I <PCSNetLinks> NetLinks
+
+Settype <PCSBoot> Data
+Settype <PCSSoftware> Data
+Settype <PCSNetlinks> Data
+
+Echo ** Zipping the whole lot up
+Prefix <Obey$Dir>
+zip -r InstallPC/zip !InstallPC InstToolbox !NewSystem
+
+Echo ** Done

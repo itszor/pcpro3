@@ -1,0 +1,2 @@
+echo ************ ASSEMBLING Module.S.%0
+Cbin:Aasm  -From module.s.%0 -To bin.%0 -Module -Stamp -Quit

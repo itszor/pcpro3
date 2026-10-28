@@ -1,0 +1,11 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.NE2000 - header file
+*
+*/
+
+
+/* EXPORTED ROUTINES */
+
+extern bool NE2_Init ( void );

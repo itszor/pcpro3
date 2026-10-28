@@ -1,0 +1,50 @@
+/*
+ * Name   : Discs.h
+ * Desc   : Handlers for Discs component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 31-May-1995
+ */
+
+#ifndef __discs_h
+#define __discs_h
+
+
+/* Auto */
+
+extern void do_discs_initialise(void)
+;
+extern void update_discs_window(void)
+;
+extern void setup_discs_window(void)
+;
+extern int discs_data_save_handler(WimpMessage *message,void *handle)
+;
+extern int discs_window_wimp_handler(int event_code, WimpPollBlock *event, IdBlock *id_block, void *handle)
+;
+extern int discs_data_load_handler(WimpMessage *message,void *handle)
+;
+extern int discs_get_file_name(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+;
+extern void unshade_discs(int num)
+;
+extern void shade_discs(int num)
+;
+extern int discs_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+;
+extern int discs_window_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+;
+extern int discs_window_other_event_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle)
+;
+extern void update_partition_state(int drive)
+;
+extern void create_pc_partition(char *path_name)
+;
+extern int dragended_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+;
+extern int data_saveack_handler(WimpMessage *message,void *handle)
+;
+extern int create_fc8_handler(int event_code, ToolboxEvent *event, IdBlock *id_block, void *handle)
+;
+
+
+#endif

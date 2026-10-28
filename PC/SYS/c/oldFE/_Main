@@ -1,0 +1,1613 @@
+/*
+*    DivaPC C source
+*
+*    SYS.C.MAIN
+*
+*    main() function for DivaPC
+*
+*        23-01-92     Suspend/resume to desktop functions added
+*        26-03-92     Multitaking windowed FE added
+*        13-10-92     MPREQUIT message
+*        20-11-92     SAVEDESK new-line bug fix for 1.01
+*        21-12-92     Now includes PagedInFlag bits
+*        15-04-93     Autostart flag
+*        05-07-94     HoldOff when focus lost
+*       1997.03.27 W  move RISCOSlevel fn here from dev.Fdd.c
+* 2.11  1997.09.20 W  Add start-up banner & check for SA present (used for RAM init cache nobble)
+* 2.15  1997.10.14 RW VESARAM single copy of screen option
+* 2.17  1997.11.26 W  TidyUp fn added to LoseFocus and shutdown neatly even on HPC QUIT exit
+* 2.18  1997.01.21 W  Fixed '!PC hanging around on quit' bug (spurious event_process)
+* 2.19  1998.01.25 MB Added multitasking speed window
+*       1998.02.03 MB Re-organised menus / MTask window a little (we now have a full-screen button)
+*       1998.02.16 MB Added toolbar and dynamic claiming of COM / LPT ports
+* 2.21  1998.03.16    Show config function added
+* 2.21a 1998.03.23    Fixed a few things people complained about; window
+*                       centering is less brain-dead, toolbar doesn't jump
+*                       and is smaller now (W), reset works in VESA 2 modes,
+* 2.21b 1998.04.02    Added UseWindowFE option back in for convenience
+*
+*/
+
+#include <string.h>   /* For memcpy */
+#include <stdlib.h>   /* For system */
+
+/* WIMP includes ********************** */
+
+#include "wimp.h"
+#include "wimpt.h"
+#include "win.h"
+#include "event.h"
+#include "baricon.h"
+#include "res.h"
+#include "resspr.h"
+#include "menu.h"
+#include "template.h"
+#include "dbox.h"
+#include "sprite.h"
+#include "colourtran.h"
+#include "saveas.h"
+#include "kernel.h"
+#include "os.h"
+#include "swis.h"
+#include "msgs.h"
+
+#ifndef wimp_MWINDOWINF
+#define wimp_MWINDOWINF 0x400cc           /* Borris, 19-05-95 */
+#endif
+
+/* Our includes ****************************** */
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "sys.h.cpu"
+#include "sys.h.devices"
+#include "sys.h.hrdstate"
+#include "sys.h.FEstate"
+#include "sys.h.WFEbits"
+#include "sys.h.MainS"
+#include "sys.h.ext"
+#include "dev.h.multi_io"
+
+#include "module.h.pcsupport"
+#include "vid.h.ports"  /* for Save_VESA fn */
+#include "vid.h.modes"
+#include "vid.h.mouse"
+
+#include "cpu.h.cpu"
+
+/* Menu items */
+
+#define MainMenuItem_connect  1
+#define MainMenuItem_ports    2
+#define MainMenuItem_saveS    3
+#define MainMenuItem_saveT    4
+#define MainMenuItem_showtb   5
+#define MainMenuItem_stask    6
+#define MainMenuItem_reset    7
+#define MainMenuItem_quit     8
+
+#define IconMenuItem_info     1
+#define IconMenuItem_showcfg  2
+#define IconMenuItem_showtb   3
+#define IconMenuItem_freeze   4
+#define IconMenuItem_stask    5
+#define IconMenuItem_reset    6
+#define IconMenuItem_quit     7
+
+#define RestartMenuItem_restart 1
+
+#define PortMenuItem_com        1
+#define PortMenuItem_lpt        2
+#define PortMenuItem_turbo      3
+
+/* Buttons on multitasking window */
+
+#define Tools_spd_disp  0
+#define Tools_spd_down  1
+#define Tools_spd_up    2
+#define Tools_spd_sel   3
+#define Tools_reset     4
+#define Tools_fullscreen 6
+#define Tools_freeze    7
+#define Tools_com       8
+#define Tools_lpt       9
+#define Tools_turbo     10
+#define Tools_fastvesa  11
+#define Tools_skip_down 12
+#define Tools_skip_up   13
+#define Tools_skip_disp 14
+#define Tools_skip_sel  15
+#define Tools_connect   16
+#define Tools_vfloppy   17
+
+/*#define Tools_close     9*/
+
+int RISCOSlevel;
+bool SApresent;       /* StrongARM detected if true. Used for memory allocation*/
+
+
+/* WIMP variables *********************************************** */
+
+static menu main_menu, icon_menu, restart_menu, port_menu;
+
+static wimp_w main_window, tools_window;
+
+static BOOL window_is_open = false;/*, toolbar = false;*/
+
+static void toolbar_position(void);
+static void toolbar_toggle(void);
+static void OpenAndStartWindow(void);
+
+/* Find Version of RISCOS in use ******************************** */
+
+static int GuessRISCOSversion() /* returns 3 for RISCOS 3 */
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = 129;
+  R.r[1] = 0;
+  R.r[2] = 255;
+  _kernel_swi ( OS_Byte, &R, &R );
+
+  if ( R.r[1] >= 0xA3 )
+    return 3;
+
+  return 2;
+}
+
+/* test for presence of StrongARM */
+
+static bool CheckForSA()
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  R.r[0] = 0;
+  err = _kernel_swi ( 0x6D /*OS_PlatformFeatures*/, &R, &R );
+
+  if ( (err == NULL) && ((R.r[0] & 0x1F) == 0x1F) ) /* SA present if SWI recognised & bits 0-4 set*/
+  {
+    SYS_trace ("StrongARM detected");
+    return TRUE;
+  }
+  else
+
+  return FALSE;
+
+}
+/* Device modules functions ***************************************** */
+
+#define Service_PCDevice 0x77
+
+static bool DeviceMod_Init(void)
+{
+ os_swi4 (OS_ServiceCall,
+          0,
+          Service_PCDevice,
+          (int) &SYS_State,
+          (int) &SYS_FEState );
+
+  return true;
+}
+
+/* FlushBufferBodge() *************************************************** */
+
+/* If the user selects '*Commands' from the Task Manager menu, we are not
+   sent a LoseFocus message (it's a bug!). If we had focus at the time,
+   we would get all the keystrokes which the user typed for *Commands.
+   As a get-round, we flush the keyboard buffer every time there is a
+   mode change - which happens at the end of each *Commands session.
+*/
+
+static void FlushBufferBodge()
+{
+  os_swi0 ( PCSupport_KeyFlush );
+}
+
+/* Window Size/Position update routines ********************************* */
+
+
+
+
+
+/* SYS_UpdateWindowPos() ================================================ */
+
+/* This simply sets the SYS_FEState window position variables to their
+   correct values (used by the mouse pointer positioning logic).
+   It should be called every time the window is opened or moved.
+*/
+
+static void SYS_UpdateWindowPos()
+{
+  wimp_wstate state;
+
+  if (CFG.UseWindowFE)
+    return;
+
+  wimpt_noerr(wimp_get_wind_state(main_window, &state));
+
+  SYS_FEState.ArmLeftX   = state.o.box.x0 - state.o.x;
+  SYS_FEState.ArmBottomY = state.o.box.y1 - state.o.y;
+  SYS_FEState.WinXmin    = state.o.box.x0;
+  SYS_FEState.WinYmin    = state.o.box.y0;
+  SYS_FEState.WinXmax    = state.o.box.x1;
+  SYS_FEState.WinYmax    = state.o.box.y1;
+}
+
+
+/* SYS_UpdateTextSaveOption() =========================================== */
+
+/* Enables or disables the 'Save Text' menu option according to screen
+   mode.
+*/
+
+static void SYS_UpdateTextSaveOption()
+{
+  /* Make text-save option available or not */
+  if (SYS_FEState.GetTextFn != NULL )
+    menu_setflags(main_menu, MainMenuItem_saveT, 0, 0);
+  else
+    menu_setflags(main_menu, MainMenuItem_saveT, 0, -1);
+}
+
+
+
+/* SYS_UpdateSizeMapping() ============================================== */
+
+/* UpdateSizeMapping alters the window extents & sizes, etc, according
+   to the current WIMP and PC modes. It is called when either mode changes.
+   NB. It should be called after WFE_ModeSetup() to ensure the Xratio and
+   Yratio variables are correct.
+
+   W: if riscos mode gets smaller PCscreen can be left too big - need to suss
+out why....
+*/
+
+static void SYS_UpdateSizeMapping(void)
+{
+  wimp_wind *window;
+  wimp_wstate state;
+  wimp_redrawstr red;
+  int oex, oey;
+  int makesmall = FALSE, makebig = FALSE;
+
+  if ( SYS_FEState.FullFErunning )
+    return;
+
+  /* Get the info about the extent and current open state */
+
+  window = template_syshandle("PCScreen");
+  if (window == 0)
+    SYS_error( true, "ietemplate");
+  wimpt_noerr(wimp_get_wind_state(main_window, &state));
+
+  window->ex.x0 = 0;
+  window->ex.y0 = 0;
+
+  oex = window->ex.x1;
+  oey = window->ex.y1;
+
+  window->ex.x1 = SYS_FEState.Xratio * SYS_FEState.Xpixels;
+  window->ex.y1 = SYS_FEState.Yratio * SYS_FEState.Ypixels;
+
+  if (((state.o.box.x1 - state.o.box.x0) == oex))
+  {
+    /* Already full size, so open full size again (even if bigger) */
+    state.o.box.x1 = state.o.box.x0 + window->ex.x1;
+    makebig = TRUE;
+  }
+  else
+  {
+    /* Fix the right edge of the window */
+
+    if ((state.o.box.x1 - state.o.box.x0 + state.o.x) > window->ex.x1)
+    {
+      state.o.x = 0;
+
+      if ((state.o.box.x1 - state.o.box.x0) > window->ex.x1)
+      {
+        state.o.box.x1 = window->ex.x1 + state.o.box.x0;
+      }
+      makesmall = TRUE;
+    }
+  }
+
+  if (((state.o.box.y1 - state.o.box.y0) == oey))
+  {
+    /* Already full size, so open full size again (even if bigger) */
+    state.o.box.y0 = state.o.box.y1 - window->ex.y1;
+    makebig = TRUE;
+  }
+  else
+  {
+    /* Fix the BOTTOM edge of the window */
+
+    if (state.o.y > window->ex.y1)
+    {
+      state.o.y = window->ex.y1;
+
+      if ((state.o.box.y1 - state.o.box.y0) > window->ex.y1)
+      {
+        state.o.box.y0 = state.o.box.y1 - window->ex.y1;
+      }
+      makesmall = TRUE;
+    }
+  }
+
+  /* Reopen the window in case we changed its size */
+
+  if (window_is_open && makesmall)
+    wimpt_noerr(wimp_open_wind(&state.o));
+
+  /* Reset the extent */
+
+  red.w = main_window;
+  red.box = window->ex;
+
+  wimpt_complain(wimp_set_extent(&red));
+
+  /* Reopen it again incase we made it bigger */
+
+  if (window_is_open && makebig)
+    wimpt_noerr(wimp_open_wind(&state.o));
+
+  SYS_UpdateWindowPos();
+}
+
+
+/* RedrawWindow() ****************************************************** */
+
+static void RedrawWindow(wimp_w handle)
+{
+  /* This should ONLY be called by the main window function */
+  int more;
+  wimp_redrawstr r;
+
+  /* Start the redraw */
+  r.w = handle;
+  wimpt_noerr(wimp_redraw_wind(&r, &more));
+
+  /* Do the redraw loop */
+  while (more)
+  {
+    /* Plot the sprite to the screen here */
+    WFE_RedrawBox ( &r.g, r.box.x0 - r.scx, r.box.y1 - r.scy );
+    wimp_get_rectangle(&r, &more);
+  }
+}
+
+/* ************************************************ */
+
+/* RedrawNow directly redraws a part of the screen; it is given
+   work area co-ordinates of the rectangle to be redone.
+*/
+
+static void RedrawNow( int x0, int y0, int x1, int y1 )
+{
+  int more;
+  wimp_redrawstr r;
+
+  r.w = main_window;
+  r.box.x0 = x0;
+  r.box.x1 = x1;
+  r.box.y0 = y0;
+  r.box.y1 = y1;
+
+  wimp_update_wind(&r, &more);
+
+  /* Do the redraw loop */
+  while (more)
+  {
+    /* Plot the sprite to the screen here */
+    WFE_RedrawBox ( &r.g, r.box.x0 - r.scx , r.box.y1 - r.scy );
+    wimp_get_rectangle(&r, &more);
+  }
+
+}
+
+/* *************************************** */
+
+static void RedrawChangedBits()
+{
+  /* This is called while the emulation is running, for update */
+
+
+  /* Do the redraw */
+
+  RedrawNow( SYS_FEState.Xratio* SYS_FEState.ChgdXmin,
+             SYS_FEState.Yratio*(SYS_FEState.Ypixels-SYS_FEState.ChgdYmax-1),
+             SYS_FEState.Xratio*(SYS_FEState.ChgdXmax+1),
+             SYS_FEState.Yratio*(SYS_FEState.Ypixels-SYS_FEState.ChgdYmin)
+           );
+
+  /* Clear the box, ready for next time */
+
+  SYS_FEState.ChgdXmax = 0;
+  SYS_FEState.ChgdXmin = 999999;
+  SYS_FEState.ChgdYmax = 0;
+  SYS_FEState.ChgdYmin = 999999;
+  SYS_FEState.RedrawDelay = 0;
+}
+
+/* ************************************************ */
+
+static void RedrawScrolledBits()
+{
+  wimp_box       b;
+  wimp_wstate    state;
+  int dy;
+
+    wimpt_noerr(wimp_get_wind_state(main_window, &state));
+
+    dy = SYS_FEState.VertScroll * SYS_FEState.Yratio;
+
+    /* Do a wimp_blockcopy only on part of work area within window
+       ('cos it messes up the clipping rectangle otherwise) */
+
+    b.x0=state.o.x;
+    b.y0=state.o.y + state.o.box.y0 - state.o.box.y1;
+    b.x1=state.o.x + state.o.box.x1 - state.o.box.x0;
+    b.y1=state.o.y-dy;
+
+    wimp_blockcopy( main_window, &b, b.x0, b.y0+dy);
+
+    /* Then redraw the bottom 'dy' lines of the window */
+
+    SYS_FEState.ChgdYmin -= SYS_FEState.VertScroll;
+
+    RedrawNow ( b.x0, b.y0, b.x1, b.y0 + dy );
+
+    SYS_FEState.VertScroll = 0;
+
+}
+
+/* ************************************************ */
+
+static int NextRedrawTime = 0;
+
+static void StartRedrawTimer ( int dly )
+{
+  /* t is time to next full redraw */
+
+  int t = NextRedrawTime - SYS_GetTime();
+
+  if ( t > dly )
+    NextRedrawTime = SYS_GetTime() + dly;
+}
+
+/* -------------------------- */
+
+static bool RedrawNeeded()
+{
+  /* Do whole-screen redraw timer */
+
+  if ( NextRedrawTime - SYS_GetTime() <= 0 )
+  {
+    SYS_FEState.ChgdXmax = SYS_FEState.Xpixels-1;
+    SYS_FEState.ChgdYmax = SYS_FEState.Ypixels-1;
+    SYS_FEState.ChgdXmin = 0;
+    SYS_FEState.ChgdYmin = 0;
+    NextRedrawTime = SYS_GetTime() + 500; /* Redraw every 5 secs */
+    return true;
+  }
+
+  /* If nothing to do, exit */
+
+  if ( SYS_FEState.RedrawDelay == 0 ||
+       SYS_FEState.ChgdXmax < SYS_FEState.ChgdXmin ||
+       SYS_FEState.ChgdYmax < SYS_FEState.ChgdYmin )
+    return false;
+
+  /* Otherwise, decrement timer and redraw when it expires */
+  return (--SYS_FEState.RedrawDelay == 0);
+}
+
+
+/* Emulation running routines **************************************** */
+
+/* Should be called when the Wimp mode changes, so that it can
+   be correctly restored on finishing full-screen mode
+*/
+
+static ModeSelector WimpModeInfo;
+
+static void SaveWimpMode(void)
+{
+  wimpt_checkmode();
+  SYS_FEState.WimpMode.ModeNum = wimpt_mode();
+
+  if ( SYS_FEState.WimpMode.ModeNum > 255 )
+  {
+    WimpModeInfo = *SYS_FEState.WimpMode.pModeSel;
+    WimpModeInfo.ModeVars[0] = -1;
+    SYS_FEState.WimpMode.pModeSel = &WimpModeInfo;
+  }
+}
+
+/* ------------------------------------ */
+
+static void RunInFullScreenMode()
+{
+  /* Save current desktop mode */
+  SaveWimpMode();
+
+  SYS_FEState.SuspendRequest = false;
+
+  SYS_FEState.Activity = 3;
+  SYS_FEState.FullFErunning = true;
+  SYS_callEvent ( SYS_StartFE );
+
+  do
+  {
+    if ( SYS_FEState.ResetRequest )
+    {
+      SYS_FEState.ResetRequest = false;
+      SYS_callEvent ( SYS_HardReset );
+      SYS_FEState.Activity = 20;
+    }
+
+    CPU_Run(false);
+    SYS_callEvent ( SYS_PollChain );
+    SYS_FEState.Activity--;
+  }
+    while ( !SYS_FEState.SuspendRequest || SYS_FEState.Activity > 0 );
+
+  /* Suspend CPU */
+
+  if (!SYS_ErrorPending)
+    VID_SaveVESA();
+  SYS_ErrorPending = false;
+  CPU_Run(true);
+  SYS_callEvent ( SYS_StopFE );
+  SYS_FEState.FullFErunning = false;
+
+  wimp_setmode(SYS_FEState.WimpMode.ModeNum);   /* Restore WIMP mode */
+}
+
+
+/* ************************************************ */
+
+/* ChangeIcon-- to reduce code size and flicker
+ *
+ * pass NULL in pointers or -1 for flags to mean 'no change'
+ *
+ * function will read the state of the icon before explicity changing it,
+ * since the WIMP will redraw whatever happens
+ */
+static void ChangeIcon(wimp_w w, int i, char *txt, int selected, int greyed)
+{
+  wimp_icon     icon;
+
+  if (selected == -1)
+    selected = icon.flags & wimp_ISELECTED;
+  if (greyed == -1)
+    greyed = icon.flags & wimp_INOSELECT;
+
+  if (selected) selected = wimp_ISELECTED;
+  if (greyed)   greyed   = wimp_INOSELECT;
+
+  wimp_get_icon_info(w, i, &icon);
+
+  if (txt == NULL)
+    txt = icon.data.indirecttext.buffer;
+
+  if ( strcmp(icon.data.indirecttext.buffer, txt) != 0 ||
+     ((icon.flags & wimp_ISELECTED) != selected) ||
+     ((icon.flags & wimp_INOSELECT) != greyed)
+     )
+  {
+    if (txt != icon.data.indirecttext.buffer)
+      strcpy(icon.data.indirecttext.buffer, txt);
+    wimp_set_icon_state(w, i, selected | greyed,
+                        wimp_ISELECTED | wimp_INOSELECT);
+  }
+
+}
+
+/* Call to update ticks on menu items, checked boxes etc. */
+
+static bool LFBWarned = false;
+
+static void UpdateToolsWindow(void)
+{
+  /*wimp_icon     icon;*/
+  char          text[4];
+  enum page_copying_states pc = VID_PageCopyingStatus();
+  int           spd;
+
+  if (SYS_FEState.HasInputFocus)
+    spd = CFG.WindFocusSpeed; else spd = CFG.WindNoFocusSpeed;
+  sprintf(text, "%d\n", spd);
+  ChangeIcon(tools_window, Tools_spd_disp, text, -1, !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_spd_sel,   NULL, SYS_FEState.HasInputFocus, !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_freeze,    NULL, !SYS_FEState.WinFErunning, SYS_FEState.DirectScreenAccess);
+  ChangeIcon(tools_window, Tools_lpt,       NULL, LPT_Open, !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_com,       NULL, COM_Open, !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_turbo,     NULL, CFG.TurboDriverBodge, !LPT_Open || !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_fastvesa,  NULL, CFG.FastVESA, pc == off);
+  sprintf(text, "%d\n", CFG.FastVESASkip);
+  ChangeIcon(tools_window, Tools_skip_disp, text, -1, pc != copy_on_vsync || !CFG.FastVESA);
+  ChangeIcon(tools_window, Tools_skip_sel,  NULL, -1, pc != copy_on_vsync || !CFG.FastVESA);
+  ChangeIcon(tools_window, Tools_connect,   NULL, MOU_Connected, !SYS_FEState.WinFErunning);
+  ChangeIcon(tools_window, Tools_vfloppy,   NULL, CFG.VFloppy, 0);
+
+  /*menu_setflags(main_menu, MainMenuItem_freeze, !SYS_FEState.WinFErunning, 0);*/
+  menu_setflags(port_menu, PortMenuItem_com, COM_Open, !SYS_FEState.WinFErunning);
+  menu_setflags(port_menu, PortMenuItem_lpt, LPT_Open, !SYS_FEState.WinFErunning);
+  menu_setflags(port_menu, PortMenuItem_turbo, CFG.TurboDriverBodge, !LPT_Open || !SYS_FEState.WinFErunning);
+
+  menu_setflags(main_menu, MainMenuItem_showtb, CFG.Toolbar, 0);
+  /* There's a certain zen to this next statement.  Does it actually matter
+  ** whether the menu is ticked to indicate that the mouse is connected,
+  ** when you cannot see this menu until you disconnect the menu and
+  ** untick the mouse?  For the benefit of cosmic harmony, this menu will in
+  ** fact be ticked when the mouse is connected.
+  */
+  menu_setflags(main_menu, MainMenuItem_connect, MOU_Connected, !SYS_FEState.WinFErunning);
+
+  menu_setflags(icon_menu, IconMenuItem_showtb, CFG.Toolbar, 0);
+  menu_setflags(icon_menu, IconMenuItem_freeze, !SYS_FEState.WinFErunning, SYS_FEState.DirectScreenAccess);
+
+  if (SYS_FEState.DirectScreenAccess && !LFBWarned)
+  {
+    LFBWarned = true;
+    SYS_error( FALSE, "linearfb" );
+  }
+
+  return;
+}
+
+static void StartWindowRunning()
+{
+  /*sprite_state  temp_spr_state;*/
+
+  if (SYS_FEState.WinFErunning || SYS_FEState.DirectScreenAccess && !SYS_FEState.ResetRequest)
+    return;
+
+  SaveWimpMode();
+  SYS_FEState.WinFErunning = true;
+  SYS_callEvent ( SYS_StartWinFE );
+  event_setmask(event_getmask() & ~wimp_EMNULL);
+  /*menu_setflags ( icon_menu, IconMenuItem_freeze, 0, 0 );*/
+  /*menu_setflags ( main_menu, MainMenuItem_freeze, 0, 0 );*/
+  UpdateToolsWindow();
+}
+
+/* ********************************** */
+
+static void StopWindowRunning()
+{
+  if (!SYS_FEState.WinFErunning )
+    return;
+
+  event_setmask(event_getmask()|wimp_EMNULL);
+  SYS_callEvent ( SYS_StopWinFE );
+  SYS_FEState.FreezeRequest = false;
+  SYS_FEState.WinFErunning = false;
+  /*menu_setflags ( icon_menu, IconMenuItem_freeze, -1, 0 );*/
+  /*menu_setflags ( main_menu, MainMenuItem_freeze, -1, 0 );*/
+
+  UpdateToolsWindow();
+}
+
+
+/* ************************************ */
+
+static int HoldOff=0;
+
+static void RunInWindowMode()
+{
+  int PollingLimit;
+
+  if (!SYS_FEState.WinFErunning )
+    return;
+
+  if (!CFG.UseWindowFE || !SYS_FEState.HasInputFocus )
+    /* If no input focus, or not using winFE, do a go-slow */
+  {
+    if ( HoldOff-- > 0 ) return;
+    SYS_FEState.Activity = CFG.WindNoFocusSpeed;
+    HoldOff = CFG.WindNoFocusHoldoff;
+  }
+  else
+  {
+    SYS_FEState.Activity = CFG.WindFocusSpeed;
+    HoldOff = 0;
+  }
+
+  PollingLimit = SYS_GetTime();
+
+  if ( SYS_FEState.ResetRequest )
+  {
+    SYS_FEState.ResetRequest = false;
+    SYS_FEState.DirectScreenAccess = false;
+    SYS_FEState.Activity = 20;
+    SYS_callEvent ( SYS_HardReset );
+  }
+
+  do
+  {
+    CPU_Run(false) ;
+    SYS_callEvent (SYS_PollChain);
+
+    if ( SYS_FEState.ModeChanged )
+    {
+      SYS_UpdateTextSaveOption();
+      LFBWarned = false;
+      UpdateToolsWindow();
+      if ( CFG.UseWindowFE )
+      {
+        SYS_UpdateSizeMapping();
+        WFE_ModeSetup();
+      }
+      if (CFG.UseWindowFE && CFG.Toolbar)
+        toolbar_position();
+      SYS_FEState.ModeChanged = false;
+    }
+
+    if ( CFG.UseWindowFE && SYS_FEState.PaletteChanged )
+    {
+      WFE_PaletteSetup();
+      StartRedrawTimer(5);
+    }
+
+    /*SYS_trace("%08x = %d", VID_VSyncUpdated, *VID_VSyncUpdated);*/
+
+    if ( CFG.UseWindowFE && *VID_VSyncUpdated != false )
+    {
+      *VID_VSyncUpdated = false;
+      VID_DoChangedRegion(0, VID_ImageSize);
+      /*SYS_trace("update!");*/
+    }
+
+    if ( CFG.UseWindowFE && SYS_FEState.VertScroll > 0 )
+      RedrawScrolledBits();
+
+    if ( CFG.UseWindowFE && RedrawNeeded() )
+      RedrawChangedBits();
+
+    SYS_FEState.Activity--;
+    if ( SYS_GetTime()-PollingLimit > 500 )  /* Never do > 5secs in one go */
+      break;
+
+  }
+    while (  SYS_FEState.Activity>0 ||
+            (CFG.UseWindowFE * SYS_FEState.RedrawDelay>0)
+          );
+
+  /* Finished run; now pause the CPU */
+
+  CPU_Run(true);
+
+  if (SYS_FEState.DirectScreenAccess)
+    SYS_FEState.FreezeRequest = true;
+}
+
+
+
+/* Front End Subroutines ************************************************ */
+
+static void ObtainCaret()   /* Called to place the caret in main_window */
+{
+  wimp_caretstr caret;
+
+  /* Give our window the input focus */
+
+  caret.w = main_window;
+  caret.i = -1;
+  caret.x = caret.y = 0;
+  caret.height = 0;
+  caret.index = 0;
+
+  wimpt_noerr(wimp_set_caret_pos(&caret) );
+}
+
+static void LoseCaret()   /* Called to place the caret in main_window */
+{
+  wimp_caretstr caret;
+
+  /* Give our window the input focus */
+
+  caret.w = -1;
+  caret.i = -1;
+  caret.x = caret.y = 0;
+  caret.height = 0;
+  caret.index = 0;
+
+  wimpt_noerr(wimp_set_caret_pos(&caret) );
+}
+
+/* ************************************************* */
+
+static void FocusGained()
+{
+  if ( !SYS_FEState.HasInputFocus )
+  {
+    SYS_FEState.HasInputFocus = true;
+    SYS_callEvent ( SYS_GainFocus );
+  }
+  UpdateToolsWindow();
+}
+
+/* ************************************************* */
+
+static void FocusLost()
+{
+  if ( SYS_FEState.HasInputFocus )
+  {
+    SYS_callEvent ( SYS_LoseFocus );
+    SYS_FEState.HasInputFocus = false;
+  }
+  UpdateToolsWindow();
+}
+
+static char *claim_com, *claim_lpt;
+
+/* Called to check availability of serial / parallel ports
+**
+** For each port that you care about, pass a pointer to a string buffer.
+** If any task has claimed that port, the buffer will be filled with the
+** name of the task that's claimed it, otherwise it'll be left unchanged.
+*/
+extern void SYS_PollDevices(char *parallel, char *serial)
+{
+  wimp_msgstr msg;
+
+  msg.hdr.size = sizeof(wimp_msgstr); msg.hdr.your_ref = 0;
+  msg.hdr.action = wimp_MDEVICECLAIM;
+
+  /* Broadcast device claim messages */
+
+  msg.data.device.major = 1; msg.data.device.minor = 0; /* Parallel port */
+  strcpy(msg.data.device.information, "PC Card");
+  if (parallel != NULL)
+    wimp_sendmessage(wimp_ESEND, &msg, 0);
+
+  msg.data.device.major = 2; msg.data.device.minor = 0; /* Serial port */
+  strcpy(msg.data.device.information, "PC Card");
+  if (serial != NULL)
+    wimp_sendmessage(wimp_ESEND, &msg, 0);
+
+  claim_com = serial; claim_lpt = parallel;
+  event_process();
+}
+
+/* Main Window Function *********************************************** */
+
+static os_error *put_ro_string(int h, char *s)
+{
+  os_error *e;
+
+  while (*s)
+  {
+    if ((e = os_swi2(OS_BPut, *s++, h)) != NULL)
+      return e;
+  }
+
+  return NULL;
+}
+
+static void main_event_handler(wimp_eventstr *e, void *handle)
+{
+  wimp_msgstr reply;
+
+  handle = handle;
+  if (!CFG.UseWindowFE)
+    return;
+
+  /* Deal with event */
+  switch (e->e)
+  {
+    case wimp_ENULL:
+      RunInWindowMode();
+      if ( SYS_FEState.FreezeRequest )
+        StopWindowRunning();
+      break;
+
+    case wimp_EREDRAW:
+      RedrawWindow(e->data.o.w);
+      break;
+
+    case wimp_EOPEN:
+      wimpt_noerr(wimp_open_wind(&e->data.o));
+      SYS_UpdateWindowPos();
+      if (CFG.Toolbar)
+        toolbar_position();
+      break;
+
+    case wimp_EBUT:  /* Button click: double puts us in full-screen mode */
+      if (e->data.but.m.bbits & (wimp_BRIGHT | wimp_BLEFT))
+      {
+        FocusLost();
+        StopWindowRunning();
+        RunInFullScreenMode();
+        OpenAndStartWindow();
+      }
+      else if (e->data.but.m.bbits & (wimp_BCLICKRIGHT | wimp_BCLICKLEFT))
+      {
+        ObtainCaret();
+        StartWindowRunning();
+        FocusGained();
+      }
+      break;
+
+    case wimp_ECLOSE:  /* Pass on close request */
+      FocusLost();
+      StopWindowRunning();
+      wimpt_noerr(wimp_close_wind(e->data.o.w));
+      wimpt_noerr(wimp_close_wind(tools_window));
+      window_is_open = false;
+      break;
+
+    case wimp_EGAINCARET:  /* Gain input focus */
+      if (e->data.c.w == main_window )
+        FocusGained();
+      break;
+
+    case wimp_ELOSECARET:  /* Lose input focus */
+      if (e->data.c.w == main_window )
+        FocusLost();
+      return;
+
+    case wimp_ESEND:
+    case wimp_ESENDWANTACK:
+      switch (e->data.msg.hdr.action)
+      {
+        case wimp_MMODECHANGE:
+          SaveWimpMode();
+          WFE_ModeSetup();
+          SYS_UpdateSizeMapping();
+          colourtran_invalidate_cache();
+          WFE_PaletteSetup();
+          FlushBufferBodge();
+          return;
+
+        case wimp_PALETTECHANGE:
+          colourtran_invalidate_cache();
+          WFE_PaletteSetup();
+          return;
+
+        case wimp_MPREQUIT:
+          FocusLost();
+          StopWindowRunning();
+          SYS_FEState.QuitRequest = true;
+          return;
+
+        case wimp_MWINDOWINF:      /* New for RISCOS 3 */
+          {
+	      typedef struct
+	      {
+	          wimp_w w;
+	          int reserved;
+	          char icon_name[8];
+	          char icon_title[20];
+	      } msg_windowinf;     /* Borris, 19-05-95 */
+
+              wimp_msgstr *m = &e->data.msg;
+              msg_windowinf *mwi = (msg_windowinf *) m->data.chars;
+
+              strcpy(mwi->icon_name, "aleph");
+              strcpy(mwi->icon_title, "PC Card");
+
+              m->hdr.your_ref = m->hdr.my_ref;
+              m->hdr.size = 20 + sizeof(msg_windowinf);
+
+              wimpt_noerr(wimp_sendmessage(wimp_ESEND, m, m->hdr.task));
+          }
+          break;
+
+       case wimp_SAVEDESK:
+          {
+            int h = e->data.msg.data.savedesk.filehandle;
+            char buffer[256];
+
+            os_read_var_val("Diva$Dir", buffer, 256);
+            if (buffer[0] != 0)
+            {
+              put_ro_string(h, "Run ");
+              put_ro_string(h, buffer);
+              put_ro_string(h, "\n");
+            }
+          }
+          break;
+
+       case wimp_MDEVICECLAIM :
+         /* If anyone else asks to claim ports we're using */
+         e->data.msg.hdr.size = sizeof(wimp_msgstr);
+         e->data.msg.hdr.your_ref = 0;
+         e->data.msg.hdr.action = wimp_MDEVICEINUSE;
+         if (e->data.msg.data.device.minor != 0 ||
+             e->data.msg.hdr.task == wimpt_task())
+           break; /* don't object to own messages! */
+         /*SYS_error(false, "deviceclaim");*/
+         strcpy(e->data.msg.data.device.information, "PC Card");
+         if (e->data.msg.data.device.major == 1 && LPT_Open)
+           wimp_sendmessage(wimp_ESEND, &(e->data.msg), e->data.msg.hdr.task);
+         if (e->data.msg.data.device.major == 2 && COM_Open)
+           wimp_sendmessage(wimp_ESEND, &(e->data.msg), e->data.msg.hdr.task);
+         break;
+
+       case wimp_MDEVICEINUSE :
+         /* If another task objects to our claiming a port */
+         if (e->data.msg.data.device.minor != 0) break;
+         if (e->data.msg.data.device.major == 1 && claim_lpt != NULL)
+           strcpy(claim_lpt, e->data.msg.data.device.information);
+         if (e->data.msg.data.device.major == 2 && claim_com != NULL)
+           strcpy(claim_com, e->data.msg.data.device.information);
+         break;
+
+        default:
+          break;
+
+      }
+
+    default:
+      break;
+  }
+
+}
+
+/* ************************************************* */
+
+static void OpenAndStartWindow() /* Opens the window, gives it focus, etc */
+{
+  wimp_eventstr fake_e;
+  int           sx, sy, w, h;
+
+  fake_e.e = wimp_EOPEN;
+
+  if (wimpt_complain(wimp_get_wind_state(main_window, (wimp_wstate*) &fake_e.data.o)) != 0)
+    return;
+
+  /* Ensure screen mode variables are initialised */
+  WFE_ModeSetup();
+  WFE_PaletteSetup();
+  SYS_UpdateSizeMapping();
+
+  if (!window_is_open)
+  {
+    get_screen_size(&sx, &sy);
+    w = fake_e.data.o.box.x1 - fake_e.data.o.box.x0;
+    h = fake_e.data.o.box.y1 - fake_e.data.o.box.y0;
+    fake_e.data.o.box.x0 = (sx>>1) - (w>>1);
+    fake_e.data.o.box.x1 = fake_e.data.o.box.x0 + w;
+    fake_e.data.o.box.y0 = (sy>>1) - (h>>1);
+    fake_e.data.o.box.y1 = fake_e.data.o.box.y0 + h;
+
+    fake_e.data.o.behind = -1;     /* Make sure window is opened in front */
+    main_event_handler(&fake_e, NULL);
+  }
+  FocusGained();
+  ObtainCaret();
+
+  window_is_open = TRUE;
+
+  /* Start the emulation */
+  if (CFG.Toolbar) toolbar_position();
+  StartWindowRunning();
+}
+
+/*static void OpenToolsWindow(void)
+{
+  wimp_wstate   state;
+
+  if (wimpt_complain(wimp_get_wind_state(tools_window, &state)) != 0)
+    return;
+
+  state.o.behind = -1;*/          /* Make sure window is opened in front */
+
+/*  wimpt_noerr(wimp_open_wind(&state.o));
+}*/
+
+/* Handler for left click on the icon ************* */
+
+static void IconClickFn (wimp_i icon)
+{
+  icon = icon; /* We don't need the handle: this stops compiler warning */
+
+  if ( CFG.UseWindowFE )
+    OpenAndStartWindow();
+  else
+    RunInFullScreenMode();
+}
+
+
+/* Event function to tidy up system on exit */
+static bool TidyUp()
+{
+      FocusLost();
+      StopWindowRunning();
+      return false;
+}
+
+/* Main Window Menu function ************************************** */
+
+static void MainMenuFn(void *handle, char *hit)
+{
+  handle = handle; /* We don't need handle: this stops compiler warning */
+
+  /* Find which menu item was hit and take action as appropriate */
+  switch (hit[0])
+  {
+    case MainMenuItem_connect:
+      OpenAndStartWindow(); /* Make sure we have focus & are on top */
+      SYS_callEvent( SYS_ConnectMouse );
+      break;
+
+    case MainMenuItem_ports:
+      switch (hit[1])
+      {
+        case PortMenuItem_com:
+          if (!COM_Open)
+            ReserveCOM();
+          else
+            ReleaseCOM();
+          CFG.DirectSerial = COM_Open;
+          break;
+        case PortMenuItem_lpt:
+          if (!LPT_Open)
+            ReserveLPT();
+          else
+            ReleaseLPT();
+          CFG.DirectParallel = LPT_Open;
+          break;
+        case PortMenuItem_turbo:
+          CFG.TurboDriverBodge = !CFG.TurboDriverBodge;
+          break;
+        default : return;
+      }
+      UpdateToolsWindow();
+      break;
+
+    case MainMenuItem_saveS:
+      saveas(filetype_SPRITE, "PCScreen", 0x40000,
+              WFE_MainSaveSprite, 0, 0, 0);
+      break;
+
+    case MainMenuItem_saveT:
+      saveas(filetype_TEXT, "PCText", 0x4000,
+              WFE_MainSaveText, 0, 0, 0);
+      break;
+
+    case MainMenuItem_showtb:
+      toolbar_toggle();
+      break;
+
+    case MainMenuItem_stask:
+      FocusLost();
+      StopWindowRunning();
+      RunInFullScreenMode();
+      OpenAndStartWindow();
+      break;
+
+    case MainMenuItem_reset:
+      SYS_FEState.ResetRequest = true;
+      if ( CFG.UseWindowFE )
+        OpenAndStartWindow();
+      break;
+
+    case MainMenuItem_quit:
+      FocusLost();
+      StopWindowRunning();
+      SYS_FEState.QuitRequest = true;
+      break;
+  }
+}
+
+/* Icon bar menu function ******************************************* */
+
+static void IconMenuFn(void *handle, char *hit)
+{
+  handle = handle; /* We don't need handle: this stops compiler warning */
+
+  /* Find which menu item was hit and take action as appropriate */
+  switch (hit[0])
+  {
+    case IconMenuItem_info:
+      WFE_ProgInfoBox();
+      break;
+
+    case IconMenuItem_showcfg:
+      CFG_Show();
+      break;
+
+    case IconMenuItem_showtb:
+      toolbar_toggle();
+      break;
+
+    case IconMenuItem_freeze:
+      if (SYS_FEState.WinFErunning)
+        StopWindowRunning();
+      else
+        StartWindowRunning();
+      break;
+
+    case IconMenuItem_stask:
+      FocusLost();
+      StopWindowRunning();
+      RunInFullScreenMode();
+      OpenAndStartWindow();
+      break;
+
+    case IconMenuItem_reset:
+      SYS_FEState.ResetRequest = true;
+      if ( CFG.UseWindowFE )
+        OpenAndStartWindow();
+      break;
+
+    case IconMenuItem_quit:
+      FocusLost();
+      StopWindowRunning();
+      SYS_FEState.QuitRequest = true;
+      if (hit[1] == RestartMenuItem_restart)
+        system("Filer_Run <Diva$Dir>.!Run");
+      break;
+  }
+}
+
+
+/* Handler for clicks on multitasking window ************************ */
+
+static void toolbar_position(void)
+/* Originally inside the wimp_EOPEN handler for the main window, hence
+** slightly roundabout methods of coding...
+*/
+{
+  wimp_wstate    pane;
+  wimp_eventstr  ev, *e;
+
+  e=&ev;
+
+  wimpt_noerr(wimp_get_wind_state(tools_window, &pane));
+  wimpt_noerr(wimp_get_wind_state(main_window, (void*) &ev.data.o));
+  e->data.o.w = tools_window;
+  e->data.o.box.x1 = (pane.o.box.x1 - pane.o.box.x0) + e->data.o.box.x0;
+  e->data.o.box.y1 = (pane.o.box.y1 - pane.o.box.y0) + e->data.o.box.y0 - ((pane.o.box.y1 - pane.o.box.y0) + 40);
+  e->data.o.box.y0 = e->data.o.box.y0 - ((pane.o.box.y1 - pane.o.box.y0) + 40);
+  wimpt_noerr(wimp_open_wind(&e->data.o));
+}
+
+static void toolbar_toggle(void)
+{
+  CFG.Toolbar = !CFG.Toolbar;
+  /*menu_setflags(main_menu, MainMenuItem_showtb, CFG.Toolbar, 0);
+  menu_setflags(icon_menu, IconMenuItem_showtb, CFG.Toolbar, 0);*/
+  if (CFG.Toolbar)
+    toolbar_position();
+  else
+    wimpt_noerr(wimp_close_wind(tools_window));
+}
+
+static void tools_event_handler(wimp_eventstr *e, void *handle)
+{
+  handle = handle; /* we don't need this */
+
+  switch (e->e)
+  {
+    case wimp_ENULL:
+      RunInWindowMode();
+      if ( SYS_FEState.FreezeRequest )
+        StopWindowRunning();
+      break;
+
+    case wimp_EOPEN:
+      wimpt_noerr(wimp_open_wind(&e->data.o));
+      break;
+
+    case wimp_ECLOSE:
+      toolbar_toggle();
+      break;
+
+    case wimp_EBUT:
+      switch (e->data.but.m.i)
+      {
+        case Tools_spd_up:
+          if (SYS_FEState.HasInputFocus)
+            { if (CFG.WindFocusSpeed < 20) CFG.WindFocusSpeed++; }
+          else
+            { if (CFG.WindNoFocusSpeed < 20) CFG.WindNoFocusSpeed++; }
+          break;
+        case Tools_spd_down:
+          if (SYS_FEState.HasInputFocus)
+            { if (CFG.WindFocusSpeed > 1)  CFG.WindFocusSpeed--; }
+          else
+            { if (CFG.WindNoFocusSpeed > 1)  CFG.WindNoFocusSpeed--; }
+          break;
+        case Tools_skip_up:
+          if (CFG.FastVESASkip < 10) CFG.FastVESASkip++; break;
+        case Tools_skip_down:
+          if (CFG.FastVESASkip > 0) CFG.FastVESASkip--; break;
+        case Tools_spd_sel:
+          if (!SYS_FEState.HasInputFocus)
+          {
+            if (!window_is_open) OpenAndStartWindow();
+            ObtainCaret();
+          }
+          else
+            LoseCaret();
+          break;
+        case Tools_freeze:
+          if (SYS_FEState.WinFErunning)
+            StopWindowRunning();
+          else
+            StartWindowRunning();
+          break;
+        case Tools_fullscreen:
+          FocusLost();
+          StopWindowRunning();
+          RunInFullScreenMode();
+          if ( CFG.UseWindowFE )
+            OpenAndStartWindow();
+          break;
+        case Tools_reset:
+          if (confirm_reset() == 3)
+          {
+            SYS_FEState.ResetRequest = true;
+            if ( CFG.UseWindowFE )
+              OpenAndStartWindow();
+          }
+          break;
+        case Tools_lpt:
+          if (!LPT_Open)
+            ReserveLPT();
+          else
+            ReleaseLPT();
+          CFG.DirectParallel = LPT_Open;
+          break;
+        case Tools_com:
+          if (!COM_Open)
+            ReserveCOM();
+          else
+            ReleaseCOM();
+          CFG.DirectSerial = COM_Open;
+          break;
+        case Tools_turbo:
+          CFG.TurboDriverBodge = !CFG.TurboDriverBodge;
+          break;
+        case Tools_fastvesa:
+          CFG.FastVESA = !CFG.FastVESA;
+          VID_SwitchPageCopying();
+          break;
+        case Tools_vfloppy:
+          CFG.VFloppy = !CFG.VFloppy;
+          break;
+        case Tools_connect:
+          OpenAndStartWindow(); /* Make sure we have focus & are on top */
+          SYS_callEvent( SYS_ConnectMouse );
+          break;
+        /*case Tools_close:
+          toolbar_toggle();*/
+          /*wimpt_noerr(wimp_close_wind(tools_window));
+          toolbar = false;*/
+          /*break;*/
+      }
+      if (e->data.but.m.i != Tools_freeze)
+        UpdateToolsWindow();
+      break;
+
+    /*case wimp_ECLOSE:*/  /* Pass on close request */
+      /*wimpt_noerr(wimp_close_wind(e->data.o.w));
+      break;*/
+  }
+}
+
+/* WFE_init routine ************************ */
+
+/* This contains all the bits which need to
+   be initialised only when the windowed
+   front-end is running
+*/
+
+static bool WFE_init()
+{
+  wimp_wind *window;
+
+  /* Create the main window */
+
+  window = template_syshandle("PCScreen");
+  if (window == 0)
+    return false;
+
+  if (wimpt_complain(wimp_create_wind(window, &main_window)) != 0)
+    return false;
+
+  /* Give the main window a handler */
+
+  win_register_event_handler(main_window, main_event_handler, 0);
+  win_claim_idle_events(main_window);
+  win_claim_unknown_events(main_window);
+
+  return true;
+}
+
+
+/* WIMP_init routine *********************** */
+
+static bool WIMP_Init()
+{
+  /*wimp_wind    *window;*/
+
+  wimpt_init("PC Card Software");         /* Main Wimp initialisation */
+  res_init("Diva");                       /* Resources */
+  resspr_init();                          /* Application sprites */
+  template_use_fancyfonts(); /* whose idea was this? */
+  template_init();                        /* Templates */
+  msgs_init();                            /* Messages */
+  dbox_init();                            /* Dialogue boxes */
+
+  window_is_open = FALSE;
+
+  SaveWimpMode();
+
+  /* Create the menu tree */
+
+  main_menu    = menu_new("PC Card", msgs_lookup("windmenu"));
+  icon_menu    = menu_new("PC Card", msgs_lookup("iconmenu") );
+  port_menu    = menu_new("Ports", msgs_lookup("portmenu") );
+  restart_menu = menu_new("Restart?", msgs_lookup("restrtmenu") );
+
+  if ( !icon_menu || !restart_menu || !port_menu || !main_menu)
+    return false; /* Menu create failed */
+
+  menu_submenu(icon_menu, IconMenuItem_quit, restart_menu);
+  menu_submenu(main_menu, MainMenuItem_ports, port_menu);
+
+  /* Set up the icon on the icon bar, and declare its event handlers */
+
+  baricon("!pc", (int)resspr_area(), IconClickFn );
+
+  if (!event_attachmenu(win_ICONBAR, icon_menu, IconMenuFn, 0))
+    return false; /* Unable to attach menu */
+
+  return true;
+}
+
+static int WIMP_Init2(void)
+{
+  wimp_wind    *window;
+
+  /* Create the toolbar */
+
+  window = template_syshandle("Tools");
+  if (window == 0)
+    return false;
+  if (!CFG.UseWindowFE)
+    window->flags |= (wimp_WTITLE | wimp_WBACK | wimp_WQUIT);
+
+  if (wimpt_complain(wimp_create_wind(window, &tools_window)) != 0)
+    return false;
+  win_register_event_handler(tools_window, tools_event_handler, 0);
+  UpdateToolsWindow();
+  if (!CFG.UseWindowFE)
+  {
+    win_claim_idle_events(tools_window);
+    win_claim_unknown_events(tools_window);
+  }
+
+  /* Declare its event handlers */
+
+  if (CFG.UseWindowFE) {
+    if (!event_attachmenu(main_window, main_menu, MainMenuFn, 0))
+      return false;
+  } else {
+    if (!event_attachmenu(tools_window, main_menu, MainMenuFn, 0))
+      return false;
+    menu_setflags(main_menu, MainMenuItem_connect, 0, 1);
+  }
+
+  return true;
+}
+
+
+/* Main() itself ************************** */
+
+
+int main (int argc, char **argv)
+{
+  int i;
+  /*NotUsed ( argv );*/
+
+  /*if ( argc > 1 )
+  {
+    printf("Aleph One !PC Application\nVersion: %s\nHardware: %s\n",
+      WFE_VersionString, CPU_HardwareID );
+    return 0;
+  }*/
+
+  TraceDestination = TraceOff;
+  for (i=0; i!=argc; i++)
+  {
+    if (!strcmp(argv[i], "-tracefile")) TraceDestination = TraceFile;
+    if (!strcmp(argv[i], "-traceserial")) TraceDestination = TraceSerial;
+    if (!strcmp(argv[i], "-tracetracker")) TraceDestination = TraceTracker;
+  }
+
+
+  if ( !SYS_Init() )
+    return 1;
+
+  /* Find version of RISCOS for those bits that care (FDD, Video, RTC) */
+  RISCOSlevel = 3;/*GuessRISCOSversion();*/  /* set global */
+  /* See if we are running on SA */
+  SApresent = CheckForSA();
+
+  /* Start up system */
+
+  if ( !WIMP_Init() )        /* do this first so we can put up banner */
+   SYS_error ( true, "ieinitfail" ) ;
+
+  /* startup banner */
+  WFE_Banner(Bannershow);
+
+  SYS_BannerText("Initialising");
+  if (  /*!EXT_Init()  ||*/
+        !CPU_Init()  ||
+        !RTC_Init()  ||
+        !VID_Init()  ||
+        !KBD_Init()  ||
+  /* Floppies *must* be initialised before HD's */
+        !FDD_Init()  ||
+        /*!FDDEm_Init()||*/
+        !HDD_Init()  ||
+        /*!IDEEm_Init()||*/
+        !PRN_Init()  ||
+        !MUL_Init()  ||
+        !NE2_Init()  ||
+        !CDR_Init()  ||
+        !DeviceMod_Init()         /* Initialise device modules */
+     )
+   SYS_error ( true, "ieinitfail" ) ;
+
+  /* Configure the system */
+
+  CFG_Init();
+
+  if ( CFG.UseWindowFE )
+    WFE_init();
+
+  if ( !WIMP_Init2() )  /* for tools window which needs configuring */
+    SYS_error ( true, "ieinitfail" ) ;
+
+  SYS_BannerText("");
+
+  SYS_callEvent ( SYS_SetConfig );
+
+  SYS_BannerText("Ready to go");
+  WFE_Banner(Bannerhide);       /* bin the banner - we're ready to go */
+
+
+  SYS_trace("!PC ver %s on %s", WFE_VersionString, CPU_HardwareID );
+
+  SYS_FEState.ResetRequest = true;
+  SYS_FEState.QuitRequest = false;
+  SYS_FEState.FreezeRequest = false;
+
+  /* make sure focus is put back and windows closed on QuitRequest via HPC) */
+    SYS_registerEvent ( SYS_Shutdown, TidyUp, 0 );
+
+  if ( CFG.AutoStart == 1 )  /* Start in full-screen mode */
+  {
+      RunInFullScreenMode();
+      if ( CFG.UseWindowFE )
+        OpenAndStartWindow();
+  }
+  else if ( CFG.AutoStart == 2 ) /* Start in window mode */
+  {
+      if ( CFG.UseWindowFE )
+        OpenAndStartWindow();
+      else
+        RunInFullScreenMode();
+  }
+
+  /* Run the WIMP */
+
+  while (!SYS_FEState.QuitRequest)
+    event_process();
+
+  SYS_callEvent ( SYS_Shutdown );
+  SYS_trace("The End");
+
+  return 0;
+}
+

@@ -1,0 +1,5 @@
+#include "toolbox.h"
+
+extern MessagesFD    msg_block;
+
+extern char *msg_lookup(char *token);

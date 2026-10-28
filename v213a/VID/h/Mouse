@@ -1,0 +1,12 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.MOUSE  - Video Mouse routines
+*
+*
+*    06-05-92 INH  Original             
+*         
+*/
+
+extern bool MOU_Init (void);
+

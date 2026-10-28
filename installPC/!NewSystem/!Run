@@ -1,0 +1,50 @@
+Set NewSystem$Dir <Obey$Dir>
+
+| Drop new !Run / !Boot files in if necessary and create new structure
+|
+IfThere <System$Dir>.SysPaths Then Set NewSysNeeded 0 Else Set NewSysNeeded 1
+If "<NewSysNeeded>"="1" Then Copy <NewSystem$Dir>.NewSystem <System$Dir> ~A~C~DF~L~N~P~Q~R~S~T~V
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.310
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.350
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.360
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.370
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.310.Modules
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.350.Modules
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.360.Modules
+If "<NewSysNeeded>"="1" Then CDir <System$Dir>.370.Modules
+If "<NewSysNeeded>"="1" Then Filer_Run <System$Dir>.!Run
+
+| Add UnplugTbox file if not present
+Set NewSysUnplugAdd 1
+IfThere <Boot$Dir>.utils.UnplugTBox Then Set NewSysUnplugAdd 0
+IfThere <Boot$Dir>.Choices.Boot.PreDesk.UnplugTBox Then Set NewSysUnplugAdd 0
+If "<NewSysUnplugAdd>"="1" Then Copy <NewSystem$Dir>.UnplugTBox <Boot$Dir>.Choices.Boot.PreDesk.UnplugTBox ~A~C~DF~L~N~P~Q~R~S~T~V
+
+| Tidy up wrongly-installed Toolbox modules
+|
+IfThere <System$Dir>.350.Modules.Toolbox.Toolbox Then Set Movetoolbox350 1 Else Set Movetoolbox350 0
+If "<Movetoolbox350>"="1" Then Copy <System$Dir>.350.Modules.Toolbox <System$Dir>.310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+If "<Movetoolbox350>"="1" Then Wipe <System$Dir>.350.Modules.Toolbox ~CFR~V
+
+IfThere <System$Dir>.360.Modules.Toolbox.Toolbox Then Set Movetoolbox360 1 Else Set Movetoolbox360 0
+If "<Movetoolbox360>"="1" Then Copy <System$Dir>.360.Modules.Toolbox <System$Dir>.310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+If "<Movetoolbox360>"="1" Then Wipe <System$Dir>.360.Modules.Toolbox ~CFR~V
+
+IfThere <System$Dir>.370.Modules.Toolbox.Toolbox  Then Set Movetoolbox370 1 Else Set Movetoolbox370 0
+If "<Movetoolbox370>"="1" Then Copy <System$Dir>.370.Modules.Toolbox <System$Dir>.310.Modules.Toolbox A~CDFN~P~QR~S~T~V
+If "<Movetoolbox370>"="1" Then Wipe <System$Dir>.370.Modules.Toolbox ~CFR~V
+
+Set NewSysChanged 0
+If "<NewSysNeeded>"="1" Then Set NewSysChanged 1
+If "<Movetoolbox350>"="1" Then Set NewSysChanged 1
+If "<Movetoolbox360>"="1" Then Set NewSysChanged 1
+If "<Movetoolbox370>"="1" Then Set NewSysChanged 1
+If "<NewSysUnplugAdd>"="1" Then Set NewSysChanged 1
+If "<NewSysChanged>"="1" Then Error 0 Your !System structure has been up-dated - please re-boot Else Error 0 Your !System structure is already up-to-date
+Unset NewSysNeeded
+Unset NewSysChanged
+Unset NewSysUnplugAdd
+Unset Movetoolbox350
+Unset Movetoolbox360
+Unset Movetoolbox370
+

@@ -1,0 +1,20 @@
+ AREA PCDiscEm, CODE
+
+ EXPORT addr_SWI_PCSupport_IrqRequest
+ EXPORT PCDiscEm_FDCInt
+
+ ;INCLUDE module.hdr.System
+
+FDC_Int_bit * 1<<6
+IOCIRQCLRB  * &24
+
+addr_SWI_PCSupport_IrqRequest
+	& 0
+
+PCDiscEm_FDCInt		; R3 > IOC memory space
+	MOV	R0,#FDC_Int_bit
+	STR	R0,[R3,#IOCIRQCLRB]	; Clear interrupt
+	MOV	R0,#8
+	LDR	PC,addr_SWI_PCSupport_IrqRequest	; Cause interrupt + exit
+
+ END

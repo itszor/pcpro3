@@ -1,0 +1,40 @@
+DIR <Obey$Dir>
+| Make code
+amu
+copy <testPC$dir>.!PC.ROM      bin.ROM
+copy <testPC$dir>.!PC.Messages bin.Messages
+| Log info
+GetDates           
+info bin.* { >> filelist }
+| Update my !PC
+copy bin.!RunImageG <testPC$dir>.!PC.!RunImage
+copy bin.PCDevHelp  <testPC$dir>.!PC.PCDevHelp
+copy bin.PCSupport  <testPC$dir>.!PC.PCSupport
+copy bin.PCNE2      <testPC$dir>.!PC.PCNE2
+copy bin.PCMEM      <testPC$dir>.!PC.PCMEM
+copy bin.PC_IO      <testPC$dir>.!PC.PC_IO    
+| Update release dir
+copy ^.history      Release.history
+copy Sys.h.version  Release.Version
+copy bin.PCSupport  Release.Base.!PC.PCSupport
+copy bin.PCDevHelp  Release.Base.!PC.PCDevHelp
+copy bin.ROM        Release.Base.!PC.ROM
+copy bin.Messages   Release.Base.!PC.Messages
+copy bin.PCNE2     Release.Net.PCNE2
+| Update individual versions
+|copy bin.!RunImage8 Release.A.!PC.!RunImage
+|copy bin.!RunImageE Release.E.!PC.!RunImage
+|copy bin.PC_IO      Release.L.!PC.PC_IO    
+|copy bin.PCMEM      Release.L.!PC.PCMEM
+|copy bin.!RunImageG Release.L.!PC.!RunImage
+|copy bin.!RunImageS Release.SF.oldpal.!PC.!RunImage
+|copy bin.!RunImageF Release.SF.newpal.!PC.!RunImage
+|
+echo Remember to update !Run files if module versions have changed
+
+
+
+
+
+
+

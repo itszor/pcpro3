@@ -1,0 +1,186 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.HPC_FD - HPC definitions for floppy disk functions
+*
+*   09-11-95	  (2.00) Original
+*/
+
+/* EXPORTED ROUTINES */
+extern bool FDD_Init ( void );
+
+#define HPC_FD_ID 0x0002
+
+#define HPC_FD_INFO   0x0000
+#define HPC_FD_STATUS 0x0001
+#define HPC_FD_READ   0x0002
+#define HPC_FD_WRITE  0x0003
+#define HPC_FD_VERIFY 0x0004
+#define HPC_FD_FORMAT 0x0005
+
+/* -------------------- */
+
+struct FD_COMMON_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct FD_COMMON_RESULT
+{
+  LONG retcode;
+};
+
+/* ------------ */
+
+struct FD_INFO_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct FD_INFO_RESULT
+{
+  WORD status;
+  WORD ndrives;
+  BYTE sizecode;
+  BYTE flags;
+  BYTE nheads;
+  BYTE nsects;
+  WORD ntracks;
+};
+
+#define DS_NONE         0
+#define DS_360K		1
+#define DS_1200K	2
+#define DS_720K		3
+#define DS_1440K	4
+
+#define DF_CHANGEDETECT  1
+#define DF_MULTIRATE     2
+
+/* ------------ */
+
+struct FD_STATUS_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+};
+
+/* ------------ */
+
+struct FD_STATUS_RESULT
+{
+  WORD status;
+};
+
+/* ------------ */
+
+# define FD_MAX_RDWR_LEN (16384-20)
+
+struct FD_RWV_PARAMS   /* Read/Write/Verify call */
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD track;
+  BYTE head;
+  BYTE sect;
+  BYTE nsects;
+  BYTE sectsize;
+  BYTE write_data[1];
+};
+
+/* ------------ */
+
+struct FD_RWV_RESULT
+{
+  WORD status;
+  BYTE sect_count;
+  BYTE density;
+  BYTE read_data[1];
+};
+
+#define DD_NONE      0
+#define DD_DOUBLE    4
+#define DD_DOUBLEDS  5  /* With double stepping */
+#define DD_QUAD      6
+
+/* ------------ */
+
+struct FD_FORMAT_PARAMS
+{
+  WORD hpc_id;
+  WORD reason;
+  WORD drvnum;
+  WORD track;
+  BYTE head;
+  BYTE nsects;
+  BYTE density;
+  BYTE pad1;
+  BYTE format_data[1024];
+};
+
+/* ------------ */
+
+struct FD_FORMAT_RESULT
+{
+  WORD status;
+};
+
+/* ------------ */
+
+union FD_HPC_PARAMS
+{
+  struct FD_COMMON_PARAMS     common;
+  struct FD_INFO_PARAMS       Info;
+  struct FD_STATUS_PARAMS     Status;
+  struct FD_RWV_PARAMS        RWV;
+  struct FD_FORMAT_PARAMS     Format;
+};
+
+/* ------------ */
+
+union FD_HPC_RESULT
+{
+  struct FD_COMMON_RESULT     common;
+  struct FD_INFO_RESULT       Info;
+  struct FD_STATUS_RESULT     Status;
+  struct FD_RWV_RESULT        RWV;
+  struct FD_FORMAT_RESULT     Format;
+};
+
+/* ------------ */
+
+typedef union
+{
+  union FD_HPC_PARAMS in;
+  union FD_HPC_RESULT out;
+}
+  FD_HPC_IN_OUT;
+
+
+/* Error codes ---------------- */
+
+#define HPCERR_NOTPRESENT 0xFFFFFFFF
+
+#define FDERR_OK	0
+#define FDERR_PARAMS	1
+#define FDERR_SECTORNF  2
+#define FDERR_WRPROTECT	3
+#define FDERR_CHANGED   4
+#define FDERR_DATAERR   5
+#define FDERR_NOTREADY  6
+#define FDERR_UNKNOWN	7
+#define FDERR_BADFORMAT	8
+
+
+
+

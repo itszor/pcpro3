@@ -1,0 +1,340 @@
+/*
+*   DIVA PC ARM C source
+*
+*   DEV.C.RTC - Real time clock and CMOS RAM logic
+*
+*  Versions
+*  23-12-91  INH  Original
+*  19-02-92       VGA switch added
+*                 No of Floppy drives changes
+*                 HighRAMEnable changed
+*                 CMOS RAM is now writeable
+*                 Two printer support
+*  15-05-93       Power Saving
+*  ...
+*  03-02-95       i486only bit
+*  17-01-96	  HighRAMEnable, VGAAttached deleted
+*1997-03-25  W    gets millenium
+*/
+
+#define DEBUG
+
+#include "kernel.h"
+#include "swis.h"
+#include "stdlib.h"
+#include "math.h"
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+
+
+#define    CMOS_Size      0x40
+#define    CMOS_SizeMask  0x3F
+
+#define    CMOS_year     0x09
+#define    CMOS_disktype 0x10
+#define    CMOS_hdbyte   0x12
+#define    CMOS_HD0type  0x19
+#define    CMOS_HD1type  0x1A
+#define    CMOS_equip    0x14
+#define    CMOS_ramsizeL 0x15
+#define    CMOS_ramsizeH 0x16
+
+#define    CMOS_iocfg    0x1B
+#define    CMOS_gencfg   0x1C
+#define    CMOS_ramcfg   0x1D
+#define    CMOS_dskcfg   0x1E
+
+#define    CMOS_HD0CylsL 0x1F
+#define    CMOS_HD0CylsH 0x20
+#define    CMOS_HD0Heads 0x21
+#define    CMOS_HD0Sects 0x22
+#define    CMOS_HD1CylsL 0x23
+#define    CMOS_HD1CylsH 0x24
+#define    CMOS_HD1Heads 0x25
+#define    CMOS_HD1Sects 0x26
+#define    CMOS_IDETimer 0x27
+
+#define    CMOS_century  0x32
+
+#define  TMBUFSIZE 100       /* size of buffer for time conversion */
+
+/* CMOS RAM Routines ****************************************** */
+
+static BYTE CMOS_Data[CMOS_Size];
+
+extern int RISCOSlevel;
+
+static void RTC_SetDefaultData()
+{
+  int i;
+
+  for (i=0; i<CMOS_Size; i++)
+    CMOS_Data[i] = 0;
+
+  CMOS_Data[CMOS_year]    = 0x81;  /* 1981 */
+  CMOS_Data[CMOS_equip]   = 0x01;  /* Boot-from-floppy, 1 drive */
+
+  CMOS_Data[CMOS_disktype]= 0x30;  /* 720K drive 0, no drive 1 */
+  CMOS_Data[CMOS_HD0type] = 47;  /* Variable sized hard disk */
+  CMOS_Data[CMOS_HD1type] = 48;  /* Variable sized */
+
+  CMOS_Data[CMOS_ramsizeL]= 0x80;  /* 640K = 280h kbytes*/
+  CMOS_Data[CMOS_ramsizeH]= 0x02;  /*                   */
+  CMOS_Data[CMOS_ramcfg]  = 0x7;   /* High RAM disabled */
+  CMOS_Data[CMOS_century] = 0x19;  /* 20th century (!) */
+}
+
+/* ************************************* */
+
+
+/* bcd conversion function, 'cos RISCOS ain't got one.*/
+/* returns a bcd-coded version of the integer given */
+
+static BYTE bcd (BYTE n)
+{
+  div_t quotrem;              /* div_t is a struct of quotient & remainder */
+
+  if (n > 99) n=99;           /* biggest representation permitted */
+
+  quotrem = div (n,10);       /* split n base 10 */
+
+  return ((BYTE) quotrem.quot & 0xF) << 4 | ((BYTE) quotrem.rem & 0xF); /* put in bcd form */
+
+}
+
+/* ************************************* */
+
+/* RTC_ReadRealTime() is called whenever the 'time' registers in
+   CMOS_Data[] need to be updated from the real time as maintained
+   by the ARM's real-time-clock. It reads this clock directly using
+   OSWord function 14 subfunction 1.
+*/
+
+static void RTC_ReadRealTime()
+{
+  if (1 /*RISCOSlevel==2*/)
+  {
+  _kernel_swi_regs regs;
+  BYTE RTCblk [7];
+
+  regs.r[0] = 14;            /* OSWord 14: time services */
+  regs.r[1] = (int) RTCblk;  /* Pointer to param block */
+
+  RTCblk[0] = 1;             /* Reason code 1: Read RTC chip (in BCD) */
+                             /* includes summer time adjustment */
+  _kernel_swi ( OS_Word, &regs, &regs );
+
+  if (RTCblk[0] > 0x99) /* RISCOS returns 0xA0=100 on year 2000 */
+  {
+    CMOS_Data [CMOS_year] = RTCblk [0] - 0xA0; /* Year in BCD */
+    CMOS_Data [CMOS_century] = 0x20; /* Century in BCD */
+  }
+  else
+  CMOS_Data [CMOS_year] = RTCblk [0]; /* Year in BCD */
+  CMOS_Data [8] = RTCblk [1]; /* Month in BCD */
+  CMOS_Data [7] = RTCblk [2]; /* Date in BCD */
+  CMOS_Data [6] = RTCblk [3]; /* Day of week 0-6 */
+  CMOS_Data [4] = RTCblk [4]; /* Hours in BCD */
+  CMOS_Data [2] = RTCblk [5]; /* Mins in BCD */
+  CMOS_Data [0] = RTCblk [6]; /* Secs in BCD */
+
+  /* now fart about to get the century  */
+  regs.r[0] = 14;            /* OSWord 14: time services */
+  regs.r[1] = (int) RTCblk;  /* Pointer to param block */
+
+  RTCblk[0] = 3;             /* Reason code 3: Read RTC soft time */
+
+    _kernel_swi ( OS_Word, &regs, &regs ); /* returns 5-byte time */
+
+  /* compare each byte to see if more than 31536e11 centiseconds have passed */
+  /* that's 0x496CEBB800  - nope it's 0x497947c8*/
+  if ((RTCblk[4] > 0x49)
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] > 0x79))
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x79) && (RTCblk[2] > 0x47))
+  || ((RTCblk[4] == 0x49) && (RTCblk[3] == 0x79) && (RTCblk[2] == 0x47) && (RTCblk[1] > 0xC8)))
+   {
+     CMOS_Data [CMOS_century] = 0x20;   /* 21stC in BCD. fixed for another 100 years :-) */
+   }
+  }
+  else  /* RISCOS 3 or later   */
+  {
+
+  _kernel_swi_regs regs;     /* get UTC time */
+
+  BYTE UTCblk [5];           /* space to return UTC time */
+  BYTE Ordinals [36];        /* should be word aligned */
+
+  regs.r[0] = 14;            /* OSWord 14: time services */
+  regs.r[1] = (int) UTCblk;  /* Pointer to param block */
+
+  UTCblk[0] = 3;             /* Reason code 3: Read RTC soft time */
+                             /* Always UTC - summertime not included */
+
+  _kernel_swi ( OS_Word, &regs, &regs );
+
+
+   /* convert to ordinals including territory adjustment */
+  regs.r[0] = -1;             /* use current territory */
+  regs.r[1] = (int) UTCblk;   /* r1 points to UTC time block */
+  regs.r[2] = (int) Ordinals; /* return block */
+
+  _kernel_swi (Territory_ConvertTimeToOrdinals, &regs, &regs );
+  {
+    div_t year;
+    year = div(Ordinals [24]+1792,100);
+    CMOS_Data [CMOS_century] = bcd (year.quot); /* Century in BCD */
+    CMOS_Data [CMOS_year] = bcd (year.rem); /* Year in BCD */
+  }
+  CMOS_Data [8] = bcd (Ordinals [20]); /* Month in BCD */
+  CMOS_Data [7] = bcd (Ordinals [16]); /* Date in BCD */
+  CMOS_Data [6] = bcd (Ordinals [28]); /* Day of week 0-6 */
+  CMOS_Data [4] = bcd (Ordinals [12]); /* Hours in BCD */
+  CMOS_Data [2] = bcd (Ordinals [8]);  /* Mins in BCD */
+  CMOS_Data [0] = bcd (Ordinals [4]);  /* Secs in BCD */
+  }
+}
+
+/* ************************************* */
+
+static int CMOS_index;
+
+static void RTC_Wr8( int addr, int data )
+{
+
+  if (addr == 0x70)
+  {
+    CMOS_index=data;
+
+    /* CMOS location 0Ah is the status register address.
+       This should be read before attempting to read the time
+       out from locations 00-0B, so we can use this as an opportunity
+       to set these locations up from the real time
+    */
+
+    if ( (data & CMOS_SizeMask) == 0x0A )
+      RTC_ReadRealTime();
+  }
+
+  if (addr == 0x71)
+  {
+    CMOS_Data[ CMOS_index & CMOS_SizeMask ] = data;
+  }
+}
+
+
+static int RTC_Rd8( int addr )
+{
+
+  if (addr == 0x71)
+  {
+     return CMOS_Data[ CMOS_index & CMOS_SizeMask ];
+  }
+
+  return CMOS_index;
+}
+
+/* ************************************* */
+
+static bool RTC_SetConfig()
+{
+  RTC_SetDefaultData();
+
+  RTC_ReadRealTime();
+
+  /* CMOS address 10h holds system equipment */
+  /* word. Bits 4..5 are 10b to start in */
+  /* CGA mode 3, or 11b to start in MDA Mode 7 */
+
+  CMOS_Data[CMOS_equip]  |= 0x20;
+
+  /* Bit 1 = coprocessor present */
+
+  if ( CFG.Coprocessor )
+    CMOS_Data[CMOS_equip]  |= 0x2;
+
+  /* Bit 0 = 1 if VGA supported (always true) */
+    CMOS_Data[CMOS_gencfg] |= 0x1;
+
+  if ( !CFG.FloppyBoot )        /* Bit 1 = disable floppy boot */
+    CMOS_Data[CMOS_gencfg] |= 0x2;
+
+  if ( CFG.PowerSaving )        /* Bit 2 = 1 if Power Saving enabled */
+    CMOS_Data[CMOS_gencfg] |= 0x4;
+
+  /* Bit 3 = 1 if Cyrix-style WB cache */
+  /* Bit 4 = 1 if L1 cache enabled */
+
+  if ( CFG.L1Cache == L1C_WRTHRU )
+    CMOS_Data[CMOS_gencfg] |= 0x10;
+  else if ( CFG.L1Cache == L1C_WRBACK || CFG.L1Cache == L1C_AUTO )
+    CMOS_Data[CMOS_gencfg] |= 0x18;
+
+  if ( CFG.ClkDoubled )
+    CMOS_Data[CMOS_gencfg] |= 0x20;
+
+  CMOS_Data[CMOS_ramcfg] = 7;      /* HighRAMEnable has been deleted */
+
+  if ( CFG.RISCOSprinter > 0 )     /* Use RISCOS printer? */
+     CMOS_Data[CMOS_iocfg] |= 1;   /* Set 'two printers' bit */
+
+  if ( CFG.RISCOSprinter == 1 )    /* RISCOS printer on LPT1? */
+     CMOS_Data[CMOS_iocfg] |= 2;   /* Set 'printer swap' bit */
+
+  /* Set hard disk parameters */
+
+  if ( CFG.HD_IDE_cyl[0] > 0 )
+  {
+    CMOS_Data[CMOS_hdbyte] |= 0xF0;
+    CMOS_Data[CMOS_dskcfg] |= 1;
+  }
+
+  if ( CFG.HD_IDE_cyl[1] > 0 )
+  {
+    CMOS_Data[CMOS_hdbyte] |= 0x0F;
+    CMOS_Data[CMOS_dskcfg] |= 2;
+  }
+
+  if ( CFG.OnboardFloppy > 0 )
+    CMOS_Data[CMOS_dskcfg] |= 0x10;
+
+  if ( CFG.OnboardFloppy > 1 )
+    CMOS_Data[CMOS_dskcfg] |= 0x20;
+
+  CMOS_Data[CMOS_HD0CylsL] = CFG.HD_IDE_cyl[0] & 0xFF;
+  CMOS_Data[CMOS_HD0CylsH] = CFG.HD_IDE_cyl[0] >> 8;
+  CMOS_Data[CMOS_HD0Heads] = CFG.HD_IDE_hd[0];
+  CMOS_Data[CMOS_HD0Sects] = CFG.HD_IDE_sct[0];
+
+  CMOS_Data[CMOS_HD1CylsL] = CFG.HD_IDE_cyl[1] & 0xFF;
+  CMOS_Data[CMOS_HD1CylsH] = CFG.HD_IDE_cyl[1] >> 8;
+  CMOS_Data[CMOS_HD1Heads] = CFG.HD_IDE_hd[1];
+  CMOS_Data[CMOS_HD1Sects] = CFG.HD_IDE_sct[1];
+
+  /* Convert from .1s units to ticks */
+
+  CMOS_Data[CMOS_IDETimer] = (CFG.IDEStartTime*182)/100;
+
+  SYS_registerIO( 0x70, 0x73,
+       RTC_Rd8,
+       RTC_Rd8,
+       RTC_Wr8,
+       RTC_Wr8, 0 );
+
+  return false;
+}
+
+/* ***************************************************************** */
+
+bool RTC_Init()
+{
+  SYS_registerEvent ( SYS_SetConfig, RTC_SetConfig, 0 );
+
+  return true;
+}
+
+/* ************************************* */
+
+
+

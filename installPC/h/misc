@@ -1,0 +1,27 @@
+#ifndef __pcsetup_misc_h
+#define __pcsetup_misc_h
+
+#ifndef __kernel_h
+#include "kernel.h"
+#endif
+
+_kernel_oserror *xos_cli(char *cmd);
+int var_exists(char *var_name);
+int var_read(char *var_name, char *buffer);
+int file_exists(char *fname);
+int file_length(char *fname);
+int file_save(char *fname, int type, void *start, void *end);
+int file_load_to(char *fname, void *m);
+unsigned int free_space(char *path);
+int expand_path(char *string, char *buffer, int size);
+int get_screen_size(int *x, int *y);
+int get_time_string(char *buffer);
+int read_cmos_byte(int number);
+void *x_os_cli(char *cmd);
+int read_entry(char *dir, char *buffer, int count, char *match);
+int random(void);
+char* get_module_help(char *module);
+
+extern int rseed1, rseed2;
+
+#endif

@@ -1,0 +1,122 @@
+/*
+*    DivaPC ARM C source
+*
+*    VID.H.VIDS  - Externals for VIDS (assembler video) routines
+*
+*
+*    07-02-92 INH  Original
+*    25-03-92      Character generator access
+*    21-04-92      Rewritten
+*    29-03-95      256clr palette stuff added
+*/
+
+/* Screen general variables ************** */
+
+extern BYTE *VIDS_HardScreenBase;     /* ARM Physical Screen Base, valid
+                                         in full-screen mode only, set
+                                         by calling VIDS_InitArmMode */
+
+extern BYTE *VIDS_DrawPointer;        /* Place where text & CGA plot routines
+                                         should draw screen image - physical
+                                         screen in full-screen mode, a sprite
+                                         in multitasking mode */
+
+extern int   VIDS_ArmScreenWidthBytes; /* = X width * bits per pixel / 8 */
+
+extern BYTE *VIDS_MemoryBlk;      /* Pointer to 256K VGA RAM buffer */
+
+extern int   VIDS_DisplayStart;  /* Start & length in bytes of visible */
+extern int   VIDS_DisplayLength; /* screen, as offsets from VIDS_MemoryBlk */
+
+extern int   VIDS_AddrMask;      /* Mask to reduce PC address to 32 or 64K,
+                                    shifted up by 2, so that VIDS_MemoryBlk
+                                   offset is (PCaddr << 2) & VIDS_AddrMask */
+
+/* Text plotting routines *************************************** */
+
+extern int   VIDS_TextRowScreenPitch;
+  /* Number of bytes per row of text on the ARM screen */
+extern int   VIDS_TextRowCharacters;
+  /* Number of characters in one row of the PC screen */
+extern int   VIDS_CharHeight;
+extern BYTE *VIDS_FontPtr;                /* Text font for plotting */
+extern BYTE *VIDS_AltFontPtr;             /* Text font for plotting */
+extern int  *VIDS_8to32Table;        /* Expands font pixels to words */
+extern int  *VIDS_4to32Table;          /* Expands text colour values */
+extern int   VIDS_CurrentCursorOffset;  /* Offset, in characters, from
+                                            the top of the screen */
+extern bool  VIDS_CursorVisible;        /* Set to be false if any
+                                          graphics op has overwritten the
+                                          screen region occupied by the
+                                          cursor */
+
+extern BYTE *VIDS_AttribLookup;
+                        /* Used in mono text modes */
+extern int   VIDS_UnderlinePos;
+                        /* Offset, in screen bytes, from top of char */
+extern int   VIDS_ByteModePlaneMask;
+                        /* Plane mask for text writes */
+extern bool  VIDS_FontWritten;
+                        /* Set to 1 if we do a write to plane 2 */
+extern void  VIDS_PlotChar( int offset, int chr, int attrib );
+/* Offset is offset in characters (i.e. in range 0..1999 for an 80x25
+   text screen */
+
+extern int   VIDS_GetScreenOffset ( int char_offset );
+/* Gets offset, in bytes, from the top of the ARM screen to a character
+    position char_offset characters from the top of a PC screen. */
+
+/* Normal text handlers */
+extern void  VIDS_TextWrite8  ( int, int );
+extern void  VIDS_TextWrite16 ( int, int );
+
+/* Byte mode text handlers (e.g. for font access) */
+extern void  VIDS_ByteModeWrite8 ( int, int );
+
+/* CGA callback routines ************************ */
+
+extern int  *VIDS_CGAExpandTable;
+extern int   VIDS_CGARead8   ( int addr);
+extern int   VIDS_CGARead16  ( int addr);
+extern void  VIDS_CGAWrite8  ( int addr, int data);
+extern void  VIDS_CGAWrite16 ( int addr, int data);
+extern void  VIDS_PlotCGA    ( int offset, int data );
+
+/* Generic 16-bit handlers ********************** */
+
+extern int     VIDS_GenRead16     ( int );
+extern void    VIDS_GenWrite16 ( int, int );
+extern RdFnPtr VIDS_Read8Ptr;
+extern WrFnPtr VIDS_Write8Ptr;
+extern RdFnPtr VIDS_Read16Ptr;
+extern WrFnPtr VIDS_Write16Ptr;
+
+/* 'Watch' routines for windows-FE mode ***************************** */
+
+extern int     VIDS_WatchStart;
+extern int     VIDS_WatchLength;
+extern int     VIDS_WatchMin;
+extern int     VIDS_WatchMax;
+
+extern void    VIDS_WatchWrite8  ( int, int );
+extern void    VIDS_WatchWrite16 ( int, int );
+
+/* Setup routines ************************** */
+
+extern void  VIDS_InitARMmode ( ModeSpec MS );
+extern void  VIDS_LoadPalette ( int no, int *RGBwords );
+
+extern int  VIDS_CheckModeValid ( ModeSpec MS );
+#define CMV_OK      0
+#define CMV_BADMODE (-1)
+#define CMV_NOMEM   (-2)
+extern void  VIDS_EnsureRAMsize( int );
+extern int  VIDS_ReadModeVar ( int modeno, int val );
+extern bool VIDS_EnumerateModes ( ModeEnumerated *mode, int skip );
+
+/* Dynamic area routines ******************* */
+
+extern void  VIDS_InitDynamicArea(void);
+extern BYTE *VIDS_ChangeAreaSize(int size);
+extern bool  VIDS_KillDynamicArea(void);
+extern int   VIDS_FreeMemory(int already_allocated);

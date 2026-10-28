@@ -1,0 +1,42 @@
+/*
+ * Name   : Utils.h
+ * Desc   : Some general utils for PCConfig.
+ * Author : Dean Murphy
+ * Date   : 31-May-1995
+ */
+
+#include "kernel.h"
+#include "toolbox.h"
+
+#ifndef __utils_h
+#define __utils_h
+
+#define NotUsed(name)  (void) name;  //this is used to stop compiler warnings
+
+extern void read_var_val(char *var, char *buffer, int buf_size);
+
+extern void raise_error(_kernel_oserror *e);
+
+extern void messages_lookup (MessagesFD messages_fd, char *token, char *buffer,
+                             int buffer_size, char *par1, char *par2, char *par3,
+                             char *par4, char **new_buffer, int *new_buffer_size);
+
+extern _kernel_oserror *my_stringset_set_selected( unsigned int flags,
+                                                   ObjectId window,
+                                                   ComponentId string_set,
+                                                   int index
+                                                   );
+extern char * lookup_token(char *tag);
+
+extern void werr(int fatal, char* format, ...);
+
+extern void check_for_modified_data(int , int , int);
+
+extern char *get_leaf_name(char *buffer);
+
+extern int cancel_ok(char *text, char *buttons);
+
+extern void broadcast_pc_message(int msg_num, int reason, char *file);
+
+#endif
+

@@ -1,0 +1,3 @@
+typedef enum { FALSE, TRUE } BOOL;
+
+BOOL CreateDisk ( char *filename, int size_MB, BOOL InitForDOS );

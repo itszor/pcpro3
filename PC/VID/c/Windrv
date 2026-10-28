@@ -1,0 +1,2014 @@
+/*
+*  VID.C.WINDRV -- Complete generic Windows Driver
+*
+*  10-Feb-94  INH  Original
+*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+
+/* Includes =========================================================== */
+
+#include "sys.h.stdtypes"
+#include "sys.h.FEstate"
+#include "sys.h.sys"
+#include "sys.h.config"
+#include "sys.h.transfer"  /* For block in/out routines */
+
+#include "vid.h.modes"
+#include "vid.h.ports"
+#include "vid.h.vids"
+#include "vid.h.tables"
+#include "vid.h.windrv"
+#include "vid.h.windefs"
+#include "vid.h.wins"
+#include "vid.h.winblt"
+
+
+/* Globals & exports ================================================== */
+
+bool   WIN_WinModeActive;  /* Set 'true' to request Windows mode */
+int    WIN_Xtotal;
+int    WIN_Ytotal;
+int    WIN_bpp;
+int    WIN_flags;
+int    WIN_BytesPerLine;
+int    WIN_LastAllocated=0;
+
+#ifndef PC_DEMO
+
+static bool SentInfo = false;
+static int  WIN_imagesize;          /* Image size in bytes */
+static uint WIN_PCBufAddr;
+                 /* If shared memory, PC physical address of buffer */
+
+#define NO_SOURCE ((int *)SYS_TempBuf)
+
+/* General subroutines & utilities ==================================== */
+
+/* MkRect fills in a RECT structure given a top-left corner and its
+   X and Y extents. It returns false if the rectangle is off-screen
+   in any way, or if the extents are zero or negative.
+*/
+
+static bool MkRect ( int X, int Y, int Xext, int Yext, RECT *pR )
+{
+  pR->X0 = X;
+  pR->Y0 = Y;
+  pR->X1 = X+Xext-1;
+  pR->Y1 = Y+Yext-1;
+
+  if ( X < 0 || pR->X1 < pR->X0 || pR->X1 >= WIN_Xtotal ||
+       Y < 0 || pR->Y1 < pR->Y0 || pR->Y1 >= WIN_Ytotal )
+    return false;
+
+  return true;
+}
+
+/* ----------------------- */
+
+/* Within() checks to see if a point is within a given rectangle. */
+
+static bool Within ( RECT *pR, int X, int Y )
+{
+  return ( X >= pR->X0 && X <= pR->X1 &&
+           Y >= pR->Y0 && Y <= pR->Y1 );
+}
+
+/* ----------------------- */
+
+/*
+   RectClip clips a rectangle Rd against another one Rs. If Rd and
+   Rs miss completely, Rd is not changed and 'false' is returned.
+   Otherwise, Rd is set to the intersection rectangle
+*/
+
+static bool RectClip ( RECT *pRd, RECT *pRs )
+{
+  if ( pRd->X0 > pRs->X1 ||
+       pRd->Y0 > pRs->Y1 ||
+       pRs->X0 > pRd->X1 ||
+       pRs->Y0 > pRd->Y1 )
+     return false;
+
+  pRd->X0 = max(pRd->X0, pRs->X0 );
+  pRd->Y0 = max(pRd->Y0, pRs->Y0 );
+  pRd->X1 = min(pRd->X1, pRs->X1 );
+  pRd->Y1 = min(pRd->Y1, pRs->Y1 );
+  return true;
+}
+
+/* --------------------- */
+
+/* GetPatSize returns the size of the pattern supplied by the PC,
+   according to the flags in the opcode word */
+
+static int GetPatSize ( int opcode )
+{
+  if ( opcode & OPC_UNI_PAT ) /* 1 word only */
+    return 4;
+
+  if ( opcode & OPC_FULL_PAT )
+    return Blt_PatWidth << 5; /* 8 * Patwidth words */
+
+  return 0;  /* No pattern supplied */
+}
+
+/* Cursor drawing routines ============================================ */
+
+/* Cursor = mouse pointer. It is actually drawn with code in vid.c.wins */
+
+static RECT ScreenRect;        /* RECT defining the screen area */
+
+static int Cur_Width;          /* Cursor width in words - depends on
+                                  bpp of screen mode. Each line of data
+                                  has one word of zeros at the beginning
+                                  and end of the actual data (to make
+                                  life easier for the plotting routine).
+                                  Thus for a 32-pixel cursor in 4bpp mode
+                                  this will be 6 (4 words data + 2 ends) */
+
+static int CurSaveArea[CUR_SHAPE_LIMIT];  /* Saves screen under pointer */
+static int CurShapeData[CUR_SHAPE_LIMIT]; /* AND/XOR masks for pointer */
+
+static int Cur_Xext=0, Cur_Yext=0;	/* Cursor X and Y extents */
+
+static RECT Cur_Pos, Cur_Excl; /* Cursor position & exclusion rectangles */
+
+static struct DrawPtrParams Cur_DPP;
+
+static int Cur_State;		/* Cursor state flags */
+#define CUR_REQUIRED 1
+#define CUR_DRAWN    2
+#define CUR_EXCLUDED 4
+
+/* SetDrawParams sets up all the cursor-drawing parameters for the
+   assembly-language routine which draws the cursor on the screen.
+*/
+
+static bool SetDrawParams ( struct DrawPtrParams *pDPP, RECT *pPos )
+{
+  int X, Y, left_gap, top_gap, Xmax, Ymax;
+
+  /* Check if partially off left-hand edge */
+  /* left_gap is number of dest. words which we overhang by */
+
+  X = max(pPos->X0, 0);
+  left_gap = (((X - pPos->X0) << Blt_BPP_shift) + 31) >> 5;
+
+  /* Check if partially off top edge */
+
+  Y = max(pPos->Y0, 0);
+  top_gap = Y - (pPos->Y0);
+
+  /* Check bottom/right edges */
+  Xmax = min( WIN_Xtotal-1, pPos->X1 );
+  Ymax = min( WIN_Ytotal-1, pPos->Y1 );
+
+  /* Check for totally offscreen or null cursor rectangle */
+  if ( X > Xmax || Y > Ymax )
+    return false;
+
+  /* Fill in variables */
+
+  pDPP->dst_offset= Blt_GetXYOffset ( X, Y );
+  pDPP->src_ptr   = CurShapeData + left_gap + (top_gap*Cur_Width);
+  pDPP->save_ptr  = CurSaveArea;
+
+  pDPP->src_pitch = Cur_Width;
+  pDPP->dst_pitch = (WIN_BytesPerLine >> 2);
+
+  pDPP->dst_height = Ymax - Y + 1;
+
+  pDPP->pix_shift = (pPos->X0 << Blt_BPP_shift) & 31;
+  pDPP->dst_width =  (Xmax >> Blt_PPW_shift) -
+                        (X >> Blt_PPW_shift) + 1;
+
+  return true;
+}
+/* -------------------------- */
+
+/* Checks to see if the cursor should be excluded. The current
+   cursor position and extents are given in Cur_Pos. The cursor
+   exclusion rectangle is given in Cur_Excl. Note that we have to
+   effectively round Cur_Pos to whole-word boundaries, because the
+   saving & restoring of the image under the cursor is done in whole
+   words.
+*/
+
+static bool CursorExcluded (void)
+{
+  if ( Cur_Pos.Y0 > Cur_Excl.Y1  ||
+       Cur_Pos.Y1 < Cur_Excl.Y0  ||
+      (Cur_Pos.X0 & ~Blt_PPW_mask) > Cur_Excl.X1 ||
+      (Cur_Pos.X1 | Blt_PPW_mask) < Cur_Excl.X0 )
+    return false;
+
+  return true;
+}
+
+/* -------------------------- */
+
+/* Note: the screen base address may have changed between calling
+   SetDrawParams() and CursorOff(), if a switch between single-
+   tasking and multitasking has been made. So we need to calculate
+   dst_ptr & dst_ptr2 freshly every time.
+*/
+
+static void CursorOn(void)
+{
+  Cur_DPP.dst_ptr  = SPRITE_PTR(Cur_DPP.dst_offset);
+  Cur_DPP.dst_ptr2 = SCREEN_PTR(Cur_DPP.dst_offset);
+
+  WINS_DrawPointer ( &Cur_DPP );
+  Cur_State |= CUR_DRAWN;
+  VID_AreaChanged ( Cur_Pos.X0, Cur_Pos.X1, Cur_Pos.Y0, Cur_Pos.Y1, 1 );
+}
+
+/* -------------------------- */
+
+static void CursorOff(void)
+{
+  Cur_DPP.dst_ptr  = SPRITE_PTR(Cur_DPP.dst_offset);
+  Cur_DPP.dst_ptr2 = SCREEN_PTR(Cur_DPP.dst_offset);
+
+  WINS_ErasePointer( &Cur_DPP );
+  Cur_State &= ~CUR_DRAWN;
+  VID_AreaChanged ( Cur_Pos.X0, Cur_Pos.X1, Cur_Pos.Y0, Cur_Pos.Y1, 3 );
+}
+
+/* -------------------------- */
+
+/* A change is made to the cursor by altering the value in Cur_State
+   and calling CheckCursorState. This will do any drawing or erasing
+   necessary.
+*/
+
+void WIN_CheckCursorState (void)
+{
+  switch ( Cur_State )
+  {
+    case 0 :  /* Not required, not drawn */
+      return;
+
+    case CUR_REQUIRED : /* Required but not drawn */
+      if ( SetDrawParams ( &Cur_DPP, &Cur_Pos ) )
+        CursorOn();
+      return;
+
+    case CUR_DRAWN :    /* Drawn but no longer required */
+    case CUR_EXCLUDED+CUR_DRAWN :
+      CursorOff();
+      return;
+
+    case CUR_REQUIRED+CUR_DRAWN :  /* On screen OK */
+      return;  /* No problems! */
+
+    case CUR_EXCLUDED :  /* Not required, not drawn */
+      return;
+
+    case CUR_EXCLUDED+CUR_REQUIRED :
+      /* We get here if the cursor has been excluded, then
+         subsequently erased from the screen. We could in
+         theory check to see if the cursor has recently been
+         moved to outside the exclusion rectangle, in which
+         case we could redraw it. There is little point to this,
+         however, because cursor exclusion is only temporary and
+         the cursor state will be re-checked soon after it is
+         finished. */
+      return;
+
+    case CUR_EXCLUDED+CUR_REQUIRED+CUR_DRAWN :
+      /* See if cursor is inside exclusion rectangle */
+      if ( CursorExcluded() )
+        CursorOff();
+      return;
+  }
+}
+
+/* ------------------------------ */
+
+/* BeginDraw() & EndDraw()
+
+   Calls to these are made at the beginning and end of routines which
+   draw to or read from the screen. BeginDraw is given a rectangle on
+   the screen; it will exclude the mouse cursor from this area. EndDraw
+   performs an 'unexclude' function and also informs the front-end code
+   that a screen region has changed.
+
+   Multiple BeginDraw's can be called before an EndDraw.
+
+   If multiple EndDraws are called, only the first one will be
+   acted upon. Call EndDraw(0) if the screen has just been read,
+   otherwise EndDraw(n), where n>0, will redraw the changed area
+   in multitasking mode, after n polls.
+*/
+
+static void BeginDraw ( RECT *pR )
+{
+  /* Assumes all co-ords have been validated */
+
+  if ( pR->X0 < Cur_Excl.X0 ) Cur_Excl.X0 = pR->X0;
+  if ( pR->Y0 < Cur_Excl.Y0 ) Cur_Excl.Y0 = pR->Y0;
+  if ( pR->X1 > Cur_Excl.X1 ) Cur_Excl.X1 = pR->X1;
+  if ( pR->Y1 > Cur_Excl.Y1 ) Cur_Excl.Y1 = pR->Y1;
+
+  /* Exclude cursor */
+
+  Cur_State |= CUR_EXCLUDED;
+  WIN_CheckCursorState();
+}
+
+/* ----------------------- */
+
+static void EndDraw ( int changed )
+{
+  if ( Cur_Excl.X0 > Cur_Excl.X1 ||
+       Cur_Excl.Y0 > Cur_Excl.Y1 )   /* Nothing drawn recently */
+    return;
+
+  /* Unexclude cursor */
+
+  /* Update screen changed */
+  if ( changed > 0 )
+    VID_AreaChanged ( Cur_Excl.X0, Cur_Excl.X1,
+                      Cur_Excl.Y0, Cur_Excl.Y1 , changed );
+
+  Cur_Excl.X0 = Cur_Excl.Y0 = 32767;
+  Cur_Excl.X1 = Cur_Excl.Y1 = -32768;
+  Cur_State &= ~CUR_EXCLUDED;
+
+  /* Don't do CheckCursorState() here, because there might be more
+     drawing to come. CheckCursorState will be done on the next
+     PollChain event */
+}
+
+
+
+/* FastBorder subroutines ===================================== */
+
+static RECT FB_cliprect;
+
+static void DoClippedRect ( int Xa, int Ya, int Xb, int Yb )
+{
+  RECT Rd;
+  int Ylen;
+
+  /* Draws a rect from (Xa,Ya) to (Xb,Yb), clipped to FB_cliprect */
+
+  Rd.X0 = Xa, Rd.Y0 = Ya;
+  Rd.X1 = Xb, Rd.Y1 = Yb;
+
+  if ( !RectClip( &Rd, &FB_cliprect) )
+    return;
+
+  Blt_SetDestRect ( &Rd, false );
+
+  BeginDraw ( &Rd );
+  Ylen = Rd.Y1-Rd.Y0+1;
+
+  while ( Ylen-- > 0 )
+    Blt_DoLine ( NO_SOURCE );
+}
+
+
+
+
+/* ScanLR subroutines ================================= */
+
+
+static int ScanMatchLeft ( int *ptr, uint mask, int colr, int X )
+{
+  int d, bitshift;
+  bitshift = Blt_BitsPixel;
+
+  while ( X >= 0 )
+  {
+    d = (*ptr) ^ colr;       /* Get data */
+    while ( mask != 0 )      /* Search this word for match */
+    {
+      if ( (d & mask) == 0 )
+        return X;
+      X--;
+      mask >>= bitshift;
+    }
+    mask = Blt_PixMask_RH;        /* Start next word */
+    ptr--;
+  }
+
+  return ALL_ONES;          /* Not found result */
+}
+
+/* --------------------------- */
+
+static int ScanNoMatchLeft ( int *ptr, uint mask, int colr, int X )
+{
+  int d, bitshift;
+  bitshift = Blt_BitsPixel;
+
+  while ( X >= 0 )
+  {
+    d = (*ptr) ^ colr;       /* Get data */
+    while ( mask != 0 )      /* Search this word for mismatch */
+    {
+      if ( (d & mask) != 0 )
+        return X;
+      X--;
+      mask >>= bitshift;
+    }
+    mask = Blt_PixMask_RH;        /* Start next word */
+    ptr--;
+  }
+
+  return ALL_ONES;          /* Not found result */
+}
+
+/* --------------------------- */
+
+static int ScanMatchRight ( int *ptr, uint mask, int colr, int X )
+{
+  int d, bitshift;
+  bitshift = Blt_BitsPixel;
+
+  while ( X < WIN_Xtotal )
+  {
+    d = (*ptr) ^ colr;       /* Get data */
+    while ( mask != 0 )      /* Search this word for match */
+    {
+      if ( (d & mask) == 0 )
+        return X;
+      X++;
+      mask <<= bitshift;
+    }
+    mask = Blt_PixMask_LH;        /* Start next word */
+    ptr++;
+  }
+
+  return ALL_ONES;   /* Not found result */
+}
+
+/* --------------------------- */
+
+static int ScanNoMatchRight ( int *ptr, uint mask, int colr, int X )
+{
+  int d, bitshift;
+  bitshift = Blt_BitsPixel;
+
+  while ( X < WIN_Xtotal )
+  {
+    d = (*ptr) ^ colr;       /* Get data */
+    while ( mask != 0 )      /* Search this word for mismatch */
+    {
+      if ( (d & mask) != 0 )
+        return X;
+      X++;
+      mask <<= bitshift;
+    }
+    mask = Blt_PixMask_LH;        /* Start next word */
+    ptr++;
+  }
+
+  return ALL_ONES;   /* Not found result */
+}
+
+
+
+/* Line-drawing subroutines ============================================ */
+
+/* All binary raster ops (between a fixed pen P and a destination D), as
+   used for drawing lines, and the PutPixel function, can be broken down
+   into doing
+
+   D' = A0 & (Ad & D);
+
+   where A0 and Ad are derived from the pen P.
+
+   For styled (dashed, etc) lines, we have an Ad and A0 value for
+   the '1' (foreground) and '0' (background) pixels in the line. These
+   values will either draw in foreground/background colours, or draw
+   transparently in the foreground colour.
+*/
+
+static int Styled_Ad [2];
+static int Styled_A0 [2];
+static int PenStyle;
+static int PenBit;
+
+static int LineXpos;   /* Current X position */
+
+typedef void (*pDrawFunction) (int dist);
+
+/* The precise method of drawing lines is explained in the PC-side
+   assembler source for OUTPUT.ASM. Functions here follow pretty
+   much the same pattern */
+
+/* -------------------- */
+
+/* Draws a horizontal line 'dist' units along, then moves Y up or
+   down by 1 */
+
+static void DrawYminor ( int dist )
+{
+  int tmp;
+  Blt_SetDestMasks( LineXpos, LineXpos+dist-1);
+  tmp = Blt_DestOfs + (Blt_WordOffset << 2);
+
+  Blt_ROPfn ( NO_SOURCE, SPRITE_PTR(tmp), SCREEN_PTR(tmp) );
+  Blt_DestOfs += Blt_DestLineInc;
+  LineXpos += dist;
+}
+
+/* -------------------- */
+
+/* Draws a solid vertical line dist units high, then moves X
+   left by one pixel */
+
+static void DrawYmajor ( int dist )
+{
+  register int mask, xor, pitch;
+  register int *psd1, *pd2;
+  int nmoved;
+
+  psd1 = SPRITE_PTR(Blt_DestOfs);
+  pd2  = SCREEN_PTR(Blt_DestOfs);
+
+  mask = Styled_Ad[1] | (~Blt_RHmask);
+  xor  = Styled_A0[1] & (Blt_RHmask);
+  pitch = Blt_DestLineInc >> 2;
+  nmoved = dist * Blt_DestLineInc;
+
+  /* Draw line segment*/
+
+  while ( dist-- > 0 )
+  {
+    *psd1 = *pd2 = (*psd1 & mask) ^ xor;
+    psd1 += pitch;
+    pd2  += pitch;
+  }
+
+  /* Move X on by one */
+
+  Blt_RHmask <<= Blt_BitsPixel;
+  if ( Blt_RHmask == 0 )
+  {
+    Blt_RHmask = Blt_PixMask_LH;
+    psd1++;
+    pd2++;
+    nmoved += 4;
+  }
+
+  Blt_DestOfs += nmoved;
+}
+
+/* ----------------------------- */
+
+static void DrawYminorStyled ( int dist )
+{
+  int *psd1, *pd2;
+  int pen_bit;
+  int Xmask, nmoved;
+
+  pen_bit = PenBit;
+  Xmask   = Blt_RHmask;
+  psd1 = SPRITE_PTR(Blt_DestOfs);
+  pd2  = SCREEN_PTR(Blt_DestOfs);
+  nmoved = Blt_DestLineInc;
+
+  while ( dist-- > 0 )
+  {
+    if ( PenStyle & pen_bit )
+    {
+      *pd2 = *psd1 = (*psd1 & (Styled_Ad[1] | ~Xmask)) ^
+                     (Styled_A0[1] & Xmask);
+    }
+    else
+    {
+      *pd2 = *psd1 = (*psd1 & (Styled_Ad[0] | ~Xmask)) ^
+                     (Styled_A0[0] & Xmask);
+    }
+
+    Xmask <<= Blt_BitsPixel;
+    if ( Xmask == 0 )
+    {
+      Xmask = Blt_PixMask_LH;
+      psd1++;
+      pd2++;
+      nmoved += 4;
+    }
+
+    pen_bit <<= 1;
+    if ( pen_bit == 0 ) pen_bit = 1;
+  }
+
+  Blt_DestOfs += nmoved;
+  Blt_RHmask = Xmask;
+  PenBit = pen_bit;
+}
+
+/* ----------------------------- */
+
+static void DrawYmajorStyled ( int dist )
+{
+  register int *psd1, *pd2, pen_bit, pitch;
+  int mask0, xor0, mask1, xor1, nmoved;
+
+  pen_bit = PenBit;
+  psd1 = SPRITE_PTR(Blt_DestOfs);
+  pd2  = SCREEN_PTR(Blt_DestOfs);
+  pitch = Blt_DestLineInc >> 2;
+  nmoved = Blt_DestLineInc * dist;
+
+  mask0 = Styled_Ad[0] | ~Blt_RHmask;
+  xor0  = Styled_A0[0]  &  Blt_RHmask;
+  mask1 = Styled_Ad[1] | ~Blt_RHmask;
+  xor1  = Styled_A0[1]  &  Blt_RHmask;
+
+
+  while ( dist-- > 0 )
+  {
+    if ( PenStyle & pen_bit )
+      *pd2 = *psd1 = (*psd1 & mask1) ^ xor1;
+    else
+      *pd2 = *psd1 = (*psd1 & mask0) ^ xor0;
+
+    psd1 += pitch;
+    pd2  += pitch;
+
+    pen_bit <<= 1;
+    if ( pen_bit == 0 ) pen_bit = 1;
+  }
+
+  /* Move X across by one */
+
+  Blt_RHmask <<= Blt_BitsPixel;
+  if ( Blt_RHmask == 0 )
+  {
+    Blt_RHmask = Blt_PixMask_LH;
+    psd1++;
+    pd2++;
+    nmoved += 4;
+  }
+
+  Blt_DestOfs += nmoved;
+  PenBit = pen_bit;
+}
+
+/* ----------------------------- */
+
+static void RunLineDDA ( int majorlen, int minorlen, pDrawFunction pDF )
+{
+  register int cc, seg_len, count;
+
+  if ( minorlen <= 1 ) /* Optimisation for vert. or horiz. lines */
+  {
+    pDF ( majorlen );
+    return;
+  }
+
+  cc = majorlen;
+  count = minorlen >> 1;
+  seg_len = 0;
+
+  while ( cc-- > 0 )
+  {
+    count += minorlen;
+    seg_len++;
+
+    if ( count >= majorlen )
+    {
+      pDF ( seg_len );
+      count -= majorlen;
+      seg_len = 0;
+    }
+  }
+
+  if ( seg_len > 0 )
+    pDF (seg_len);
+}
+
+/* ----------------------------- */
+
+static void DrawLine ( int X0, int Y0, int X1, int Y1 )
+{
+  bool upwards;
+  int dx, dy;
+  RECT Rd;
+
+  if ( !Within ( &ScreenRect, X0, Y0 ) ||
+       !Within ( &ScreenRect, X1, Y1 ) )
+  {
+    return;
+  }
+
+
+  /* Rd is the rectangle enclosing both ends of the line;
+     Set min & max Y values, and 'upwards' value */
+
+  if ( Y0 < Y1 )
+  {
+    upwards = false;
+    Rd.Y0 = Y0, Rd.Y1 = Y1;
+  }
+  else
+  {
+    upwards = true;
+    Rd.Y0 = Y1, Rd.Y1 = Y0;
+  }
+
+  /* We always draw from right to left. Swap endpoints
+     and 'upwards' value if necessary */
+
+  if ( X0 < X1 )
+    Rd.X0 = X0, Rd.X1 = X1;
+  else
+  {
+    upwards = !upwards;
+    Rd.X0 = X1, Rd.X1 = X0;
+  }
+
+  BeginDraw ( &Rd );
+
+  /* dx, dy are absolute deltaX & deltaY values (plus 1) */
+  dx = Rd.X1 - Rd.X0 + 1;
+  dy = Rd.Y1 - Rd.Y0 + 1;
+
+  LineXpos = Rd.X1 = Rd.X0;
+  Blt_SetDestRect ( &Rd, upwards );
+
+  /* This will set Blt_DestOfs to point to the
+     word containing the starting (X,Y) on the screen, and
+     Blt_RHmask will be the one-pixel mask for the starting
+     pixel. Blt_DestLineInc will also be set accordingly. This
+     is correct for all except DrawYminor, which expects
+     Blt_DestOfs to point to the start of the line! */
+
+  if ( PenStyle == ALL_ONES )
+  {
+    if ( dy >= dx )  /* Y-major or 45degree line */
+      RunLineDDA ( dy, dx, DrawYmajor );
+    else
+    {
+      Blt_DestOfs -= (Blt_WordOffset << 2);
+      RunLineDDA ( dx, dy, DrawYminor );
+    }
+  }
+  else
+  {
+    if ( dy >= dx )  /* Y-major or 45degree line */
+      RunLineDDA ( dy, dx, DrawYmajorStyled );
+    else
+      RunLineDDA ( dx, dy, DrawYminorStyled );
+  }
+}
+
+
+
+/* HPC dispatch functions ============================================ */
+
+static int BltForegnd, BltBackgnd;  /* Fg/Bg colours for mono blits */
+static int SrcYlen, DstYlen;        /* Number of lines to fetch or write
+                                       during memory/screen blits */
+
+
+static void WIN_ReadModeInfo ( WIN_PARAM_BLK *p )
+{
+  /*SYS_error( false ,"sanity check");*/
+  p->readmodeinfo.Signature = HPC_WIN_SIG;
+  p->readmodeinfo.Version = WINDRV_VERSION;
+
+  p->readmodeinfo.Xtotal = WIN_Xtotal;
+  p->readmodeinfo.Ytotal = WIN_Ytotal;
+  p->readmodeinfo.flags  = WIN_flags;
+  p->readmodeinfo.bpp    = WIN_bpp;
+  p->readmodeinfo.SharedAddr = WIN_PCBufAddr;
+}
+
+/* ------------ */
+
+
+static void WIN_Enable ( WIN_PARAM_BLK *p )
+{
+  if ( (WIN_Xtotal > 0 && WIN_Ytotal > 0) &&
+       !(VIDS_FreeMemory(VID_MemorySize) < WIN_LastAllocated)
+       )
+  {
+    /* Activate mode, clear screen */
+    Cur_State = 0; /* Disable pointer, it's not showing */
+    WIN_WinModeActive = true;
+    SYS_trace("Enable: free %d, last allocated %d", VIDS_FreeMemory(VID_MemorySize), WIN_LastAllocated);
+    VID_UpdateModeVars();
+    memset ( VIDS_MemoryBlk, 0, WIN_imagesize );
+    p->result.value = 1;
+  }
+  else
+  {
+    p->result.value = 0;
+    /*SYS_error(false, "enablefail");*/
+  }
+}
+
+/* -------------- */
+
+
+static void WIN_Disable ( WIN_PARAM_BLK *p )
+{
+  NotUsed ( p );
+  Cur_State = 0;
+  WIN_WinModeActive = false;
+  VID_UpdateModeVars();
+}
+
+/* -------------- */
+
+
+static void WIN_StrBlt ( WIN_PARAM_BLK *p )
+{
+#define Params (p->strblt)
+  RECT Rd;
+  BYTE *src_line;
+  int Ylen, lineoffs;
+
+  /* Should be clipped to screen already. If not, abort */
+
+  if ( !MkRect ( Params.DestX, Params.DestY,
+                 Params.ExtX,  Params.ExtY, &Rd ) )
+    return;
+
+  /* Check we won't go off end of buffer */
+
+  Ylen = Params.ExtY;
+  lineoffs = Params.LineOffset;
+
+  if ( Ylen*lineoffs > STRBLT_MAX_LEN )
+    return;
+
+  Blt_SetupStrblt ( Params.Opcode, Params.Foregnd, Params.Backgnd );
+  Blt_SetDestRect ( &Rd, false );
+  BeginDraw ( &Rd );
+
+  src_line = Params.Data;
+
+  while ( Ylen-- > 0 )
+  {
+    Blt_StrBltFn ( src_line, SPRITE_PTR(Blt_DestOfs),
+                             SCREEN_PTR(Blt_DestOfs) );
+    src_line    += lineoffs;
+    Blt_DestOfs += Blt_DestLineInc;
+  }
+  EndDraw(2);
+#undef Params
+}
+
+/* ------------ */
+
+
+static void WIN_DevBlit ( WIN_PARAM_BLK *p )
+{
+#define Params (p->bitblt)
+
+  /* Device-to-device blit */
+  RECT Rd, Rs;  /* Source & dest rectangles */
+
+  int Ylen = Params.ExtY;
+
+  SrcYlen = DstYlen = 0;
+
+  /* Check it's all pukka & on-screen */
+
+  if ( !MkRect ( Params.DestX, Params.DestY,
+                   Params.ExtX, Params.ExtY, &Rd ) )
+    return;
+
+  Blt_SetupROP ( Params.Opcode, Params.Pattern );
+
+  /* Does it involve source pixels? */
+
+  if ( Params.Opcode & SRC_PRESENT )
+  {
+    if ( !MkRect (Params.SrcX, Params.SrcY, Params.ExtX, Params.ExtY, &Rs ))
+      return;
+
+    BeginDraw ( &Rs );
+    BeginDraw ( &Rd );
+
+    /* Do upwards if srcY < dstY */
+
+    Blt_SetFetchRect ( &Rs, Rs.Y0 < Rd.Y0, Rd.X0 );
+    Blt_SetDestRect  ( &Rd, Rs.Y0 < Rd.Y0 );
+
+    /* Do it! */
+
+    while ( Ylen-- > 0 )
+    {
+      Blt_FetchColour ( (int *) SYS_TempBuf );
+      Blt_DoLine ( (int *) SYS_TempBuf );
+    }
+    EndDraw(3);
+  }
+  else /* No source e.g. a pat->dev blit */
+  {
+    Blt_SetDestRect ( &Rd, false );
+    BeginDraw ( &Rd );
+
+    while ( Ylen-- > 0 )
+      Blt_DoLine ( NO_SOURCE );
+
+    EndDraw(3);
+  }
+#undef Params
+}
+
+/* -------------- */
+
+
+static void WIN_MemBlit ( WIN_PARAM_BLK *p )
+{
+#define Params (p->bitblt)
+  /* Memory-to-device blit */
+  RECT Rd;
+
+  SrcYlen = DstYlen = 0;
+
+  /* Check it's on-screen */
+  if ( !MkRect ( Params.DestX, Params.DestY, Params.ExtX, Params.ExtY, &Rd ))
+    return;
+
+  Blt_SetupROP ( Params.Opcode, Params.Pattern );
+
+  /* Setup up Mono/Colour translation options and Blt_FetchLen */
+
+  BltForegnd = Params.Foregnd;
+  BltBackgnd = Params.Backgnd;
+  Blt_SetDestRect ( &Rd, Params.Opcode & OPC_DIB_BLIT );
+  BeginDraw ( &Rd );
+
+  /* Set number of lines to receive with WIN_WriteLine/WriteLineMono */
+  DstYlen = Params.ExtY;
+
+#undef Params
+}
+
+
+/* -------------- */
+
+
+static void WIN_DevFetch ( WIN_PARAM_BLK *p )
+{
+#define Params (p->bitblt)
+  /* Device-to-memory blit */
+
+  RECT Rs;
+
+  SrcYlen = DstYlen = 0;
+
+  /* Check it's on-screen */
+  if ( !MkRect ( Params.SrcX, Params.SrcY, Params.ExtX, Params.ExtY, &Rs ))
+    return;
+
+  BltForegnd = Params.Foregnd;
+  BltBackgnd = Params.Backgnd;
+  /* Set source rectangle & alignment options */
+
+  Blt_SetFetchRect ( &Rs, false, Params.DestX );
+  BeginDraw ( &Rs );
+
+  /* Set number of lines to be read */
+  SrcYlen = Params.ExtY;
+
+#undef Params
+}
+
+/* ------------ */
+
+
+static void WIN_ScanLine ( WIN_PARAM_BLK *p )
+{
+#define Params (p->scanline)
+  int tmp, lineoffset, x0, x1;
+  WORD *pdata;
+  RECT Rd;
+
+  /* Check count is OK */
+
+  if ( Params.Count > SCANLINE_MAX )
+    return;
+
+  /* Get Y coord */
+
+  Rd.Y0 = Rd.Y1 = Params.Yl;
+  if ( Rd.Y0 < 0 || Rd.Y0 >= WIN_Ytotal ) return;
+
+  /* Get min & max X values */
+
+  pdata = (WORD *) (Params.Pattern_Data + GetPatSize(Params.Opcode));
+  Rd.X0 = pdata[0];     /* Start of first line */
+  Rd.X1 = pdata[1];     /* End of first line */
+  pdata+=2;
+
+  tmp = Params.Count;
+  while ( tmp-- > 1 )
+  {
+    if ( pdata[0] < Rd.X0 ) Rd.X0 = pdata[0];
+    if ( pdata[1] > Rd.X1 ) Rd.X1 = pdata[1];
+    pdata += 2;
+  }
+  Rd.X1--; /* Make inclusive */
+
+  /* Set ROP value for given pattern */
+
+  Blt_SetupTransROP ( Params.Opcode, (int *)Params.Pattern_Data );
+  Blt_PatY = (Rd.Y0 & 7) * Blt_PatWidth;
+
+  /* Draw lines */
+
+  BeginDraw ( &Rd );
+  lineoffset = Blt_GetXYOffset ( 0, Rd.Y0 );
+
+  tmp = Params.Count;
+  pdata = (WORD *) (Params.Pattern_Data + GetPatSize(Params.Opcode));
+
+  while ( tmp-- > 0 )
+  {
+    x0 = pdata[0];
+    x1 = pdata[1]-1;
+
+    if ( x0 >= 0 && x1 >= x0 && x1 < WIN_Xtotal )
+    {
+      Blt_SetDestMasks ( x0, x1 );
+      Blt_ROPfn ( NO_SOURCE, SPRITE_PTR(lineoffset) + Blt_WordOffset,
+                             SCREEN_PTR(lineoffset) + Blt_WordOffset );
+    }
+    pdata += 2;
+  }
+  EndDraw ( 4 );
+
+#undef Params
+}
+
+
+/* --------------------------------------- */
+
+static void WIN_PolyLine ( WIN_PARAM_BLK *p )
+{
+#define Params (p->polyline)
+  int t;
+  WORD *pData;
+
+  /* Set up for drawing in foreground colour */
+
+  t = Params.Foregnd;
+  Styled_A0[1] = Blt_GetA0( t, Params.Opcode );
+  Styled_Ad[1] = Blt_GetAd( t, Params.Opcode );
+
+  Blt_SetupROP ( Params.Opcode | OPC_UNI_PAT, &t );
+
+  PenStyle = Params.Style;
+  PenStyle = PenStyle | (PenStyle << 16);
+  PenBit   = 1;
+
+  if ( PenStyle != ALL_ONES ) /* Styled lines? */
+  {
+    /* If so, are the gaps in the line transparent? */
+    if ( Params.Opcode & OPC_PL_TRANS )
+    {
+      Styled_Ad[0] = ALL_ONES;
+      Styled_A0[0] = 0;
+    }
+    else /* No, they are background colour */
+    {
+      Styled_Ad[0] = Blt_GetAd( Params.Backgnd, Params.Opcode );
+      Styled_A0[0] = Blt_GetA0( Params.Backgnd, Params.Opcode );
+    }
+  }
+
+  pData = Params.Data;
+  t = Params.Count;
+
+  if ( t > POLYLINE_MAX ) /* Other end has made error! */
+    return;
+
+  while ( t-- > 0 )
+  {
+    DrawLine ( pData[0],   /* X0 */
+               pData[1],   /* Y0 */
+               pData[2],   /* X1 */
+               pData[3] ); /* Y1 */
+
+    pData += 4;
+  }
+  EndDraw(4);
+#undef Params
+}
+
+/* --------------------------------------- */
+
+
+static void WIN_FastBorder ( WIN_PARAM_BLK *p )
+{
+#define Params (p->fastborder)
+
+/* FastBorder draws a rectangular frame (for a window, etc);
+   it is particularly used by Windows for move/resize outlines.
+   This function is given the rectangle co-ords (X1,Y1) to (X2,Y2)
+   and the thickness of the border in pixels (this is to be
+   drawn _inside_ the given rectangle). Also provided is a clipping
+   rectangle, outside of which no drawing should be done.
+
+   Note that Windows uses 'exclusive' co-ordinates for rectangles,
+   so the X2 and Y2 (right/bottom) parameters are always
+   one more than they should be in our 'inclusive' system.
+*/
+
+  int X1, Y1, X2, Y2, Xth, Yth;
+
+  Blt_SetupROP (Params.Opcode, Params.Pattern);
+
+  /* Set up clip rectangle */
+
+  FB_cliprect.X0 = max( Params.ClipX1, 0);
+  FB_cliprect.Y0 = max( Params.ClipY1, 0);
+  FB_cliprect.X1 = min( Params.ClipX2, WIN_Xtotal)-1;
+  FB_cliprect.Y1 = min( Params.ClipY2, WIN_Ytotal)-1;
+
+  /* Get other params */
+
+  X1 = Params.RectX1;
+  Y1 = Params.RectY1;
+  X2 = Params.RectX2-1;
+  Y2 = Params.RectY2-1;
+  Xth = Params.Xthickness;
+  Yth = Params.Ythickness;
+
+  /* Draw rectangles */
+
+  DoClippedRect(X1, Y1, X2, Y1+Yth-1);             /* Top */
+  DoClippedRect(X1, Y1+Yth, X1+Xth-1, Y2-Yth);     /* Left */
+  DoClippedRect(X1, Y2-Yth+1, X2, Y2);             /* Bottom */
+  DoClippedRect(X2-Xth+1, Y1+Yth, X2, Y2-Yth);     /* Right */
+  EndDraw(3);
+
+#undef Params
+}
+
+
+/* --------------------------------------- */
+
+
+static int  WIN_SSB_Start; /* Offset (in words!) from start of screen
+                              to start of save area */
+static int  WIN_SSB_Size;  /* Save area size in words */
+
+static void WIN_SaveBitmap ( WIN_PARAM_BLK *p )
+{
+#define Params (p->savebitmap)
+
+  RECT Rsd;
+
+  int height;   /* Number of lines to save/restore */
+  int width;    /* Total number of words on each line */
+  int *pSaved;
+
+  if ( !MkRect( Params.DestX, Params.DestY, Params.ExtX, Params.ExtY, &Rsd ))
+  {
+    p->result.value = 0; /* Failed! */
+    return;
+  }
+
+  Blt_SetDestRect ( &Rsd, false );
+  height = Rsd.Y1 - Rsd.Y0 + 1;
+  width  = Blt_DstLast + 1;
+  pSaved  = ((int *)VIDS_MemoryBlk) + WIN_SSB_Start;
+
+  if ( height * width > WIN_SSB_Size )
+  {
+    /* Bitmap too big to save / restore ! */
+    p->result.value = 0 ;
+    return;
+  }
+
+  if ( Params.Op == 0 )  /* Save screen bitmap */
+  {
+    BeginDraw ( &Rsd );
+    while ( height-- > 0 )
+    {
+      memcpy ( pSaved, SPRITE_PTR(Blt_DestOfs), width << 2 );
+      Blt_DestOfs += Blt_DestLineInc;
+      pSaved += width;
+    }
+    EndDraw(0);
+  }
+  else  /* Restore screen bitmap */
+  {
+    BeginDraw ( &Rsd );
+    while ( height-- > 0 )
+    {
+      Blt_CopySrc ( pSaved, SPRITE_PTR(Blt_DestOfs),
+                            SCREEN_PTR(Blt_DestOfs) );
+      Blt_DestOfs += Blt_DestLineInc;
+      pSaved += width;
+    }
+    EndDraw(4);
+  }
+
+  p->result.value = 1;
+
+#undef Params
+}
+
+/* --------------------------------------- */
+
+
+static void WIN_PutPixel ( WIN_PARAM_BLK *p )
+{
+#define Params (p->putpixel)
+  RECT Rd;
+
+  int _A0, _Ad, tmp, mask, *ptr;
+
+  if ( !MkRect ( Params.Xp, Params.Yp, 1, 1, &Rd ) )
+     return;
+
+  _A0 = Blt_GetA0 ( Params.Colour, Params.Opcode );
+  _Ad = Blt_GetAd ( Params.Colour, Params.Opcode );
+
+  mask = Blt_PixMask_LH << ((Rd.X0 << Blt_BPP_shift) & 31 );
+
+  BeginDraw ( &Rd );
+  tmp = Blt_GetXYOffset(Rd.X0, Rd.Y0);
+  ptr = SPRITE_PTR(tmp);
+  *ptr = *SCREEN_PTR(tmp) =
+            (*ptr & (_Ad | ~mask) ) ^ (_A0 & mask );
+  EndDraw(3);
+
+#undef Params
+}
+
+/* --------------------------------------- */
+
+
+static void WIN_GetPixel ( WIN_PARAM_BLK *p )
+{
+#define Params (p->getpixel)
+  RECT Rs;
+
+  uint tmp;
+
+  if ( !MkRect ( Params.Xp, Params.Yp, 1, 1, &Rs ) )
+  {  /* Offscreen */
+    p->result.value = 0;
+    return;
+  }
+
+  BeginDraw(&Rs);
+  tmp = Blt_GetXYOffset( Rs.X0, Rs.Y0 );
+  tmp = *SPRITE_PTR(tmp) >> ((Rs.X0 << Blt_BPP_shift) & 31);
+  EndDraw(0);
+
+  p->result.value = tmp & Blt_PixMask_LH;
+
+#undef Params
+}
+
+
+/* --------------------------- */
+
+
+static void WIN_ScanLR ( WIN_PARAM_BLK *p )
+{
+#define Params (p->scanlr)
+
+  RECT Rs;
+  int X, *ptr;
+  uint mask;
+
+  if ( !MkRect ( Params.Xp, Params.Yp, 1, 1, &Rs ) )
+  {
+    p->result.value = 0x8000; /* 'Offscreen' error code */
+    return;
+  }
+
+  /* Exclude cursor from whole line */
+
+  X = Rs.X0;
+  Rs.X0 = 0; Rs.X1 = WIN_Xtotal-1;
+  BeginDraw ( & Rs );
+
+  ptr = SPRITE_PTR(Blt_GetXYOffset( X, Rs.Y0) );
+  mask = Blt_PixMask_LH << ((X << Blt_BPP_shift) & 31);
+
+  switch ( Params.How & 3 )
+  {
+    case 0:
+      p->result.value = ScanNoMatchRight ( ptr, mask, Params.Colour, X );
+      break;
+    case 1:
+      p->result.value = ScanMatchRight ( ptr, mask, Params.Colour, X );
+      break;
+    case 2:
+      p->result.value = ScanNoMatchLeft ( ptr, mask, Params.Colour, X );
+      break;
+    case 3:
+      p->result.value = ScanMatchLeft ( ptr, mask, Params.Colour, X );
+      break;
+  }
+
+  EndDraw(0);
+
+#undef Params
+}
+
+
+
+/* ---------------------------------- */
+
+static void WIN_WriteXY ( WIN_PARAM_BLK *p )
+{
+#define Params (p->writexy)
+
+  /* Writes a single horizontal line of data on to the screen -
+     a sort of fast single-line BitBlt. It's used by RLE->screen decoder,
+     which needs to be able to write non-rectangular areas of the
+     screen. Note that this doesn't do BeginDraw & EndDraw to exclude
+     the cursor, as it's too time-consuming. Instead, the PC issues
+     BeginDraw and EndDraw commands at the start and end of the RLE
+     decoding routine, using the clip rectangle as the exclusion rect.
+  */
+
+  int X0, X1, tmp;
+
+  X0  = Params.DestX;
+  X1  = X0 + Params.Xext - 1;
+  tmp = Params.DestY;
+
+  if ( Within ( &ScreenRect, X0, tmp ) && X1>=X0 && X1<WIN_Xtotal )
+  {
+    tmp = Blt_GetXYOffset ( X0, tmp );
+    Blt_SetDestMasks ( X0, X1 );
+    Blt_CopySrc ( Params.Data, SPRITE_PTR(tmp), SCREEN_PTR(tmp) );
+  }
+
+#undef Params
+}
+
+
+/* ---------------------------------- */
+
+
+static void WIN_BeginDraw ( WIN_PARAM_BLK *p )
+{
+#define Params (p->begindraw)
+  RECT Rs;
+
+  if ( MkRect ( Params.X1, Params.Y1, Params.X2-Params.X1,
+                Params.Y2-Params.Y1, &Rs ) )
+  {
+    BeginDraw ( &Rs );
+  }
+
+#undef Params
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_EndDraw ( WIN_PARAM_BLK *p )
+{
+  NotUsed(p);
+  EndDraw(3);
+}
+
+
+/* ---------------------------------- */
+
+
+static void WIN_UpdateColours ( WIN_PARAM_BLK *p )
+{
+#define Params (p->updatecolours)
+
+  /* This passes all the colours in the given screen rectangle through
+  a translation table. Called by Windows when the palette changes.
+  */
+
+  RECT Rs;
+  int  i, linestart;
+  register BYTE *pb1, *pb2, *xlat;
+  register int x;
+
+  if ( WIN_bpp != 8 )
+    return;
+
+  if ( !MkRect( Params.DestX, Params.DestY, Params.ExtX, Params.ExtY, &Rs ))
+    return;
+
+  BeginDraw ( &Rs );
+
+  i = Params.ExtY;
+  linestart = Blt_GetXYOffset(Rs.X0, Rs.Y0);
+  xlat = Params.Data;
+
+  while ( i-- > 0 )     /* Y lines */
+  {
+    x = Params.DestX & 3; /* Offset of X pixel within longword */
+    pb1 = (BYTE *) SPRITE_PTR(linestart) + x; /* Byte pointer to pixel */
+    pb2 = (BYTE *) SCREEN_PTR(linestart) + x;
+
+    x = Params.ExtX;
+    while ( x-- > 0 )   /* X pixels */
+    {
+      *pb1 = *pb2 = xlat[*pb1];
+      pb1++, pb2++;
+    }
+
+    linestart += WIN_BytesPerLine;
+  }
+
+  EndDraw(3);
+
+#undef Params
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_PointerShape ( WIN_PARAM_BLK *p )
+{
+#define Params (p->pointershape)
+
+  /* PointerShape converts from Windows format into the
+     cursor format used by the drawing routines. Windows format
+     is 8 bytes per line, as follows:
+
+    +0  AND mask for pixels 0..7 (pix 0 = bit 7)
+    ..
+    +3  AND mask for pixels 24..31
+    +4  XOR mask for pixels 0..7
+    ..
+    +7  XOR mask for pixels 24..31
+
+   Our format is bpp-dependent, with a 2-bit code for each
+   2 bits of destination:
+
+    2bits = ab : a = BIC mask, b = XOR mask
+
+  */
+
+  BYTE *src;
+  int *pRes;
+  int i, j, t, maxwidth, maxline, Yext;
+  int and_mask[32];
+  int xor_mask[32];
+
+  /* Cursor size is about to change. Make sure it's not currently
+     displayed, as the 'restore' code wouldn't restore it properly. */
+  Cur_State &= ~CUR_REQUIRED;
+  WIN_CheckCursorState();
+
+  Yext = Params.PtrHeight;  /* Ignore width, it's fixed at 32 for now! */
+  src  = Params.Data;
+
+  if ( Yext == 0 || Yext > MAX_CUR_HEIGHT ) /* Error, or no cursor */
+  {
+    Cur_Yext = Cur_Xext = 0;
+    return;
+  }
+
+  /* Initialise */
+
+  Cur_Width = 2 + (1 << Blt_BPP_shift);
+       /* wide enough for 32 pixels, + one word spare each side */
+  pRes = CurShapeData;
+  maxwidth = 0;
+  maxline = 0;
+
+  for ( i=0; i < Yext; i++ )
+  {
+    /* Make BIC mask in bits 1, 3, 5, 7, ... */
+
+    Blt_MonoToColour ( src, and_mask, Cur_Width-2, 0xAAAAAAAA, 0 );
+
+    /* Make XOR mask in bits 0, 2, 4, 6, ... */
+    Blt_MonoToColour ( src+4, xor_mask, Cur_Width-2, 0, 0x55555555 );
+
+    *pRes++ = 0;  /* Start line with zero */
+
+    for ( j=0; j<Cur_Width-2; j++ )
+    {
+      *pRes++ = t = and_mask[j] | xor_mask[j];
+      /* Find highest non-zero word */
+      if ( t != 0 )
+      {
+        if ( j > maxwidth ) maxwidth = j;
+        if ( i > maxline ) maxline = i;
+      }
+    }
+
+    *pRes++ = 0;  /* End line with zero */
+    src += 8;
+  }
+
+  Cur_Xext = (maxwidth+1) << Blt_PPW_shift; /* X extent in pixels */
+  Cur_Yext = (maxline+1);
+
+  /* Redisplay cursor when it's next convenient. The ARM driver normally
+     follows this command with a ShowPointer command, so there's no
+     point in redrawing it immediately. Indeed, if the hotspot changes,
+     it would make the cursor jump */
+
+  Cur_State |= CUR_REQUIRED;
+#undef Params
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_ShowPointer ( WIN_PARAM_BLK *p )
+{
+#define Params (p->showpointer)
+
+  /* (i) Remove existing pointer */
+  Cur_State &= ~CUR_REQUIRED;
+  WIN_CheckCursorState();
+
+  /* Update position & redraw if needed*/
+  MkRect ( Params.Xp, Params.Yp, Cur_Xext, Cur_Yext, &Cur_Pos );
+  Cur_State |= CUR_REQUIRED;
+  WIN_CheckCursorState();
+#undef Params
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_HidePointer ( WIN_PARAM_BLK *p )
+{
+  NotUsed(p);
+  Cur_State &= ~CUR_REQUIRED;
+  WIN_CheckCursorState();
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_SetPalette ( WIN_PARAM_BLK *p )
+{
+#define Params (p->setpalette)
+
+  int i, n;
+  LONG *pSrc;
+
+  i = Params.first;
+  n = i + Params.n_clrs - 1;   /* Both qty's are unsigned */
+  pSrc = Params.rgb_data;
+
+  if ( n > 255 ) return;     /* Probably an error - do nothing */
+
+  /* PC supplies colours in 0x00BBGGRR; we want 0xBBGGRR00 */
+  for ( ; i <= n ; i++ )
+    SYS_FEState.ColourTable[i] = (*pSrc++) << 8;
+
+  VID_PaletteChanged = true;
+
+#undef Params
+}
+
+
+/* ---------------------------------- */
+
+
+static void WIN_WriteLine ( WIN_PARAM_BLK *p )
+{
+  uint n;
+  int *pData;
+
+  if ( DstYlen <= 0 )   /* No blit in progress! */
+    return;
+
+  pData = p->writeline.Data;
+  n = p->writeline.nlines;
+
+  if ( n * p->writeline.LineOffset > WRITELINE_MAX )
+    return;  /* Garbage data */
+
+  while ( n-- > 0 )
+  {
+    Blt_DoLine ( pData );
+
+    if ( --DstYlen == 0 )  /* End of blit */
+    {
+      EndDraw(4);
+      return;
+    }
+
+    pData += (p->writeline.LineOffset) >> 2;
+  }
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_WriteLineMono ( WIN_PARAM_BLK *p )
+{
+  uint n;
+  BYTE *pData;
+
+  if ( DstYlen <= 0 )   /* No blit in progress! */
+    return;
+
+  pData = p->writelinemono.Data;
+  n = p->writelinemono.nlines;
+
+  if ( n * p->writelinemono.LineOffset > WRITELINE_MAX )
+    return;  /* Garbage data */
+
+  while ( n-- > 0 )
+  {
+    Blt_MonoToColour ( pData, (int *)SYS_TempBuf,
+                       Blt_DstLast+1, BltForegnd, BltBackgnd );
+    Blt_DoLine ( (int *)SYS_TempBuf );
+
+    if ( --DstYlen == 0 )  /* End of blit */
+    {
+      EndDraw(4);
+      return;
+    }
+
+    pData += p->writelinemono.LineOffset;
+  }
+}
+
+
+/* ---------------------------------- */
+
+
+static void WIN_ReadLine ( WIN_PARAM_BLK *p )
+{
+  if ( SrcYlen <= 0 )
+    return;
+
+  Blt_FetchColour ( p->readline.Data );
+
+  if ( --SrcYlen == 0 )
+    EndDraw(0);
+}
+
+/* ---------------------------------- */
+
+
+static void WIN_ReadLineMono ( WIN_PARAM_BLK *p )
+{
+  if ( SrcYlen <= 0 )
+    return;
+
+  Blt_FetchMono ( BltBackgnd, p->readlinemono.Data );
+
+  if ( --SrcYlen == 0 )
+    EndDraw(0);
+}
+
+/*static int xlist[] = {320, 640, 800, 1024, 1280};
+static int ylist[] = {240, 480, 600, 768, 1024};*/
+
+static void WIN_SendInfo( WIN_PARAM_BLK *p )
+{
+  ModeSpec  test_mode;
+  char mode_string[256], cols[8]="1";
+  int  r, y_out;
+
+  SentInfo = true;
+
+  switch (p->sendinfo.bpp)
+  {
+    case 4  : strcpy(cols, "16"); break;
+    case 8  : if (p->sendinfo.pal)
+                strcpy(cols, "256P");
+              else
+                strcpy(cols, "256");
+              break;
+    case 16 : strcpy(cols, "32K"); break;
+    case 24 :
+    case 32 : strcpy(cols, "16M"); break;
+  }
+  sprintf(mode_string, "X%d Y%d C%s", p->sendinfo.xres, p->sendinfo.yres, cols);
+  SYS_trace("ARMDRV requests %s (reason = %d)", mode_string, p->sendinfo.reason);
+
+  if (p->sendinfo.reason == SI_REASON_VALID)
+  {
+    VID_FindModeSel(p->sendinfo.xres, p->sendinfo.yres, p->sendinfo.bpp, p->sendinfo.pal, false, &y_out, &test_mode);
+    switch (VIDS_CheckModeValid(test_mode))
+    {
+      case CMV_OK    : p->result.value = VALMODE_YES; break;
+      case CMV_NOMEM : p->result.value = VALMODE_NO_NOMEM; break;
+      default        : p->result.value = VALMODE_NO_WRONGDRV; break;
+    }
+    SYS_trace("...modevalid = %d", p->result.value);
+    return;
+  }
+
+  r = VID_SetupWinMode(mode_string);
+  if (r!=0)
+  {
+    if (p->sendinfo.reason == SI_REASON_SET)
+    {
+      SYS_trace("ARMDRV mode request failed, but setting VGA");
+      SYS_error(false, "swdrve2", mode_string);
+      r = VID_SetupWinMode("27");
+      p->result.value = 1;
+    }
+    else
+    {
+      SYS_trace("ARMDRV mode request failed (code %d)", r);
+      p->result.value = 0;
+    }
+  }
+  else
+  {
+  }
+}
+
+static int bpps[6]={1,2,4,8,16,32};
+
+static void WIN_ReadModeList( WIN_PARAM_BLK *p )
+{
+  int            r;
+  ModeEnumerated mode;
+
+  r = VIDS_EnumerateModes(&mode, p->readmodelist.skip);
+  if (r==0)
+    p->readmodelist.skip = 0xffff;
+  else
+    p->readmodelist.skip++;
+
+  sprintf(p->readmodelist.mode, "MODES\\%d\\%d,%d", bpps[mode.bpp_index], mode.x, mode.y);
+
+  SYS_trace("Read mode: %s", p->readmodelist.mode);
+}
+
+/* Windows driver port interfaces ================================== */
+
+typedef void (*DispatchFn) ( WIN_PARAM_BLK *pBuf );
+
+static DispatchFn WinDrv_decode_table [ CMD_LAST+1 ] =
+{
+  WIN_ReadModeInfo,
+  WIN_Enable,
+  WIN_Disable,
+  WIN_StrBlt,
+  WIN_DevBlit,
+  WIN_MemBlit,
+  WIN_DevFetch,
+  WIN_ScanLine,
+  WIN_PolyLine,
+  WIN_FastBorder,
+  WIN_SaveBitmap,
+  WIN_PutPixel,
+  WIN_GetPixel,
+  WIN_ScanLR,
+  WIN_WriteXY,
+  WIN_BeginDraw,
+  WIN_EndDraw,
+  WIN_UpdateColours,
+  WIN_PointerShape,
+  WIN_ShowPointer,
+  WIN_HidePointer,
+  WIN_SetPalette,
+  WIN_WriteLine,
+  WIN_WriteLineMono,
+  WIN_ReadLine,
+  WIN_ReadLineMono,
+  WIN_SendInfo,
+  WIN_ReadModeList
+};
+
+/* Some port state ------------------- */
+
+
+static BYTE *WIN_BufPtr=NULL;  /* Pointer to send/return buffer for data */
+static BYTE *WIN_IOPtr;   /* Pointer to where next data read/write happens */
+static int   WIN_IOLen;   /* Number of bytes left before I/O runs out */
+static int   WIN_StatusReg;
+static BYTE *WIN_MemoryLock;
+
+/* I/O handlers ----------- */
+
+static void DoBlockWrite ()
+{
+  if ( WIN_IOLen > 0 )
+  {
+    int tmp = CPU_BlockOut ( WIN_DATA_PORT, WIN_IOPtr, WIN_IOLen );
+    WIN_IOLen -= tmp;
+    WIN_IOPtr += tmp;
+  }
+}
+
+/* -------------------- */
+
+static void DoBlockRead ()
+{
+  if ( WIN_IOLen > 0 )
+  {
+    int tmp = CPU_BlockIn ( WIN_DATA_PORT, WIN_IOPtr, WIN_IOLen );
+    WIN_IOLen -= tmp;
+    WIN_IOPtr += tmp;
+  }
+}
+
+/* -------------------- */
+
+static int WIN_Read8 ( int addr )
+{
+  if ( addr == WIN_STATUS_PORT )
+    return WIN_StatusReg;
+
+  if ( addr == WIN_DATA_PORT )
+  {
+    if ( WIN_IOLen > 0 )
+    {
+      WIN_IOLen--;
+      return *WIN_IOPtr++;
+    }
+  }
+
+  return 0xFF;
+}
+
+/* -------------------- */
+
+static int WIN_Read16 ( int addr )
+{
+  if ( addr == WIN_DATA_PORT )
+  {
+    if ( WIN_IOLen > 1 )
+    {
+      int tmp = WIN_IOPtr[0] + (WIN_IOPtr[1]<<8);
+      WIN_IOLen-=2;
+      WIN_IOPtr+=2;
+      return tmp;
+    }
+  }
+  return 0xFFFF;
+}
+
+/* -------------------- */
+
+static void WIN_Write16 ( int addr, int data )
+{
+  if ( addr == WIN_DATA_PORT )
+  {
+    if ( WIN_IOLen > 1 )
+    {
+      WIN_IOPtr[0] = data;
+      WIN_IOPtr[1] = data >> 8;
+      WIN_IOLen -= 2;
+      WIN_IOPtr += 2;
+
+      /* See if any more data is forthcoming */
+      DoBlockWrite();
+    }
+  }
+}
+
+/* -------------------- */
+
+static void WIN_Write8 ( int addr, int data )
+{
+  /* Either command (most likely) */
+
+  if ( addr == WIN_CMD_PORT )
+  {
+    if ( data == CMD_WRITE_IO )
+    {
+      WIN_IOPtr = WIN_BufPtr;
+      WIN_IOLen = MAX_BUF_LEN;
+      *WIN_MemoryLock = BUF_LOCKFLAG_GO;
+      DoBlockWrite();
+      return;
+    }
+
+    if ( ((data <= CMD_LAST ) && WIN_WinModeActive) ||
+         (data == CMD_READINFO) ||
+         (data == CMD_ENABLE) ||
+         (data == CMD_SENDINFO) ||
+         (data == CMD_READMODELIST)
+       )
+    {
+      /* Wait for PC to signal completion */
+      int i = 800;
+      while ( (*WIN_MemoryLock == BUF_LOCKFLAG_WAIT) && (--i > 0) )
+        ;
+
+      /* Dispatch command */
+      /*SYS_trace("Windrv cmd: %d", data);*/
+
+      WinDrv_decode_table[data] ( (WIN_PARAM_BLK *)WIN_BufPtr );
+      /*SYS_trace("%d", data);*/
+      WIN_StatusReg = ST_READY | ST_LAST_OK;
+      *WIN_MemoryLock = BUF_LOCKFLAG_WAIT;
+      return;
+    }
+
+    if ( data == CMD_READ_IO )
+    {
+      WIN_IOPtr = WIN_BufPtr;
+      WIN_IOLen = MAX_BUF_LEN;
+      DoBlockRead();
+      return;
+    }
+
+    /* Unknown command */
+    WIN_StatusReg = ST_READY | ST_LAST_ERR;
+    return;
+  }
+
+  /* Data write ----- */
+
+  if ( addr == WIN_DATA_PORT )
+  {
+    if ( WIN_IOLen > 0 )
+    {
+      WIN_IOLen--;
+      *WIN_IOPtr++ = data;
+    }
+  }
+
+}
+
+/* Setup functions ========================================= */
+
+void WIN_FirstTimeInit(void)
+{
+  struct SharedMem SM;
+
+  SM.length = BUF_ALLOC_SIZE;
+  if ( (CFG.SharedMemFlags & SM_NOT_WINDRV) == 0 &&
+       CPU_AllocSharedMem ( &SM ) )
+  {
+    WIN_PCBufAddr = SM.PCaddr;
+    WIN_BufPtr = SM.ARMaddr;
+  }
+  else
+  {
+    WIN_PCBufAddr = 0;
+    WIN_BufPtr = (BYTE *) malloc ( SM.length );
+    if ( WIN_BufPtr == NULL )
+    {
+      SYS_error ( true, "ienomem" );
+      return;
+    }
+  }
+
+  WIN_MemoryLock = WIN_BufPtr + BUF_LOCKFLAG_OFFSET;
+  *WIN_MemoryLock = BUF_LOCKFLAG_WAIT;
+
+  SYS_registerIO ( WIN_PORT_FIRST, WIN_PORT_LAST,
+           WIN_Read8, WIN_Read16, WIN_Write8, WIN_Write16, 0 );
+}
+
+void WIN_Init ( int Xtotal, int Ytotal, int bpp, int flags, int memsize )
+{
+  if (WIN_BufPtr == NULL)
+    WIN_FirstTimeInit();
+
+  WIN_StatusReg = ST_READY;
+
+  WIN_Xtotal = Xtotal;
+  WIN_Ytotal = Ytotal;
+  WIN_bpp    = bpp;
+  WIN_flags  = flags;
+  WIN_BytesPerLine = ((Xtotal*bpp + 31) >> 5)*4;
+  WIN_imagesize = WIN_BytesPerLine * Ytotal;
+
+  Blt_SetBPP ( WIN_bpp );
+
+  ScreenRect.X0 = 0;
+  ScreenRect.Y0 = 0;
+  ScreenRect.X1 = WIN_Xtotal - 1;
+  ScreenRect.Y1 = WIN_Ytotal - 1;
+
+  WIN_SSB_Start = WIN_imagesize >> 2;
+  WIN_SSB_Size  = (memsize >> 2) - WIN_SSB_Start;
+
+  SYS_trace("Win Drv: %d x %d, %d bpp, flags=%d, size=%d, SSB_Start=%d, SSB_Size=%d",
+      Xtotal, Ytotal, bpp, flags, WIN_imagesize, WIN_SSB_Start, WIN_SSB_Size );
+}
+
+#else
+
+void WIN_FirstTimeInit(void)
+{
+}
+
+void WIN_CheckCursorState(void)
+{
+}
+
+void WIN_Init (int Xtotal, int Ytotal, int bpp, int flags, int memsize )
+{
+  Xtotal=Xtotal; /* keeps compiler warnings quiet */
+  Ytotal=Ytotal;
+  bpp=bpp;
+  flags=flags;
+  memsize=memsize;
+}
+
+#endif

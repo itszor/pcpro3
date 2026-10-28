@@ -1,0 +1,167 @@
+ AREA misc, CODE
+
+ EXPORT xos_cli
+ EXPORT var_exists, var_read, file_exists, file_length, file_save, file_load_to
+ EXPORT free_space, expand_path, get_screen_size, get_time_string
+ EXPORT read_cmos_byte, x_os_cli, read_entry, get_module_help
+ EXPORT random, rseed1, rseed2
+
+xos_cli		SWI	5 + 1<<15 ; XOS_CLI
+		MOVS	PC, R14
+
+var_exists	STMFD	R13!,{R1-R4,R14}
+		MVN	R2,#0
+		SWI	&23 + 1<<17 ; XOS_ReadVarVal
+		CMP	R2,#0
+		MOVLT	R0,#1
+		MOVGE	R0,#0
+		LDMFD	R13!,{R1-R4,PC}
+
+var_read	STMFD	R13!,{R1-R4,R14}
+		MOV	R2,#256
+		MOV	R3,#0
+		MOV	R4,#0
+		SWI	&23 + 1<<17 ; XOS_ReadVarVal
+		MOV	R3,#0
+		STRB	R3,[R1,R2] ; Terminate string with 0
+		MOVVC	R0,#0
+		LDMFD	R13!,{R1-R4,PC}
+
+file_exists	STMFD	R13!,{R1-R6,R14}
+		MOV	R1,R0
+		MOV	R0,#23
+		SWI	&8 + 1<<17 ; XOS_File
+		MOVVS	R0,#0
+		MOVVC	R1,#1
+		LDMFD	R13!,{R1-R6,PC}
+
+file_length	STMFD	R13!,{R1-R6,R14}
+		MOV	R1,R0
+		MOV	R0,#23
+		SWI	&8 + 1<<17 ; XOS_File
+		MOVVS	R0,#0
+		MOVVC	R0,r4
+		LDMFD	R13!,{R1-R6,PC}
+
+file_load_to	STMFD	R13!,{R1-R6,R14}
+		MOV	R2,R1
+		MOV	R1,R0
+		MOV	R3,#0
+		MOV	R0,#16
+		SWI	&8 ; XOS_File
+		MOVVC	R0,R4
+		LDMFD	R13!,{R1-R6,PC}
+
+file_save	STMFD	R13!,{R1-R6,R14}
+		MOV	R5,R3
+		MOV	R4,R2
+		MOV	R2,R1
+		MOV	R1,R0
+		MOV	R0,#10
+		SWI	&8 + 1<<17 ; XOS_File
+		LDMFD	R13!,{R1-R6,PC}
+
+free_space	STMFD	R13!,{R1-R2,R14}
+		MOV	R1,R0
+		MOV	R0,#49
+		SWI	&29 + 1<< 17 ; XOS_FSControl
+		MOVVS   R0,#0
+		LDMFD	R13!,{R1-R2,PC}
+
+expand_path	STMFD	R13!,{R1-R6,R14}
+		MOV	R5,R2
+		MOV	R2,R1
+		MOV	R1,R0
+		MOV	R0,#37
+		SWI	&29 + 1<<17 ; XOS_FSControl
+		MOVVC	R0,#0
+		MOVVS	R0,#1
+		LDMFD	R13!,{R1-R6,PC}
+
+get_screen_size	STMFD	R13!,{R0-R6,R14}
+		MOV	R5,R0
+		MOV	R6,R1
+		ADR	R0,vdu_blk
+		ADR	R1,out_blk
+		SWI	&31 ; OS_ReadVduVariables
+		ADR	R0,out_blk
+		LDMIA	R0,{R1-R4}
+		MOV	R1,R1,LSL R3
+		MOV	R2,R2,LSL R4
+		STR	R1,[R5]
+		STR	R2,[R6]
+		LDMFD	R13!,{R0-R6,PC}
+
+vdu_blk		& 11,12,4,5,-1
+out_blk		& 0,0,0,0
+
+get_time_string	STMFD	R13!,{R0-R1,R14}
+		MOV	R1,R0
+		MOV	R0,#0
+		STRB	R0,[R1]
+		MOV	R0,#14
+		SWI	&07 + 1<<17 ; XOS_Word
+zero_time_loop	LDRB	R0,[R1],#1
+		CMP	R0,#13
+		BNE	zero_time_loop
+		MOV	R0,#0
+		STRB	R0,[R1,#-1]
+		LDMFD	R13!,{R0-R1,PC}
+
+read_cmos_byte	STMFD	R13!,{R1-R2,R14}
+		MOV	R1,R0
+		MOV	R0,#161
+		SWI	&06 + 1<<17 ; XOS_Byte
+		MOV	R0,R2
+		LDMFD	R13!,{R1-R2,PC}
+
+x_os_cli	STMFD	R13!,{R14}
+		SWI	&5 + 1<<17 ; XOS_CLI
+		LDMFD	R13!,{PC}
+
+read_entry
+; R0 = dir
+; R1 > buffer
+; R2 = count (0 for start)
+; R3 > name to match
+		STMFD	R13!,{R1-R6,R14}
+		MOV	R6,R3
+		MOV	R5,#32
+		MOV	R4,R2
+		MOV	R3,#1
+		MOV	R2,R1
+		MOV	R1,R0
+		MOV	R0,#9
+		SWI	&C ; OS_GBPB
+		MOV	R0,R4
+		LDMFD	R13!,{R1-R6,PC}^
+
+random
+		STMFD   R13!,{R14}
+	 	LDR	R0,rseed1
+ 		LDR	R1,rseed2
+	 	TST	R1,R1,LSR#1
+	        MOVS	R2,R0,RRX
+        	ADC	R1,R1,R1
+	        EOR	R2,R2,R0,LSL#12
+	        EOR	R0,R2,R2,LSR#20
+	        STR	R0,rseed1
+	        STR	R1,rseed2
+	        LDMFD	R13!,{PC}
+
+rseed1 & 0
+rseed2 & 0
+
+get_module_help	STMFD	R13!,{R4-R5,R14}
+		MOV	R1, R0
+		MOV	R0, #18
+		SWI	&1E + (1<<17) ; XOS_Module
+		MOVVS	R3, #0
+		CMP	R3, #0
+		MOVEQ	R0, #0
+		LDMEQFD	R13!,{R4-R5,PC}
+		LDR	R0, [R3, #20]	; R0 = help offset
+		ADD	R0, R0, R3	; R3 > help
+		LDMFD	R13!,{R4-R5,PC}
+
+ END

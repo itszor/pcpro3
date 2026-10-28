@@ -1,0 +1,14 @@
+/*
+ * Name   : SaveConf.h
+ * Desc   : Handlers for SaveConf component of PCConfig
+ * Author : Dean Murphy
+ * Date   : 1-Jun-1995
+ */
+
+#ifndef __saveconf_h
+#define __saveconf_h
+
+extern void copy_text_to_ptr(char *,int,char *buffer[]);
+extern void build_configuration(void);
+
+#endif

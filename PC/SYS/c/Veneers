@@ -1,0 +1,144 @@
+/*
+*
+*     SYS.C.veneers - functions to help divorce !PC from RISC_OSLib, mostly
+*                     nicked from the ROLib source code and made to fit in
+*                     with Acorn C version 5.  By its nature, this is a mess.
+*
+*      1998.07.19  MB  Original
+*/
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "sys.h.stdtypes"
+#include "sys.h.veneers"
+#include "sys.h.sys"
+
+/*#define ColourTrans_SelectTable 0x40740*/
+extern _kernel_oserror *colourtran_select_table (int  source_mode,
+                                                void *source_palette,
+                                                 int  dest_mode,
+                                                void *dest_palette,
+                                                void *buffer)
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = source_mode;
+  r.r[1] = (int)source_palette;
+  r.r[2] = dest_mode;
+  r.r[3] = (int)dest_palette;
+  r.r[4] = (int)buffer;
+
+  return(_kernel_swi(ColourTrans_SelectTable, &r, &r));
+}
+
+extern _kernel_oserror* wimpt_complain( _kernel_oserror *e )
+{
+  if (e != NULL)
+    SYS_error( false, "ieswix", e->errmess );
+  return(e);
+}
+
+/* nicked from sprite.h */
+
+static void setfromarea(int op, sprite_area *area, _kernel_swi_regs *r)
+{
+   if (area == sprite_mainarea)
+   {
+      r->r[0] = op;
+ /*   r->r[1] unused */
+   }
+   else
+   {
+      r->r[0] = op + 256;
+      r->r[1] = (int) area;
+   }
+}
+
+static void setfromtag(int op, sprite_area *area, sprite_id *spr, _kernel_swi_regs *r)
+{
+   if (area == sprite_mainarea)
+   {
+      r->r[0] = op;
+   /* r->r[1] unused */
+   }
+   else
+   {
+      r->r[1] = (int) area;
+      if ((spr->tag) == sprite_id_addr)
+      {
+         r->r[0] = 512 + op;
+         r->r[2] = (int) (spr->s.addr);
+      }
+      else
+      {
+         r->r[0] = 256 + op;
+         r->r[2] = (int) (spr->s.name);
+      }
+   }
+}
+
+_kernel_oserror * sprite_put_scaled(sprite_area *area, sprite_id *spr,
+                             int gcol_action,
+                             int x, int y,
+                             sprite_factors *factors,
+                             sprite_pixtrans *pixtrans)
+{
+   _kernel_swi_regs r;
+   _kernel_oserror *result;
+   setfromtag(52, area, spr, &r);
+   r.r[3] = x;
+   r.r[4] = y;
+   r.r[5] = gcol_action;
+   r.r[6] = (int) factors;
+   r.r[7] = (int) pixtrans;
+   result = _kernel_swi(OS_SpriteOp, &r, &r);
+   return result;
+}
+
+_kernel_oserror *sprite_removewastage(sprite_area *area, sprite_id *id)
+{
+   _kernel_swi_regs r;
+   _kernel_oserror *result;
+
+   setfromtag(0x36, area, id, &r);
+
+   result = _kernel_swi(OS_SpriteOp, &r, &r);
+
+   return result;
+}
+
+void sprite_area_initialise(sprite_area *area, int length)
+{
+   area->size    = length; /* No SpriteOp to do this ! */
+   area->number  = 0;
+   area->sproff  = 16;
+   area->freeoff = 16;
+}
+
+_kernel_oserror * sprite_create_rp(sprite_area *area, char *name,
+                            sprite_palflag palflag,
+                            int width, int height, int mode,
+                            sprite_ptr *resultaddress)
+{
+   _kernel_swi_regs r;
+   _kernel_oserror *result;
+   setfromarea(15, area, &r); /* NB. Not all done in numeric order !! */
+   r.r[2] = (int) name;
+   r.r[3] = palflag;
+   r.r[4] = width;
+   r.r[5] = height;
+   r.r[6] = mode;
+   result = _kernel_swi(OS_SpriteOp, &r, &r);
+   if (result == NULL) /* Only return result if no error */
+   {
+      /* spriteop 15 doesn't return pointer to sprite in r2, so....*/
+      /* select the sprite just created (gets its address in r2) */
+      setfromarea(24, area, &r);
+      r.r[2] = (int)name;
+      result = _kernel_swi(OS_SpriteOp, &r, &r);
+      if (result == NULL)
+         *resultaddress = (void *) r.r[2];
+   }
+   return result;
+}

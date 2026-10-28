@@ -1,0 +1,17 @@
+/*
+*    DivaPC ARM C source
+*
+*    SYS.H.DIVASERIAL  - Serial number header
+*
+* v2.34  1998.09.11 MB   Original
+*/
+
+
+extern void DivaSerial_tobase33(unsigned int n, char *buffer);
+
+extern unsigned int DivaSerial_frombase33(char *b);
+
+extern void DivaSerial_encode(unsigned int p, unsigned int s, unsigned int l, 
+                              unsigned int *enc, unsigned int *chk);
+extern int DivaSerial_decode(unsigned int enc, unsigned int chk, unsigned int *p, 
+                             unsigned int *s, unsigned int *l);

@@ -1,0 +1,366 @@
+#include "stdlib.h"
+#include "stdio.h"
+#include "string.h"
+#include "kernel.h"
+#include "toolbox.h"
+#include "types.h"
+#include "vars.h"
+#include "windows.h"
+#include "saveconf.h"
+#include "file.h"
+#include "utils.h"
+#include "window.h"
+//#include "pcdbox.h"
+#include "multicfg.h"
+
+static int floppysize[5]={0,360,720,1200,1440};
+
+static int all_lines;
+static char *config_lines[400];
+extern small_mode_structure modes[100];
+
+extern ObjectId windows_window;
+
+static void dump_config_to_file(void)
+{
+  char txt[256];
+  int handle,x;
+  _kernel_oserror *e;
+
+  e = file_open(config_path_name, &handle, OPEN_NEW_READ_WRITE);
+
+  if(e!=NULL)
+  {
+    raise_error(e);
+    return;
+  }
+
+  strcpy(config_new, config_path_name+strlen(config_dir)+1);
+
+  for(x=0;x<all_lines;x++)
+  {
+    file_writealine(handle,config_lines[x],strlen(config_lines[x]));
+    file_writeabyte(handle,'\n');
+  }
+  file_close(handle);
+  sprintf(txt, "Settype %s FFF", config_path_name);
+  system(txt);
+
+  broadcast_pc_message(0x44681, 2, config_path_name); /* See 'Protocol' file */
+  //multicfg_readlist();
+  about_to_change_config = config_number;
+  //change_config();
+
+  /*raise_error(window_set_title(0,main_window,"PC Card configuration"));
+  window_title_updated = FALSE;
+  configuration_changed = FALSE;*/
+}
+
+void copy_text_to_ptr(char *main_text,int value_to_add,char *buffer[])
+{
+  char buff[255];
+  char *p;
+
+  if(value_to_add != -1)
+   sprintf(buff, "%s %d\0",main_text,value_to_add);
+  else
+   strcpy(buff,main_text);
+
+  p = malloc(strlen(buff)+1);
+  strcpy(p,buff);
+  *buffer = p;
+}
+
+void build_configuration(void)
+{
+  int x = 0;
+  char buffer[300];
+  char colours[10];
+
+  config_lines[x++] = "\0";
+  raise_error(displayfield_get_value(0,main_window,MAIN_CONFIGNAME,config.name,64,NULL));
+
+  config_lines[x++] = "Trace On\0";
+  config_lines[x++] = "\n\0";
+
+  config_lines[x++] = "# Configuration name\0";
+  sprintf(buffer, "ConfigName %s\0", config.name);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Approximate size of RAM available to PC Card\0";
+  copy_text_to_ptr("PCRAM",config.memory.memory_allocated,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Minimum amount to allocate for display emulation\0";
+  copy_text_to_ptr("VideoRAM",config.memory.display_min,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Include VRAM in memory allocation for VESA 2.0 linear framebuffer\0";
+  if (config.memory.includevram)
+    config_lines[x++] = "IncludeVRAM On\0";
+  else
+    config_lines[x++] = "IncludeVRAM Off\0";
+  config_lines[x++] = "\0";
+
+  switch(config.windows.colours)
+  {
+    case 0:
+     sprintf(colours,"c16\0");
+     break;
+    case 1:
+     sprintf(colours,"c256%c\0",config.windows.use_palette?'p':'\0');
+     break;
+    case 2:
+     sprintf(colours,"c32K\0");
+     break;
+    case 3:
+     sprintf(colours,"c16M\0");
+     break;
+  }
+
+  config_lines[x++] = "# RISCOS Screen Mode number or descriptor to be used by Windows Driver\0";
+  sprintf(buffer,"WinDrvMode x%dy%d%s\0",modes[config.windows.mode_number].xres,
+                                         modes[config.windows.mode_number].yres,
+                                         colours);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Fast video turned on at startup? (FastVESA is a slight misnomer)";
+  if (config.windows.fastvideo) config_lines[x++] = "FastVESA On";
+                           else config_lines[x++] = "FastVESA Off";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Frame-skip value for fast mode 13h etc.";
+  copy_text_to_ptr("FastVESASkip",config.windows.frameskip,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Automatically switch to single-tasking mode when needed?";
+  if (config.windows.switchlfb) config_lines[x++] = "SwitchLFB On";
+                           else config_lines[x++] = "SwitchLFB Off";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# If on then DOS attempts to boot from floppy before hard drive\0";
+  if(config.booting.boot_from_floppy) config_lines[x++] = "FloppyBoot On\0"; else
+                                      config_lines[x++] = "FloppyBoot Off\0";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Completely stop drive A: from being accessed\0";
+  if(config.booting.disable_floppies)
+    config_lines[x++] = "DisableFloppies On\0";
+  else
+    config_lines[x++] = "DisableFloppies Off\0";
+  config_lines[x++] = "\0";
+  /*
+  config_lines[x++] = "# Normal (0) is compatible, Fast (1 or 2) may be faster for some software\0";
+  copy_text_to_ptr("RetraceEmulation",config.advanced.retrace_emulation,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Interrupt number to be used for NE2000 network interface\0";
+  copy_text_to_ptr("NE2000Int",config.advanced.ne_interrupt,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Specifies interrupt number that mouse driver uses - usually 3\0";
+  copy_text_to_ptr("BusMouseInt",config.advanced.bus_mouse_interrupt,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Needs to be on to use Archimedes mouse as DOS mouse\0";
+  if(config.advanced.bus_mouse_on) config_lines[x++] = "BusMouse On\0"; else
+                                   config_lines[x++] = "BusMouse Off\0";
+  config_lines[x++] = "\0";
+  */
+
+  config_lines[x++] = "# Use Host's parallel port for PC\0";
+  if(config.printing.direct_parallel) config_lines[x++] = "DirectParallel On\0"; else
+                                      config_lines[x++] = "DirectParallel Off\0";
+
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Remap direct parallel data for Turbodriver printer cable\0";
+  if(config.printing.turbodriverbodge) config_lines[x++] = "TurboDriverBodge On\0"; else
+                                       config_lines[x++] = "TurboDriverBodge Off\0";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Use Host's serial port for PC\0";
+
+  if(config.serial.direct_serial) config_lines[x++] = "DirectSerial On\0"; else
+                                  config_lines[x++] = "DirectSerial Off\0";
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Defines which DOS port is redirected to the Archimedes port\0";
+  copy_text_to_ptr("RISCOSPrinter",config.printing.printing_options,&config_lines[x++]);
+  config_lines[x++] = "\0";
+  /*
+  config_lines[x++] = "# Uses an 'economy' 10-line font to allow full-screen operation on type-0 monitors\0";
+
+  if(config.advanced.use_lo_res_text) config_lines[x++] = "UseLoResText On\0"; else
+                                      config_lines[x++] = "UseLoResText Off\0";
+  config_lines[x++] = "\0";
+  config_lines[x++] = "# Only necessary for applications which won't run in colour\0";
+  if(config.advanced.init_in_mono) config_lines[x++] = "InitInMono On\0"; else
+                                   config_lines[x++] = "InitInMono Off\0";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# This should be on if you have a monitor capable of displaying VGA (RISCOS mode 27)\0";
+  if(config.advanced.vga_attached) config_lines[x++] = "VGAAttached On\0"; else
+                                   config_lines[x++] = "VGAAttached Off\0";                                
+  config_lines[x++] = "\0";*/
+  /*
+  config_lines[x++] = "# Allows multi-tasking operation, as well as single-tasking operation\0";
+  if(config.advanced.use_window_fe) config_lines[x++] = "UseWindowFE On\0"; e  if(config.advanced.use_window_fe) config_lines[x++] = "UseWindowFE On\0"; else
+lse
+                                    config_lines[x++] = "UseWindowFE Off\0";
+  config_lines[x++] = "\0";
+  */
+
+  config_lines[x++] = "# NE2000 major packet types (see later for advanced)\0";
+  sprintf(buffer,"NE2000Basic");
+  //fprintf(stderr, "ne2k %d %d %d\n", config.network.iso, config.network.ipx, config.network.tcpip);
+  if (config.network.iso) strcat(buffer," -pISO");
+  if (config.network.ipx) strcat(buffer," -pIPX");
+  if (config.network.tcpip) strcat(buffer," -pTCPIP");
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# PC to Arc switch: 3 is default,2 is keyboard only, 1 is mouse only, 0 allows no return\0";
+  copy_text_to_ptr("SuspendOption",config.switching.switching_option,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Bitfield indicating which devices are ignored by the ASPI driver";
+  sprintf(buffer, "ASPIIgnore &%08x", config.aspi.ignore);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Bitfield indicating which devices are reserved by the ASPI driver";
+  sprintf(buffer, "ASPIReserve &%08x", config.aspi.reserve);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Bitfield indicating which devices are forcibly claimed by ASPI driver";
+  sprintf(buffer, "ASPIForce &%08x", config.aspi.force);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Restricted size ASPI buffer?";
+  copy_text_to_ptr("ASPIBuffer",config.aspi.aspibuffer,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# PC multitasking speeds; speeds for when PC is in foreground & background and the amount of time it gives to other tasks\0";
+  copy_text_to_ptr("ForegroundSlice",config.switching.foreground_slice,&config_lines[x++]);
+  copy_text_to_ptr("BackgroundSlice",config.switching.background_slice,&config_lines[x++]);
+  copy_text_to_ptr("BackgroundHoldoff",config.switching.background_holdoff,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Allows PC to start up automatically when loaded\0";
+  sprintf(buffer,"AutoStart %d\0",config.switching.start_up_option);
+  copy_text_to_ptr("AutoStart",config.switching.start_up_option,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Show toolbar on startup?";
+  if (config.switching.toolbar)
+    config_lines[x++] = "Toolbar On";
+  else
+    config_lines[x++] = "Toolbar Off";
+  config_lines[x++] = "\0";
+
+  if(config.discs.drives == 2)
+  {
+    if(config.discs.drive_d_use_partition)
+    {
+      sprintf(buffer, "HD1-File-Name %s\0",config.discs.drive_d_path_name);
+      copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+      config_lines[x++] = "\0";
+    }
+    else
+    {
+      copy_text_to_ptr("HD1-SCSI-ID",config.discs.drive_d_direct_scsi_id,&config_lines[x++]);
+      config_lines[x++] = "\0";
+      if(config.discs.drive_d_scsi_heads != 0 && config.discs.drive_d_scsi_sectors != 0)
+      {
+        copy_text_to_ptr("HD1-SCSI-HEADS",config.discs.drive_d_scsi_heads,&config_lines[x++]);
+        config_lines[x++] = "\0";
+        copy_text_to_ptr("HD1-SCSI-SECTS",config.discs.drive_d_scsi_sectors,&config_lines[x++]);
+        config_lines[x++] = "\0";
+      }
+    }
+
+  }
+  if(config.discs.drives == 2 || config.discs.drives == 1)
+  {
+    if(config.discs.drive_c_use_partition)
+    {
+      sprintf(buffer, "HD0-File-Name %s\0",config.discs.drive_c_path_name);
+      copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+      config_lines[x++] = "\0";
+    }
+    else
+    {
+      copy_text_to_ptr("HD0-SCSI-ID",config.discs.drive_c_direct_scsi_id,&config_lines[x++]);
+      config_lines[x++] = "\0";
+      if(config.discs.drive_c_scsi_heads != 0 && config.discs.drive_c_scsi_sectors != 0)
+      {
+        copy_text_to_ptr("HD0-SCSI-HEADS",config.discs.drive_c_scsi_heads,&config_lines[x++]);
+        config_lines[x++] = "\0";
+        copy_text_to_ptr("HD0-SCSI-SECTS",config.discs.drive_c_scsi_sectors,&config_lines[x++]);
+        config_lines[x++] = "\0";
+      }
+    }
+  }
+
+  config_lines[x++] = "\0";
+  config_lines[x++] = "#### Advanced settings beyond here should not be tampered with  ####";
+  config_lines[x++] = "#### uness you're really really sure you know what you're doing ####";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Internal cache (0 = off, 1 = write-through, 2 = write-back, 3 = auto)";
+  copy_text_to_ptr("L1Cache",config.adv.l1cache,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# External cache (0 = off, 1 = write-through, 2 = write-back, 3 = auto)";
+  copy_text_to_ptr("L2Cache",config.adv.l2cache,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# External cache size (128K / 512K)";
+  copy_text_to_ptr("L2Size",config.adv.l2size,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# ASIC buffers disable (0 = Enabled, 1 = No FIFO, 2 = Disable large FIFO, 3 = No FIFO)";
+  copy_text_to_ptr("ASICOptions",config.adv.asicoptions,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Video retrace emulation (0 = normal, 1 = fast A, 2 = fast B)";
+  copy_text_to_ptr("RetraceEmulation",config.adv.retraceemulation,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Enable bus mouse emulation";
+  if (config.adv.busmouse) config_lines[x++]="BusMouse On";
+                      else config_lines[x++]="BusMouse Off";
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Interrupt no. for bus mouse (usually 3)";
+  copy_text_to_ptr("BusMouseInt", config.adv.busmouseint,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Advanced NE2000 options (other than packet types)";
+  sprintf(buffer, "NE2000Advanced %s\0", config.adv.ne2000advanced);
+  copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Interrupt no. for network card (usually 5)";
+  copy_text_to_ptr("NE2000Int", config.adv.ne2000int,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Floppy drive sizes (0 to auto-configure, or specify 360, 720, 1200, 1440)";
+  copy_text_to_ptr("Floppy0", floppysize[config.adv.floppy[0]],&config_lines[x++]);
+  copy_text_to_ptr("Floppy1", floppysize[config.adv.floppy[1]],&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Shared memory transfer control (0=fast -> 6=slow)";
+  copy_text_to_ptr("SharedMemFlags", config.adv.sharedmemflags,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Video memory convert on mode change";
+  copy_text_to_ptr("PreserveVidMem", config.adv.preservevidmem,&config_lines[x++]);
+  config_lines[x++] = "\0";
+
+  config_lines[x++] = "# Sqaushes PC screen to fit RISCOS screen when multi-tasking at the expense of some clarity\0";
+  if(config.adv.scaletofit) config_lines[x++] = "ScaleToFit On\0"; else
+                            config_lines[x++] = "ScaleToFit Off\0";
+  config_lines[x++] = "\0";
+  all_lines = x;
+
+  dump_config_to_file();
+}

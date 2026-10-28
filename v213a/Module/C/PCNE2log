@@ -1,0 +1,1241 @@
+#define VERSION_STRING "2.00 (08-May-96)"
+/*
+*    DivaPC ARM C source
+*
+*    C.PCNe2 - C source for NE2000 emulation support module
+*
+*    26-01-93 INH    Original, derived from PCNET module
+*    11-02-93        Ignores our own broadcast transmissions
+*    12-02-93        Buffer wrap bug fixed
+*    09-03-93        Versions up to date; checks DCI level; ISO default
+*    29-12-93        Real V1.23, semi-works with WFW and WGDOS
+*    25-03-94        V1.50, proper SWI numbers, Rx/Tx Int Status bits
+*    09-12-94
+*    10-05-95	     V1.77 works with callbacks
+*    02-06-95	     V1.80 bodged to work with EtherB
+*    14-06-95        V1.83 now for DCI4
+*    20-07-95	     V1.87 ??Old-8005 bodge added??
+*    25-02-95        1.993 No longer says Diva_NE2000_mod in help string
+*    06-03-96	     1.995 Doesn't report overflows or Tx fails to PC
+*    08-05-96        Re-released as version 2.00
+*  1997.07.04 W      Added logging facility        
+*/
+
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+
+#include "kernel.h"
+#include "os.h"
+#include "swis.h"
+
+#include "module.h.dci4"
+#include "module.h.mbuf"
+#include "module.h.pcne2"
+#include "module.h.pcsupport"
+
+/* debugging options */
+#define DEBUG 0
+#define LOGDATA 0
+#define LOGFILE "$.NE2000trc"
+
+/* Value used for ISO-type packets i.e. 'length' not 'type' fields */
+#define ISOFrameType    0
+
+#define PAGESIZE       256
+#define PAGESHIFT      8
+
+
+/* Definitions ******************************************************** */
+
+#define SAVE_INT_STATE   \
+              int intstate = _kernel_irqs_disabled(); _kernel_irqs_off();
+
+#define RESTORE_INT_STATE \
+              if ( !intstate ) _kernel_irqs_on();
+
+typedef enum {false, true} bool;
+typedef unsigned int uint;
+
+#define NotUsed(r) (void) r
+
+/* Callback descriptor, as passed to SetCallback SWI */
+
+typedef struct _cb_descr
+{
+  int          tag;
+  int          fn_addr;
+  int          R0val;
+  int          R12val;
+  struct _cb_descr * next;
+}
+  Callback;
+
+/* Globals ************************************************************** */
+
+#define DRIVERNAME_LEN 16
+
+static _kernel_oserror ErrorBlk   = { 0x00010001, "PCNE2 not loaded" };
+
+static int  PCNE2_pw;
+static int  PCNE2_DriverSWIbase;
+static char PCNE2_DriverName[DRIVERNAME_LEN];
+static int  PCNE2_DriverUnitNo;
+
+static int  PCNE2_DriverFlags;
+#define DF_8005BODGE 1
+
+static char PCNE2_OurAddr[6];
+static bool PCNE2_enabled;	/* True if PC wants to receive packets */
+
+static int  PCNE2_RxOptions;
+static char PCNE2_MultiMask[8]; /* Bit mask for filtering
+                                        multicast addresses */
+static Callback  PCNE2_UserCB;
+
+#define MAX_RXFRAMES 10
+static int   RxFrameCount = 0;
+static int   RxFrameTypes  [MAX_RXFRAMES];
+static bool  RxConnected   [MAX_RXFRAMES];
+#if LOGDATA
+static FILE * fhlogfile
+#endif
+
+/* Buffers ************************************************************ */
+
+/* Buffer for simluting NE2000's RAM */
+
+#define ADRMASK 0x7FFF
+
+static struct BufHeader NE2_Hdr;
+static char NE2_RAM [BUFSIZE];
+static char PCNE2_LogString[160];
+
+/* Global stats ******************************************************* */
+
+
+#define NSTATS       16
+
+static char *statnames[NSTATS] =
+{
+#define TXREQS        0
+  "Total Transmit requests",
+
+#define TX_SENT       1
+  " Transmit: OK",
+
+#define TX_PARAM      2
+  " Transmit: Bad parameters",
+
+#define TX_BUFS       3
+  " Transmit: Out of buffers",
+
+#define TX_DRIVER     4
+  " Transmit: Driver error",
+
+#define RXPKTS        5
+  "Total receive packets",
+
+#define RX_NORMAL     6
+  " Receive: normal",
+
+#define RX_MCAST_OK   7
+  " Receive: multicast",
+
+#define RX_BCAST_OK   8
+  " Receive: broadcast",
+
+#define RX_MCAST_REJ  9
+  " Receive: reject multicast",
+
+#define RX_BCAST_REJ  10
+  " Receive: reject broadcast",
+
+#define RX_IGNORE_OWN 11
+  " Receive: own transmission",
+
+#define RX_DISABLED   12
+  " Receive: receiver disabled",
+
+#define RXACCEPT      13
+  "NE2000 Rx packets accepted",
+
+#define RXOVERFLOW    14
+  "NE2000 Rx buffer overflows",
+
+#define RXLENERR      15
+  "NE2000 Rx length errors"
+
+};
+
+static int PCNE2_Stats[NSTATS];
+
+
+
+/* Mbuf management routines ******************************************* */
+
+static struct mbctl Net_Mbctl;  /* MBuf control struct */
+static bool Mbufs_Attached;     /* True if we've got an active mbuf
+       	    			   manager session */
+
+
+/* Mbuf Initialise routine */
+
+static bool MbufInit ( void )
+{
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  Net_Mbctl.mbcsize = sizeof(struct mbctl);
+  Net_Mbctl.mbcvers = MBUF_MANAGER_VERSION;
+  Net_Mbctl.flags   = 0;      /* Normal entry points */
+  Net_Mbctl.advminubs = 112;  /* Advisory Minimum mbuf size; this
+                                 is the DCI-2 value */
+  Net_Mbctl.advmaxubs = 1500; /* Advisory max mbuf size */
+  Net_Mbctl.mincontig = 0;    /* We don't use the 'make contiguous'
+                                 routine at present; no need to specify a
+                                 value here */
+  Net_Mbctl.spare1 = 0;
+
+  R.r[0] = (int) &Net_Mbctl;
+  err = _kernel_swi ( Mbuf_OpenSession, &R, &R );
+
+  if ( err != NULL )
+  {
+    if ( err->errnum == 0x1E6 /* SWI not known */ )
+      printf("Mbuf manager not installed\n");
+    else
+      printf("Error from Mbuf manager: %s\n", err->errmess );
+
+    return false;
+  }
+
+  Mbufs_Attached = true;
+  return true;
+}
+
+/* --------------------------- */
+
+static void MbufShutdown(void)
+{
+  _kernel_swi_regs R;
+  if ( Mbufs_Attached )
+  {
+    R.r[0] = (int) &Net_Mbctl;
+    _kernel_swi ( Mbuf_CloseSession, &R, &R );
+  }
+  Mbufs_Attached = false;
+}
+
+/* Miscellaneous ****************************************************** */
+
+static void copy6 ( char *dst, char *src )
+{
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst++ = *src++;
+  *dst   = *src;
+}
+
+/* ------------------------------------- */
+
+static void SetUserCallback ( void )
+{
+  if ( PCNE2_UserCB.fn_addr != 0 )
+    os_swi1 ( PCSupport_SetCallback, (int) &PCNE2_UserCB );
+}
+
+/* ------------------------------------- */
+
+static uint min ( uint a, uint b )
+{
+  return (a<b) ? a : b;
+}
+
+/* ------------------------------------- */
+
+static uint min3 ( uint a, uint b, uint c )
+{
+  return ( a < b ) ? ( (a<c) ? a : c )
+                   : ( (b<c) ? b : c );
+}
+
+/* Transmit routine ************************************************** */
+
+/* NE2_Transmit called with a RAM address & length of a data packet;
+   this may be assumed to be static until the transmission has
+   finished. The packet data is a full Ethernet packet, i.e.
+
+       6 bytes destination addr
+       6 bytes source addr
+       2 bytes frame type
+       <data>
+
+   It returns 1 for failure and 0 for success.
+
+*/
+
+static int NE2_Transmit ( int RAMaddr, int len )
+{
+  char *destaddr;
+  int   frametype;
+  struct mbuf *pBuf;
+  os_error *err;
+
+  PCNE2_Stats[TXREQS]++;
+
+  /* Can't reenter here, that would be v.bad karma */
+  if ( NE2_Hdr.TxInProgress )
+  {
+    PCNE2_Stats[TX_PARAM]++;
+    return 1;
+  }
+
+  /* If we get funny addresses, pretend we've done it */
+
+  if ( len <= 14 || RAMaddr < 0 || RAMaddr+len > BUFSIZE )
+  {
+    PCNE2_Stats[TX_PARAM]++;
+    NE2_Hdr.TxIntStatus = isrTX_OK;
+    NE2_Hdr.TxStatus   = txOK;
+    SetUserCallback();
+    return 1;
+  }
+
+  /* Extract destination address and frame type */
+
+  destaddr  = NE2_RAM + RAMaddr;
+  frametype = (NE2_RAM[RAMaddr+12] << 8) + NE2_RAM[RAMaddr+13];
+
+  /* Allocate indirect mbuf to hold the data, minus 6:6:2 header */
+
+  pBuf = Net_Mbctl.alloc_u(&Net_Mbctl, len-14, NE2_RAM+RAMaddr+14);
+
+  if ( pBuf == NULL )
+  {
+    PCNE2_Stats[TX_BUFS]++;
+    return 1;
+  }
+
+  /* Send packet */
+
+  NE2_Hdr.TxInProgress = 1;
+  NE2_Hdr.TxStatus     = txCLEAR;
+
+  pBuf->m_list = NULL;
+
+  err = os_swi6 ( PCNE2_DriverSWIbase+DCI_Transmit,
+                0,                /* Flags */
+                PCNE2_DriverUnitNo,
+                frametype,
+                (int) pBuf,
+                (int) destaddr,
+                NULL /* Src Addr */ );
+
+  /* Completion is immediate */
+
+  NE2_Hdr.TxInProgress = 0;
+
+  if ( err == NULL )
+  {
+    PCNE2_Stats [TX_SENT]++;
+    NE2_Hdr.TxIntStatus = isrTX_OK;
+    NE2_Hdr.TxStatus   = txOK;
+  }
+  else
+  {
+    PCNE2_Stats [TX_DRIVER]++;
+    NE2_Hdr.TxIntStatus = isrTX_FAIL;
+    NE2_Hdr.TxStatus   = txABORTED;
+  }
+
+  SetUserCallback();
+
+  return 0;
+}
+
+/* Reception routines ****************************************** */
+
+/*
+
+   The NE2000's buffer is organised into 256-byte pages, so that an
+    8-bit page number specifies a starting address 0x0000, 0x0100, and
+    so on. The buffer RAM is mapped at addresses 0x4000-0x7FFF and
+    0xC000-0xFFFF within this space. The buffer area used for reception
+    is defined with the following page numbers:
+
+    PSTART : Start of the RAM buffer
+    PSTOP  : first page after end of RAM buffer
+    BNDRY  : Boundary - points to the first packet not read by PC
+    CURR   : Current - points to where the next packet will be saved
+
+   When a packet comes in, the data is written starting at CURR. If
+   it hits PSTOP, it wraps back to PSTART. If it hits BNDRY, it's a
+   receive overflow.
+
+   06-Mar-1996: We still haven't found a way of coping with network
+   overflows properly; many drivers are particularly crap at it. Instead,
+   we'll just ignore any packet that would cause an overflow, because
+   (a) any half-decent protocol should take it in its stride, (b) it
+   wouldn't have got it anyway, and (c) there's no point in causing
+   panic by causing an overflow.
+*/
+
+struct DMA_pointers
+{
+  uint  addr;
+  uint  pstart;
+  uint  pstop;
+};
+
+/* ---------------------- */
+
+static void WriteDMA ( struct DMA_pointers *pDP, char *data, uint len )
+{
+  /* WriteData takes the given ARM data bytes and puts them into
+     NE2000 RAM at the given "DMA" address. This needs to be
+     slightly sneaky to take care of the fact that writing data
+     to non-RAM areas may be attempted (but won't work), and the
+     fact that the DMA pointer will wrap when the address hits PSTOP.
+  */
+
+  uint seglen;
+
+  while ( len > 0 )
+  {
+    if ( pDP->addr == pDP->pstop ) pDP->addr = pDP->pstart;
+    /* Wrap buffer round */
+
+    /* Work out how long we can go before hitting the end of the data,
+       the PSTOP marker, or the next 16K (RAM-to-nonRAM) boundary */
+
+    seglen = min3 ( len,
+                    (pDP->pstop-pDP->addr) & 0xFFFF,
+                    0x4000 - (pDP->addr & 0x3FFF)
+                  );
+
+    if ( pDP->addr & 0x4000 ) /* In buffer RAM? */
+    {
+      /* Write it */
+      memcpy ( NE2_RAM + (pDP->addr & 0x3FFF), data, seglen );
+    }
+      /* Else lose it */
+
+    pDP->addr = (pDP->addr+seglen) & 0xFFFF;
+    data += seglen;
+    len  -= seglen;
+  }
+}
+
+/* CopyPacket() -------------------------------------- */
+
+/* This is the main receive routine (i.e. where most things go wrong!).
+
+   It copies the data in the receive packet to the NE2000's
+   buffer RAM.
+
+   The data written will be as follows:
+
+   +0  : Receive status (rxOK and optionally rxMULTI)
+   +1  : Next Packet pointer
+   +2  : Total length LSB
+   +3  : Total length MSB
+
+   Then follows the received data
+
+   +4 ..  +9 : Destination addr
+   +10 .. +15 : Source addr
+   +16, +17 : Frame type/length MSB, LSB
+   +18... other data
+*/
+
+static void CopyPacket ( char *dst, char *src, int frtype,
+                                             struct mbuf *pData )
+{
+  int    n_pages, max_pages;
+  int    pktlen, next_page;
+  char   rcv_hdr[18];
+
+  struct DMA_pointers  DP;
+  struct BufHeader *pH = &NE2_Hdr;
+
+  PCNE2_Stats [RXACCEPT]++;
+
+  /* Decide on packet length ----------- */
+
+  if ( frtype <= 1500 ) /* IEEE802.3 frame */
+  {
+    pktlen = frtype;
+    if ( pktlen > Net_Mbctl.count_bytes(&Net_Mbctl, pData) )
+    {
+      PCNE2_Stats [RXLENERR]++;
+      return;
+    }
+  }
+  else
+  {
+    pktlen = Net_Mbctl.count_bytes(&Net_Mbctl, pData);
+    if ( PCNE2_DriverFlags & DF_8005BODGE )
+      pktlen -= 4;
+  }
+
+  if ( pktlen > 1500 )
+  {
+    PCNE2_Stats [RXLENERR]++;
+    return;
+  }
+
+  if ( pktlen < 46 ) pktlen = 46;    /* Min 46 bytes in data field */
+
+  /* This packet is preceded by a receive header, consisting of
+     4 bytes written by the NE2000, plus the 6:6:2 header at the
+     start of the Ethernet packet */
+
+  pktlen += 18;
+
+  /* The 'next page' calculation seems to want to account for 4 bytes
+     of CRC at the end. */
+
+  n_pages = (pktlen+4+255) >> 8;
+
+  /* Will it fit in buffer? */
+
+  if ( NE2_Hdr.RxCURR < NE2_Hdr.RxBNDRY )  /* Simple case */
+    max_pages = pH->RxBNDRY - pH->RxCURR;
+  else
+    max_pages = pH->RxPSTOP - pH->RxCURR + pH->RxBNDRY - pH->RxPSTART;
+
+  if ( n_pages >= max_pages )
+  {
+    PCNE2_Stats[RXOVERFLOW]++;
+    return;
+  }
+
+  /* Work out next page number */
+
+  next_page = pH->RxCURR + n_pages;
+
+  if ( next_page >= pH->RxPSTOP )
+    next_page = next_page - pH->RxPSTOP + pH->RxPSTART;
+
+  /* Set addresses */
+
+  DP.addr  = (NE2_Hdr.RxCURR   <<8);
+  DP.pstart= (NE2_Hdr.RxPSTART <<8);
+  DP.pstop = (NE2_Hdr.RxPSTOP  <<8);
+
+  /* Write header */
+
+  if ( dst[0] & 1 )  /* If destination was multicast addr */
+    pH->RxStatus = rcv_hdr[0] = rxOK | rxMULTI;
+  else
+    pH->RxStatus = rcv_hdr[0] = rxOK;
+
+  pH->RxCURR = rcv_hdr[1] = next_page;
+  rcv_hdr[2] = pktlen & 0xFF;
+  rcv_hdr[3] = pktlen >> 8;
+
+  copy6 ( rcv_hdr+4, dst );
+  copy6 ( rcv_hdr+10, src );
+
+  rcv_hdr[16] = (frtype >> 8);    /* Fix up length/ethertype field */
+  rcv_hdr[17] = (frtype & 0xFF);  /* in hi-lo format */
+
+  /* Write receive header */
+
+  WriteDMA ( &DP, rcv_hdr, 18 );
+  pktlen -= 18;
+
+  /* Write data from mbuf chain to buffer */
+
+  while ( pktlen > 0 && pData != NULL )
+  {
+    WriteDMA ( &DP, mtod(pData, char *), min(pktlen, pData->m_len) );
+    pktlen -= pData->m_len;
+    pData = pData->m_next;
+  }
+
+  /* Signal reception to PC */
+
+  NE2_Hdr.RxIntStatus = isrRX_OK;
+  SetUserCallback();
+}
+
+
+/* Address filtering routines ----------------------------------- */
+
+#define POLYNOMIAL 0x04c11db7 /* polynomial for CRC calculation */
+#define NBBY       8 /* Bits per byte */
+
+static bool MulticastRequired ( char * p )
+{
+   /* Calculate the Autodin II CRC for the passed data */
+
+    unsigned int crc, i, j;
+    char next;
+
+    crc = 0xFFFFFFFF;
+    for( i = 0; i < 6; i++ )
+    {
+        next = p[i];
+        for( j = 0; j < NBBY; j++ )
+        {
+            if ( (next & 1) ^ (crc >> 31) )
+                crc = (crc << 1) ^ POLYNOMIAL;
+            else
+                crc <<= 1;
+            next >>= 1;
+        }
+    }
+
+    /* Look up in bit-mask array */
+
+    i = (crc >> 29) & 7;    /* Pos in array */
+    j = (crc >> 26) & 7;      /* Bit no */
+
+    if ( PCNE2_MultiMask[i] & (1<<j) )
+      return true;
+
+    sprintf( PCNE2_LogString,
+      "Rx %d: Addr %02X:%02X:%02X:%02X:%02X:%02X rejected - CRC %Xh",
+        PCNE2_Stats[RXPKTS], p[0], p[1], p[2], p[3], p[4], p[5], crc );
+    return false;
+}
+
+/* ------------------------------ */
+
+/* This processes a received packet, and does all address filtering
+   on it. It returns a value which is a statistic number, showing
+   what happened to the packet.
+
+   It should not modify the buffer chain pData in any way.
+*/
+
+static int ProcessRxChain ( char *dst, char *src, int frtype,
+                                               struct mbuf *pData )
+{
+  if ( !PCNE2_enabled )
+    return RX_DISABLED;
+
+  /* Ignore our own transmissions */
+
+  if ( src[5] == PCNE2_OurAddr[5]  &&
+       src[0] == PCNE2_OurAddr[0]  &&
+       src[1] == PCNE2_OurAddr[1]  &&
+       src[2] == PCNE2_OurAddr[2]  &&
+       src[3] == PCNE2_OurAddr[3]  &&
+       src[4] == PCNE2_OurAddr[4]
+     )
+      return RX_IGNORE_OWN;
+
+  /* Is it a physical address? */
+
+  if ( (dst[0] & 1) == 0 )
+  {
+    CopyPacket ( dst, src, frtype, pData );
+    return RX_NORMAL;
+  }
+
+  /* Is it a broadcast address? */
+
+  if ( dst[0] == 0xFF && (dst[1] & dst[2] & dst[3] & dst[4] & dst[5]) == 0xFF )
+  {
+    if ( PCNE2_RxOptions & (RCR_BROADCAST|RCR_MULTICAST) )
+    {
+      CopyPacket ( dst, src, frtype, pData );
+      return RX_BCAST_OK;
+    }
+
+    return RX_BCAST_REJ;
+  }
+
+  /* No? It must be multicast */
+
+  if ( (PCNE2_RxOptions & RCR_MULTICAST) != 0 && MulticastRequired(dst) )
+  {
+    CopyPacket ( dst, src, frtype, pData );
+    return RX_MCAST_OK;
+  }
+
+  return RX_MCAST_REJ;
+}
+
+
+/* Receive Function ------------------------------------- */
+
+/* This is called at interrupt time when packets are received;
+   its job is to copy the packet contents away into PCNE2's
+   RAM and set any relevant flags or callbacks.
+*/
+
+extern void PCNE2_ReceiveFn ( struct dib *pDib, struct mbuf *pData );
+
+extern int PCNE2_ReceiveFn_handler ( _kernel_swi_regs *R, int pw )
+{
+  struct mbuf *pBuf, *pB2;
+  struct rx_hdr *pRH;
+  int    result;
+
+  (void) pw;
+
+  pBuf = (struct mbuf *) R->r[1];
+
+  while ( pBuf != NULL )
+  {
+    /* Get RX header */
+    pRH = mtod ( pBuf, struct rx_hdr *);
+
+    /* Process data: actual data is contained in second buf in chain */
+
+    result = ProcessRxChain ( (char *) pRH->rx_dst_addr, (char *) pRH->rx_src_addr,
+                    pRH->rx_frame_type, pBuf->m_next );
+
+    PCNE2_Stats [RXPKTS] ++;
+    PCNE2_Stats [result] ++;
+
+    /* Free chain, move on to next one */
+
+    pB2 = pBuf->m_list;
+    Net_Mbctl.freem ( &Net_Mbctl, pBuf );
+    pBuf = pB2;
+  }
+
+  return 1;
+}
+
+/* SetupReceiver() --------------------------------- */
+
+/* SetupReceiver informs the driver of the packet types which we
+   want to receive.
+
+   It sets flags in the RxConnected array to indicate which of the
+   required frame types is has successfully connected or disconnected.
+
+   It returns false if there are any problems.
+*/
+
+
+static bool SetupReceiver ( bool ConnectNotRelease )
+{
+  int i, addrlvl;
+  bool res = true;
+  _kernel_swi_regs R;
+  _kernel_oserror *err;
+
+  addrlvl = (PCNE2_RxOptions & RCR_PROMISC)   ? ADDRLVL_PROMISCUOUS :
+            (PCNE2_RxOptions & RCR_MULTICAST) ? ADDRLVL_MULTICAST :
+                                        ADDRLVL_NORMAL;
+
+  /* Now request various packet types */
+
+  for ( i=0; i < RxFrameCount; i++ )
+  {
+    if ( (RxConnected[i] && ConnectNotRelease) ||
+         (!RxConnected[i] && !ConnectNotRelease) )
+      continue;
+
+    R.r[0] = ConnectNotRelease ? 0 : Filter_ClaimRelease;
+                             /* Flags - we can cope with 'unsafe' packets */
+    R.r[1] = PCNE2_DriverUnitNo;
+    R.r[2] = (RxFrameTypes[i] == ISOFrameType) ? FRMLVL_IEEE
+                   : (FRMLVL_E2SPECIFIC | (RxFrameTypes[i] & FRMTYP_MASK));
+    R.r[3] = addrlvl;
+    R.r[4] = ERRLVL_NO_ERRORS;
+    R.r[5] = PCNE2_pw;            /* Protocol handle (our PW) */
+    R.r[6] = (int) PCNE2_ReceiveFn;     /* Receive handler function */
+
+    err = _kernel_swi ( PCNE2_DriverSWIbase + DCI_Filter, &R, &R );
+    if ( err != NULL )
+    {
+      sprintf( PCNE2_LogString, "Set Frame type %Xh: error '%s'",
+                                RxFrameTypes[i], err->errmess );
+      res = false;
+    }
+    else
+      RxConnected[i] = ConnectNotRelease;
+  }
+
+  return res;
+}
+
+/* SWI handling code *************************************************
+
+   SWI numbers are defined in "PCNE2.h"
+
+*/
+
+extern _kernel_oserror *PCNE2_SWI (int SWIno, _kernel_swi_regs *R, void *pw )
+{
+  NotUsed ( pw );
+
+  switch (SWIno+PCNE2_SWIBASE)
+  {
+    /* PCNE2_Initialise --------------------------------------
+
+       On entry: R0 = 0
+                 R1 = address of NE2 callback function (when
+                       Tx/Rx status changes)
+
+       On exit:  R0 = 8390h
+                 R1 = pointer to BufInfo structure
+                 R2 = pointer to RAM buffer
+                 R3 = version number *100
+    */
+
+    case PCNE2_Initialise:
+      if ( PCNE2_DriverSWIbase != 0 )
+      {
+        NE2_Hdr.RxIntStatus = 0;
+        NE2_Hdr.TxIntStatus = 0;
+        NE2_Hdr.RxStatus  = 0;
+        NE2_Hdr.TxStatus  = 0;
+
+        PCNE2_UserCB.fn_addr = R->r[1];
+
+        copy6 ( NE2_Hdr.NetAddr, PCNE2_OurAddr );
+
+        R->r[0] = 0x8390;  /* DP8390 emulation ! */
+        R->r[1] = (int) &NE2_Hdr;
+        R->r[2] = (int) &NE2_RAM;
+        R->r[3] = 177;     /* Version */
+        PCNE2_enabled = false;
+      }
+      else
+        R->r[0] = 0;
+
+      break;
+
+    /* PCNE2_Enable ------------------------------------------
+
+       On entry: R0 = 1 to enable Rx and Tx systems, 0 to disable
+    */
+
+    case PCNE2_Enable:
+      PCNE2_enabled = R->r[0];
+      break;
+
+    /* PCNE2_Transmit ----------------------------------------
+
+       On entry: R0 = address of data packet within NE2's RAM space
+                 R1 = length of data
+
+       On exit:  R0 = 0 : OK
+                      1 : Bad parameter values. Packet will not be
+                          transmitted & no user event will be produced
+
+       (The data to be sent is a full Ethernet packet (starting with
+        6 bytes DestAddr, 6 bytes SourceAddr, 2 bytes Length/Frametype)
+
+    */
+
+    case PCNE2_Transmit:
+      R->r[0] = NE2_Transmit ( R->r[0], R->r[1] );
+      break;
+
+    /* PCNE2_SetRxOptions --------------------------------------
+
+       Sets Receive options: On entry R0 is a bit-set of what
+       packets need to be received:
+         RCR_BROADCAST (0x4) to allow broadcast addresses
+         RCR_MULTICAST (0x8) to allow multicast reception
+         RCR_PROMISC   (0x10) to allow promiscuous reception
+
+       If multicast is requested, R1 must point to an 8-byte
+       array of bits for multicast address filtering.
+    */
+
+    case PCNE2_SetRxOptions:
+
+      /* If multicast/promiscuous bits have changed,
+           disconnect from driver, then re-connect */
+
+      if ( (R->r[0] ^ PCNE2_RxOptions) & (RCR_MULTICAST | RCR_PROMISC ) )
+        SetupReceiver(false);
+
+      PCNE2_RxOptions = R->r[0];
+
+      if ( PCNE2_RxOptions & RCR_MULTICAST )
+        memcpy ( PCNE2_MultiMask, (char *)(R->r[1]), 8 );
+
+      SetupReceiver(true);
+      break;
+
+    /* --------------- */
+
+    default:
+      break;
+  }
+  return NULL;
+}
+
+/* PCNE2INFO command *************************************************** */
+
+extern _kernel_oserror *PCNE2_info_cmd ( void )
+{
+  int i;
+
+  printf("PCNE2 - NE2000 emulation for Aleph One !PC " VERSION_STRING );
+
+  printf("\nDriver/unit '%s', Node address %02x:%02x:%02x:%02x:%02x:%02x\n\n",
+         PCNE2_DriverName,
+      PCNE2_OurAddr[0], PCNE2_OurAddr[1], PCNE2_OurAddr[2],
+      PCNE2_OurAddr[3], PCNE2_OurAddr[4], PCNE2_OurAddr[5] );
+
+  printf("Reception mode: %s, %s\n",
+     (PCNE2_enabled ? "Enabled" : "Disabled"),
+     (PCNE2_RxOptions & RCR_PROMISC)   ? "Promiscuous" :
+     (PCNE2_RxOptions & RCR_MULTICAST) ? "Normal+Multicast" :
+                                         "Normal (no multicast)");
+
+  printf("Frame types requested:\n");
+  for ( i=0; i< RxFrameCount; i++ )
+    printf("  %04Xh", RxFrameTypes[i] );
+  printf("\nFrame types currently connected:\n");
+  for ( i=0; i< RxFrameCount; i++ )
+    if ( RxConnected[i] ) printf("  %04Xh", RxFrameTypes[i] );
+  printf("\n");
+
+  /* Show statistics */
+
+  for ( i=0; i<NSTATS; i++)
+    printf("%-28s: %d\n", statnames[i], PCNE2_Stats[i] );
+
+  printf("%s\n", PCNE2_LogString );
+  return NULL;
+}
+
+/* Initialise/Exit routines ****************************************** */
+
+/* ProcessOptions() and related subroutines -------------------- */
+
+static bool AddFrameType ( int type )
+{
+  int i;
+
+  if ( RxFrameCount >= MAX_RXFRAMES )
+  {
+    printf("No more than %d frame types can be specified\n", MAX_RXFRAMES );
+    return false;
+  }
+
+  /* Check if it is already used */
+
+  for ( i=0; i < RxFrameCount; i++ )
+    if ( RxFrameTypes[i] == type )
+      return true;
+
+  RxFrameTypes[RxFrameCount++] = type;
+  return true;
+}
+
+/* -------------------------------- */
+
+static bool match ( char *line, char *key )
+{
+  for ( ; *key != 0;  key++,line++ )
+    if ( toupper(*line) != *key )
+       return false;
+
+  return true;
+}
+
+/* -------------------------------- */
+
+#define MAX_RXNAMES 13
+
+static char *FrameNames[MAX_RXNAMES] =
+  { "IPX",   "TCPIP", "TCPIP", "TCPIP", "ISO",   "DECNET","DECNET",
+    "DECNET","DECNET","DECLAT","IBMSNA","XNS", "XNS"
+  };
+static int   FrameTypes[MAX_RXNAMES] =
+  { 0x8137,  0x800,   0x806,   0x8035,  ISOFrameType, 0x6003,  0x6005,
+    0x6006,  0x6007,  0x6004,  0x80D5,  0x600, 0x807
+  };
+
+/* ---------------------- */
+
+static bool AddFrameName( char *name )
+{
+  int  i;
+  bool res=false;
+
+  for (i=0; i<MAX_RXNAMES; i++)
+    if ( match ( name, FrameNames[i] ) )
+    {
+      if ( !AddFrameType(FrameTypes[i]) )
+        return false;
+
+      res = true;
+    }
+
+
+  if ( !res )
+  {
+    printf("Unknown frame type in '-p");
+    while ( *name > ' ' ) putchar(*name++);
+    printf("'\n");
+  }
+
+  return res;
+}
+
+/* ---------------------- */
+
+static bool AddFrameNum ( char *line )
+{
+  int tmp;
+  if ( sscanf ( line, "%X", &tmp ) != 1 )
+  {
+    printf("Bad hex number in '-n");
+    while (*line > ' ') putchar ( *line++ );
+    printf("'\n");
+    return false;
+  }
+
+  return AddFrameType(tmp);
+}
+
+/* -------------------------------- */
+
+static void ShowHelp (void)
+{
+  printf("\nPCNE2 module version " VERSION_STRING
+         "\n  Use PCNE2 -? or PCNE2 -H for this help listing\n"
+         "  Allowed options: -D<driver name> -P<frametype> -N<frameno> -B\n"
+         "  <frametype> may be: IPX  TCPIP  ISO  DECNET  DECLAT  IBMSNA or XNS\n"
+         "  use -B to fix bugs on CS8005-based adaptors\n");
+}
+
+
+/* -------------------------------- */
+
+static bool ProcessOptions ( char *line )
+{
+  RxFrameCount = 0;
+
+  while ( line = strchr(line, '-'), line != NULL )
+  {
+    line++;
+    switch ( toupper(*line) )
+    {
+      case 'D':    /* Specify driver name ************ */
+         {
+           int i=0;
+           line++;
+
+           while ( *line > ' ' )
+           {
+             if ( i < DRIVERNAME_LEN-1 )
+               PCNE2_DriverName[i++] = *line;
+             line++;
+           }
+           PCNE2_DriverName[i] = 0;
+         }
+         break;
+
+      case 'P':    /* Specify frame type ************* */
+         line++;
+         if ( !AddFrameName(line) )
+           return false;
+         break;
+
+      case 'B':    /* Bodge for 8005-based bytes *********** */
+         PCNE2_DriverFlags |= DF_8005BODGE;
+         break;
+
+      case 'N':     /* Specify frame type by number ******** */
+         line++;
+         if ( !AddFrameNum ( line ) )
+           return false;
+         break;
+
+      case 'H':
+      case '?':
+         ShowHelp();
+         return false;
+
+      default:
+         printf("\nBad command line switch '-%c'\n", line[0] );
+         ShowHelp();
+         return false;
+
+    }
+
+  }
+
+  /* Check if no frame type is specified */
+
+  if ( RxFrameCount == 0 )
+  {
+    printf("Using ISO/IEEE802.3 frames by default\n");
+    AddFrameType ( ISOFrameType );
+  }
+
+  return true;
+}
+
+/* Driver interface routines =================================== */
+
+static bool AttachToDriver( char *name )
+{
+  _kernel_swi_regs R;
+  dci4_chaindib *pCD, *pCD2;
+  dci4_dib      *pD;
+  char dname[20];
+  int i;
+
+  if ( sscanf( name, "%[^0123456789]%d", dname, &PCNE2_DriverUnitNo) != 2 )
+  {
+    printf("Bad network driver name '%s'\n", name );
+    return false;
+  }
+
+  /* Get list of network drivers -------------- */
+
+  R.r[0] = 0;
+  R.r[1] = Service_EnumerateNetworkDrivers;
+
+  _kernel_swi ( OS_ServiceCall, &R, &R );
+
+  /* Search for correct one --------- */
+
+  pCD = (dci4_chaindib *)R.r[0];
+  pD  = NULL;
+
+  while ( pCD != NULL )
+  {
+    if ( PCNE2_DriverUnitNo == pCD->chd_dib->dib_unit &&
+         strcmp ( dname, pCD->chd_dib->dib_name ) == 0 )
+    {
+      pD = pCD->chd_dib;
+      break;
+    }
+
+    pCD = pCD->chd_next;
+  }
+
+  /* Free 'chaindib' structures back to RMA */
+
+  for ( pCD = (dci4_chaindib *)R.r[0]; pCD != NULL; pCD = pCD2 )
+  {
+    pCD2 = pCD->chd_next;
+    free ( pCD );
+  }
+
+  /* If found, copy details */
+
+  if ( pD == NULL || pD->dib_swibase==0)
+  {
+    printf("Network interface '%s' could not be found\n", name );
+    return false;
+  }
+
+  PCNE2_DriverSWIbase = (pD->dib_swibase | os_X);
+
+  /* Get driver interface version: must be major version 4 */
+
+  R.r[0] = 0;
+  _kernel_swi ( PCNE2_DriverSWIbase+DCI_DCIversion, &R, &R );
+
+  if ( R.r[1] < 400 || R.r[1] > 499 )
+  {
+    printf("Network driver '%s' is an incompatible version\n", name );
+    return false;
+  }
+
+  /* Check flags */
+
+  R.r[0] = 0;
+  R.r[1] = PCNE2_DriverUnitNo;
+  _kernel_swi ( PCNE2_DriverSWIbase+DCI_Inquire, &R, &R );
+
+  if ( (R.r[2] & Feature_HardwareAddress) != Feature_HardwareAddress )
+  {
+    printf("Network interface '%s' is the wrong type for PCNE2\n", name );
+    return false;
+  }
+
+  /* Save address */
+
+  memcpy ( PCNE2_OurAddr, pD->dib_address, 6 );
+
+  if ( !SetupReceiver(true) )
+  {
+    printf("Cannot receive frame types ");
+    for (i=0; i<RxFrameCount; i++)
+    {
+      if ( !RxConnected[i] )
+        printf("%04Xh ", RxFrameTypes[i] );
+    }
+    printf("from network driver '%s'\n", PCNE2_DriverName );
+    return false;
+  }
+
+  return true;
+}
+
+/* -------------------------------- */
+
+static void PCNE2_exit ( void )
+{
+  SetupReceiver(false);
+  MbufShutdown();
+  #if LOGFILE
+  fclose (fhlogfile);
+  #endif
+}
+
+
+/* init() *********************************************************** */
+
+/* This is called by RISCOS when the module installs.
+   We register ourselves with the various DCI4 bits here.
+
+*/
+
+extern _kernel_oserror *PCNE2_Init (char *cmd_tail, int podule_base, int pw )
+{
+  char *name;
+  int i;
+
+  NotUsed (podule_base);
+
+  PCNE2_pw = pw;
+  PCNE2_UserCB.tag     = 0;
+  PCNE2_UserCB.fn_addr = 0;
+  PCNE2_UserCB.R0val   = 0;
+  PCNE2_UserCB.R12val  = 0;
+  for (i=0; i<MAX_RXFRAMES; i++) RxConnected[i] = false;
+  PCNE2_RxOptions      = 0;
+  RxFrameCount = 0;
+  PCNE2_DriverFlags = 0;
+
+  /* Use Atomwide Ethernet by default */
+
+  name = getenv("Inet$EtherType");
+  if ( name == NULL )
+    strcpy ( PCNE2_DriverName, "ea0" );
+  else
+  {
+    strncpy ( PCNE2_DriverName, name, DRIVERNAME_LEN-1 );
+    PCNE2_DriverName[DRIVERNAME_LEN-1] = 0;
+  }
+
+  atexit(PCNE2_exit);
+
+  if ( !ProcessOptions ( cmd_tail ) ||
+       !MbufInit() ||
+       !AttachToDriver( PCNE2_DriverName ) )
+    return &ErrorBlk;
+  #if LOGDATA
+  fhlogfile = fopen (LOGFILE, "w");
+  if (fhlogfile == NULL)   
+    printf ("couldn't open logfile %s\n",LOGFILE);
+  #endif
+  return NULL;
+}
+

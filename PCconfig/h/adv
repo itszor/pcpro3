@@ -1,0 +1,16 @@
+/*
+ * Name   : adv.h
+ * Desc   : Handlers for advanced config window
+ * Author : Matthew Bloch
+ * Date   : 8-June-1998
+ */
+
+#ifndef __adv_h
+#define __adv_h
+
+extern void do_adv_initialise(void);
+extern void setup_adv_window(void);
+extern void update_adv_window(void);
+extern int  adv_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id_block,void *handle);
+
+#endif

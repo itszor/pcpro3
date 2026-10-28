@@ -1,0 +1,839 @@
+/*
+*    DivaPC ARM C source
+*
+*    DEV.C.CD_HPC - C source for CD-ROM SVC support
+*
+* 2.00  14/11/95       Redone for HPC.
+* 2.12  1997.09.24 RW  CD_read ARM-coded -> HPC_CD.s
+* 2.25  1997.10.14 RW  CD_Seek ARM-coded -> HPC_CD.s
+* 3.03  1999.05.31 W   Added WSS CDROMFS support
+*/
+
+#include "kernel.h"
+/*#include "os.h"*/
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "dev.h.hpc_cd"
+
+#define DEBUG 0
+#include "sys.h.debug"
+
+#define ASM_CDREAD 1  /* if set use assembler version in CD_ReadFN
+                         (courtesy Robin watts) */
+
+
+/* CD & CDFS SWI calls ************************************************** */
+
+#define XCD_Version            0x61240
+#define XCD_ReadData           0x61241
+#define XCD_SeekTo             0x61242
+#define XCD_DriveStatus        0x61243
+#define XCD_DriveReady         0x61244
+#define XCD_GetParameters      0x61245
+#define XCD_SetParameters      0x61246
+#define XCD_OpenDrawer         0x61247
+#define XCD_EjectButton        0x61248
+#define XCD_EnquireAddress     0x61249
+#define XCD_EnquireDataMode    0x6124A
+#define XCD_PlayAudio          0x6124B
+#define XCD_PlayTrack          0x6124C
+#define XCD_AudioPause         0x6124D
+#define XCD_EnquireTrack       0x6124E
+#define XCD_ReadSubChannel     0x6124F
+#define XCD_CheckDrive         0x61250
+#define XCD_DiscChanged        0x61251
+#define XCD_StopDisc           0x61252
+#define XCD_DiscUsed           0x61253
+#define XCD_AudioStatus        0x61254
+#define XCD_Inquiry            0x61255
+#define XCD_DiscHasChanged     0x61256
+#define XCD_Control            0x61257
+#define XCD_Supported          0x61258
+#define XCD_Prefetch           0x61259
+#define XCD_Reset              0x6125A
+#define XCD_CloseDrawer        0x6125B
+#define XCD_IsDrawerLocked     0x6125C
+#define XCD_AudioControl       0x6125D
+#define XCD_LastError          0x6125E
+#define XCD_AudioLevel         0x6125F
+#define XCDFS_ConvertDriveToDevice       0x61E80
+#define XCDFS_SetBufferSize              0x61E81
+#define XCDFS_GetBufferSize              0x61E82
+#define XCDFS_SetNumberOfDrives          0x61E83
+#define XCDFS_GetNumberOfDrives          0x61E84
+#define XCDFS_GiveFileType               0x61E85
+#define XCDFS_DescribeDisc               0x61E86
+#define XCDFS_WhereIsFile                0x61E87
+#define XCDFS_Truncation                 0x61E88
+
+#define XCDROMFS_ConvertDriveToDevice    0x529C0
+#define XCDROMFS_GetNumberOfDrives       0x529C3
+
+
+/* ***************************************** */
+
+#define MAXDRIVES      8
+#define BLOCKSIZE      2048
+#define BLOCKSIZE_SHIFT  11
+
+
+#define MKWORD(a,b) ( ((b)<<8) + (a) )    /* Little endian ! */
+#define MKLONG(a,b,c,d) ( ((d)<<24) + ((c)<<16) + ((b)<<8) + (a) )
+
+
+#define CD_WORKING 0x100
+#define CD_CHANGED 0x200
+
+typedef struct _Drive
+{
+  int  flags;     /* CD_WORKING, CD_CHANGED and AUDIO_xxx flags */
+  int  CmdBlk[5];        /* 5-word CDFS command block */
+  int  DiskSize;
+  int  PlayStart;
+  int  PlayStop;
+}
+  DRIVE;
+
+/* External functions */
+
+#if ASM_CDREAD
+extern DRIVE * GetDrive ( int );
+extern int AudioStatus ( DRIVE *);
+extern void CD_Read ( struct CD_READ_PARAMS *, struct CD_READ_RESULT * );
+extern void CD_Seek ( struct CD_SEEK_PARAMS *, struct CD_SEEK_RESULT * );
+#endif
+
+/* Globals **************************************************** */
+
+#if ASM_CDREAD
+extern DRIVE CD_Drives[MAXDRIVES];
+#else
+static DRIVE CD_Drives[MAXDRIVES];
+#endif
+
+static BYTE CDFS_buf[32];
+
+static _kernel_swi_regs SWIregs;
+#define SWI(n) (_kernel_swi( n, &SWIregs, &SWIregs) )
+
+/* Subroutines ************************************************ */
+
+/* This function converts a physical block address into a Red Book
+   address. The returned int value has frame no. in bits 0..7, seconds
+   in bits 8..15, and minutes in bits 15..23
+*/
+
+extern int CD_PhysToMMSSFF ( int addr )
+{
+  int mm, ss, ff;
+
+  ss = (addr/75);
+  ff = addr - (ss*75);
+  mm = (ss/60);
+  ss = ss - (mm*60);
+
+  return MKLONG ( ff, ss, mm, 0 );
+
+}
+
+/* ------------------------ */
+
+/* This function converts a logical block address into a Red Book
+   address. The returned int value has frame no. in bits 0..7, seconds
+   in bits 8..15, and minutes in bits 15..23
+*/
+
+extern int CD_LogicalToMMSSFF ( int addr )
+{
+  return CD_PhysToMMSSFF (addr+150);
+}
+
+/* ------------------------ */
+
+/* This function updates the size of the disk for current drive. It also
+   sets the 'Changed' flag if this has changed since the last call.
+   It returns the current size of the disk in logical blocks.
+*/
+
+static int GetDiskSize ( DRIVE *pDI )
+{
+  /* Check for disk in drive */
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  if ( SWI ( XCD_DriveStatus ) != NULL )
+    return 0;
+
+  if (SWIregs.r[0] & 4)    /* Is drive empty? */
+    return 0;
+
+  SWIregs.r[0] = 0;                  /* Get size in logical blocks */
+  SWIregs.r[1] = (int) CDFS_buf;
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  if ( SWI ( XCD_DiscUsed ) != NULL )
+    return 0;
+
+  return MKLONG(CDFS_buf[0], CDFS_buf[1], CDFS_buf[2], CDFS_buf[3]);
+}
+
+/* ---------------- */
+
+static int UpdateDiskSize( DRIVE *pDI )
+{
+  int tmp = GetDiskSize(pDI);
+
+  if ( tmp != pDI->DiskSize )
+  {
+    debug(("Disk changed"));
+    pDI->DiskSize = tmp;
+    pDI->flags |= CD_CHANGED;
+  }
+
+  return tmp;
+}
+
+/* ------------------------ */
+
+/* AudioStatus checks to see if audio is playing, or if it has
+   finished. It updates pDI->flags, and returns a value which is
+   either AUDIO_STOPPED, AUDIO_PLAYING or AUDIO_PAUSED
+*/
+#if ASM_CDREAD
+#else
+static int AudioStatus ( DRIVE *pDI )
+{
+  if ( pDI->flags & AUDIO_PLAYING )
+  {
+    SWIregs.r[7] = (int) pDI->CmdBlk;
+
+    SWI ( XCD_AudioStatus );
+
+    if ( SWIregs.r[0] != 0 )  /* If audio is no longer playing */
+    {
+      debug(("Audio stopped"));
+      pDI->flags &= ~(AUDIO_PLAYING | AUDIO_PAUSED);
+      pDI->PlayStart = 0;
+      pDI->PlayStop  = 0;
+    }
+
+  }
+
+  return pDI->flags & (AUDIO_PLAYING | AUDIO_PAUSED);
+}
+#endif
+/* ------------------------ */
+#if ASM_CDREAD
+#else
+static DRIVE *GetDrive ( int drvnum )
+{
+  DRIVE *p;
+  if ( drvnum < 0 || drvnum >= MAXDRIVES )
+    return NULL;
+
+  p = &CD_Drives[drvnum];
+  if ( p->flags & CD_WORKING )
+    return p;
+  else
+    return NULL;
+}
+#endif
+/* Main routines ************************************************ */
+
+extern void CD_Init ( struct CD_INIT_PARAMS *pIn,
+                      struct CD_INIT_RESULT *pOut )
+{
+  int i, max, ndrvs;
+  DRIVE *pDI;
+
+  NotUsed(pIn);
+
+  pOut->audiostat = 0;
+
+  for (i=0; i<MAXDRIVES; i++)
+  {
+    CD_Drives[i].flags     = 0;
+    CD_Drives[i].DiskSize  = 0;
+    CD_Drives[i].PlayStart = 0;
+    CD_Drives[i].PlayStop  = 0;
+  }
+
+  if (SWI (XCDFS_GetNumberOfDrives) != NULL)
+  {
+    if (SWI (XCDROMFS_GetNumberOfDrives) != NULL)
+    {
+      debug(("No CDFS or CDROMFS?"));
+      pOut->status = CDERR_OK;
+      pOut->ndrives = 0;
+      return;
+    }
+  }
+
+  max = SWIregs.r[0];
+  ndrvs=0;
+  pDI = &CD_Drives[0];
+
+  for (i=0; i<max; i++)
+  {
+    SWIregs.r[0] = i;
+    if ( SWI (XCDFS_ConvertDriveToDevice) != NULL)
+    {
+      if ( SWI (XCDROMFS_ConvertDriveToDevice) != NULL) continue;
+    }
+    if (SWIregs.r[1] >= 0 )
+    {
+      pDI->flags     = CD_WORKING;
+      pDI->CmdBlk[0] = SWIregs.r[1] & 7;
+      pDI->CmdBlk[1] = (SWIregs.r[1] >> 3) & 3;
+      pDI->CmdBlk[2] = (SWIregs.r[1] >> 5) & 7;
+      pDI->CmdBlk[3] = (SWIregs.r[1] >> 8) & 0xFF;
+      pDI->CmdBlk[4] = (SWIregs.r[1] >> 16) & 0xFFFF;
+      ndrvs++;
+      pDI++;
+      if ( ndrvs >= MAXDRIVES )
+        break;
+    }
+
+  }
+
+  debug(("CD_Init: %d drives found", ndrvs));
+  pOut->status = CDERR_OK;
+  pOut->ndrives = ndrvs;
+}
+
+/* ------------------------ */
+#if ASM_CDREAD
+/* this function in CDHPCs.s */
+#else
+extern void CD_Read ( struct CD_READ_PARAMS *pIn,
+                      struct CD_READ_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    debug(("Read: bad drive number"));
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  pOut->audiostat = AudioStatus(pDI);
+  if ( pOut->audiostat & AUDIO_PLAYING )
+  {
+    debug(("Read: audio busy"));
+    pOut->status = CDERR_BUSY;
+    return;
+  }
+
+  if ( pDI->flags & CD_CHANGED )
+  {
+    debug(("Read: changed"));
+    pDI->flags &= ~CD_CHANGED;
+    pOut->status = CDERR_CHANGED;
+    return;
+  }
+
+  if ( pIn->sect_count > (CD_MAX_RD_LEN >> BLOCKSIZE_SHIFT) )
+  {
+    debug(("Read: bad sector count %d", pIn->sect_count));
+    pOut->status = CDERR_BADPARAMS;
+    return;
+  }
+
+  SWIregs.r[0] = 0;    /* Address mode : logical block */
+  SWIregs.r[1] = pIn->sect_start;
+  SWIregs.r[2] = pIn->sect_count;
+  SWIregs.r[3] = (int) pOut->read_data;
+  SWIregs.r[4] = BLOCKSIZE; /* EESOX fix, 17/6/96 */
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+
+  if ( SWI ( XCD_ReadData ) != NULL )
+  {
+    debug(("Read error"));
+    pOut->status = CDERR_READERR;
+  }
+  else
+    pOut->status = CDERR_OK;
+
+  /*!! do it twice to see if this fixes ROS4 CD buffer problem */
+  /*if ( SWI ( XCD_ReadData ) != NULL )
+  {
+    debug(("Read error - 2nd read"));
+    pOut->status = CDERR_READERR;
+  }
+  else
+    pOut->status = CDERR_OK;*/
+
+  /*SYS_trace("Sector:%d Count:%d",pIn->sect_start,pIn->sect_count);*/
+    /*!!!*/ /*SYS_tracedata(pOut->read_data,BLOCKSIZE);*/
+}
+#endif
+/* ------------------------ */
+
+#if ASM_CDREAD
+/* this function in CDHPCs.s */
+#else
+extern void CD_Seek ( struct CD_SEEK_PARAMS *pIn,
+                      struct CD_SEEK_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  pOut->audiostat = AudioStatus(pDI);
+  if ( pOut->audiostat & AUDIO_PLAYING )
+  {
+    debug(("Seek: audio busy"));
+    pOut->status = CDERR_BUSY;
+    return;
+  }
+
+  if ( pDI->flags & CD_CHANGED )
+  {
+    debug(("Seek: changed"));
+    pDI->flags &= ~CD_CHANGED;
+    pOut->status = CDERR_CHANGED;
+    return;
+  }
+
+  SWIregs.r[0] = 0;    /* Address mode : logical block */
+  SWIregs.r[1] = pIn->sect_start;
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  if ( SWI ( XCD_SeekTo ) != NULL )
+  {
+    debug(("Seek error"));
+    pOut->status = CDERR_READERR;
+  }
+  else
+    pOut->status = CDERR_OK;
+
+}
+#endif
+/* ------------------------ */
+
+extern void CD_Play ( struct CD_PLAY_PARAMS *pIn,
+                      struct CD_PLAY_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+
+  if ( pDI == NULL )
+  {
+    debug(("Play: bad drive %d", pIn->drvnum));
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  pOut->audiostat = AudioStatus(pDI);
+  if ( pOut->audiostat & AUDIO_PLAYING )
+  {
+    debug(("Play: audio busy"));
+    pOut->status = CDERR_BUSY;
+    return;
+  }
+
+  pDI->flags &= ~(AUDIO_PLAYING | AUDIO_PAUSED);
+  pDI->PlayStart = pIn->sect_start;
+  pDI->PlayStop  = pIn->sect_start + pIn->play_len;
+  SWIregs.r[0] = 1;  /* Format: red book. We ought to be able to
+                        put r0=0 here and use logical addressing,
+                        but it didn't work with my driver */
+  SWIregs.r[1] = CD_LogicalToMMSSFF ( pDI->PlayStart );
+  SWIregs.r[2] = CD_LogicalToMMSSFF ( pDI->PlayStop );
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  debug(("Play from %Xh to %Xh", SWIregs.r[1], SWIregs.r[2]));
+
+  if ( SWI ( XCD_PlayAudio ) == NULL )
+  {
+    pDI->flags   |= AUDIO_PLAYING;
+    pOut->status = CDERR_OK;
+  }
+  else
+  {
+    debug(("Play: SWI error"));
+    pOut->status = CDERR_DRIVEFAIL;
+  }
+
+  pOut->audiostat = AudioStatus(pDI);
+}
+
+/* ------------------------ */
+
+extern void CD_PlayStatus ( struct CD_PLAYSTATUS_PARAMS *pIn,
+                            struct CD_PLAYSTATUS_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  debug (("PlayStatus:"));
+
+  pOut->playstart = pDI->PlayStart;
+  pOut->playstop  = pDI->PlayStop;
+  pOut->audiostat = AudioStatus(pDI);
+
+  if ( pOut->audiostat & AUDIO_PLAYING )
+  {
+    SWIregs.r[0] = 0; /* Format: 0=logical address */
+    SWIregs.r[7] = (int) pDI->CmdBlk;
+
+    SWI ( XCD_EnquireAddress );    /* Returns R0 = play head address */
+    pOut->playpos = SWIregs.r[0];
+    debug(("  Play address = %Xh", SWIregs.r[0]));
+  }
+  else
+    pOut->playpos = pDI->PlayStart;
+
+  pOut->status = CDERR_OK;
+}
+
+/* ------------------------ */
+
+extern void CD_DiskInfo ( struct CD_DISKINFO_PARAMS *pIn,
+                          struct CD_DISKINFO_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  /* Some drivers' DriveStatus calls don't work when audio
+      is playing. If it's still playing, we can assume that
+      the disk hasn't changed & the drive isn't empty. */
+
+  pOut->audiostat = AudioStatus(pDI);
+
+  if ( !(pOut->audiostat & AUDIO_PLAYING) )
+    UpdateDiskSize(pDI);
+
+  pOut->disksize = pDI->DiskSize;
+  debug(("DiskInfo: size is %Xh, audio state %Xh", pOut->disksize,
+          pOut->audiostat));
+  pOut->status = CDERR_OK;
+}
+
+/* ------------------------ */
+
+extern void CD_TrackInfo ( struct CD_TRACKINFO_PARAMS *pIn,
+                           struct CD_TRACKINFO_RESULT *pOut )
+{
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  pOut->audiostat = AudioStatus(pDI);
+
+  if ( pIn->trknum == TRKNUM_WHOLE_CD )
+  {
+    debug(("Whole CD info:"));
+
+    SWIregs.r[0] = 0;
+    SWIregs.r[1] = (int) CDFS_buf;
+    SWIregs.r[7] = (int) pDI->CmdBlk;
+    if ( SWI ( XCD_EnquireTrack ) != NULL )
+    {
+      debug(("  SWI error"));
+      pOut->status = CDERR_DRIVEFAIL;      return;
+    }
+
+    pOut->firsttrk = CDFS_buf[0];
+    pOut->lasttrk  = CDFS_buf[1];
+    pOut->trkstart = UpdateDiskSize ( pDI );
+    pOut->trkflags = 0;
+    debug(("  firsttrk=%d lasttrk=%d, size = %Xh",
+            pOut->firsttrk, pOut->lasttrk, pOut->trkstart));
+  }
+  else
+  {
+    debug(("Track %d info:", pIn->trknum));
+    SWIregs.r[0] = pIn->trknum;   /* BH=track number */
+    SWIregs.r[1] = (int) CDFS_buf;
+    SWIregs.r[7] = (int) pDI->CmdBlk;
+
+    if ( SWI ( XCD_EnquireTrack ) != NULL )
+    {
+      debug(("  SWI error"));
+      pOut->status = CDERR_DRIVEFAIL;
+      return;
+    }
+
+    pOut->firsttrk = pOut->lasttrk = 0;
+    pOut->trkstart = MKLONG( CDFS_buf[0], CDFS_buf[1],
+                                  CDFS_buf[2], CDFS_buf[3] );
+    pOut->trkflags =
+          ( (CDFS_buf[4] & 1) ? TRKFLAGS_DATA : 0 ) +
+          ( (CDFS_buf[4] & 2) ? TRKFLAGS_4CH : 0 );
+
+    debug((" Flags %Xh, starts at %Xh", pOut->trkflags,
+              pOut->trkstart));
+
+  }
+
+  pOut->status = CDERR_OK;
+}
+
+/* ------------------------ */
+
+extern void CD_QChannel ( struct CD_QCHANNEL_PARAMS *pIn,
+                          struct CD_QCHANNEL_RESULT *pOut )
+{
+  int tmp;
+
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  pOut->audiostat = AudioStatus ( pDI );
+
+  /* Read Q-channel info */
+
+  SWIregs.r[0] = 0x40;    /* Don't know what this means */
+  SWIregs.r[1] = (int) CDFS_buf;   /* Read Qchannel data into CDFS_buf */
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  if ( SWI( XCD_ReadSubChannel ) != NULL )
+  {
+    /* Don't generate an error; if you do CDPLAYER app generates
+       an error if you start it without a CD in the drive */
+    for (tmp=0; tmp<10; tmp++) pOut->Qdata[tmp] = 0;
+  }
+  else
+  {
+    /* Assemble response structure */
+
+    pOut->Qdata[0] =    1;         /* Control and Adr byte (eh?) */
+    pOut->Qdata[1] = CDFS_buf[9];   /* Track number */
+    pOut->Qdata[2] = CDFS_buf[10];  /* Point or Index  */
+
+    /* Running time within track, MMSSFF format */
+    tmp = CD_PhysToMMSSFF (
+            MKLONG(CDFS_buf[0], CDFS_buf[1], CDFS_buf[2], CDFS_buf[3]) );
+
+
+    pOut->Qdata[3] = tmp >> 16;    /* Minute */
+    pOut->Qdata[4] = tmp >> 8;     /* Second */
+    pOut->Qdata[5] = tmp & 0xFF;     /* Frame  */
+    pOut->Qdata[6] = 0;
+
+    /* Running time on disk, MMSSFF format */
+    tmp = CD_LogicalToMMSSFF(
+            MKLONG(CDFS_buf[4], CDFS_buf[5], CDFS_buf[6], CDFS_buf[7]) );
+
+    pOut->Qdata[7] = tmp >> 16;    /* Minute */
+    pOut->Qdata[8] = tmp >> 8;    /* Second */
+    pOut->Qdata[9]= tmp & 0xFF;   /* Frame  */
+  }
+  pOut->status = CDERR_OK;
+}
+
+/* ------------------------ */
+
+extern void CD_Control ( struct CD_CONTROL_PARAMS *pIn,
+                         struct CD_CONTROL_RESULT *pOut )
+{
+  _kernel_oserror *err;
+
+  DRIVE *pDI = GetDrive ( pIn->drvnum );
+  if ( pDI == NULL )
+  {
+    pOut->status = CDERR_BADDRIVE;
+    return;
+  }
+
+  SWIregs.r[7] = (int) pDI->CmdBlk;
+
+  debug((" CD Control %04Xh", pIn->fncode));
+
+  switch ( pIn->fncode )
+  {
+    case CONTROL_RESET:
+      pDI->flags &= ~ (CD_CHANGED | AUDIO_PLAYING | AUDIO_PAUSED );
+      pDI->PlayStart = 0;
+      pDI->PlayStop  = 0;
+      err = SWI ( XCD_Reset );
+      break;
+
+    case CONTROL_CHANGED:
+      pOut->audiostat = AudioStatus(pDI);
+      pOut->status = CDERR_OK;
+
+      if ( pDI->flags & AUDIO_PLAYING )
+        return;
+
+      UpdateDiskSize ( pDI );
+      if ( pDI->flags & CD_CHANGED )
+      {
+        pDI->flags &= ~CD_CHANGED;
+        pOut->status = CDERR_CHANGED;
+      }
+      return;
+
+    case CONTROL_PAUSE:
+      if ( AudioStatus ( pDI ) & AUDIO_PLAYING )
+      {
+        /* If it's playing, pause it */
+        SWIregs.r[0] = 1;          /* Pause on */
+        err = SWI ( XCD_AudioPause );
+        if ( err != NULL )
+          break;
+
+        pDI->flags = (pDI->flags & ~AUDIO_PLAYING) |
+                        AUDIO_PAUSED;
+
+        SWIregs.r[0] = 0;    /* Get current head address as LBA */
+        err = SWI ( XCD_EnquireAddress );
+        if ( err != NULL )
+          break;
+
+        pDI->PlayStart = SWIregs.r[0];  /* & Save as 'resume' addr */
+      }
+      else /* If paused or stopped, stop it */
+      {
+        pDI->flags &= ~(AUDIO_PLAYING | AUDIO_PAUSED);
+        pDI->PlayStart = 0;
+        pDI->PlayStop  = 0;
+        err = NULL;
+      }
+      break;
+
+    case CONTROL_RESUME:
+      if ( pDI->flags & AUDIO_PAUSED )
+      {
+        SWIregs.r[0] = 0;                  /* Unpause */
+        err = SWI(XCD_AudioPause);
+        if ( err != NULL )
+          break;
+
+        pDI->flags = (pDI->flags & ~AUDIO_PAUSED) |
+                        AUDIO_PLAYING;
+
+      }
+      else
+      {
+        pOut->status = CDERR_DRIVEFAIL;
+        pOut->audiostat = AudioStatus(pDI);
+        return;
+      }
+      break;
+
+    case CONTROL_UNLOCK:
+      SWIregs.r[0] = 0;
+      err = SWI ( XCD_EjectButton );
+      break;
+
+    case CONTROL_LOCK:
+      SWIregs.r[0] = 1;
+      err = SWI ( XCD_EjectButton );
+      break;
+
+    case CONTROL_OPEN:
+      SWIregs.r[0] = 0;
+      SWI ( XCD_EjectButton );
+      err = SWI ( XCD_OpenDrawer );
+      break;
+
+    case CONTROL_CLOSE:
+      err = SWI ( XCD_CloseDrawer );
+      break;
+
+    default:
+      pOut->status = CDERR_BADPARAMS;
+      return;
+  }
+
+  if ( err != NULL )
+    pOut->status = CDERR_DRIVEFAIL;
+  else
+    pOut->status = CDERR_OK;
+
+  pOut->audiostat = AudioStatus(pDI);
+}
+
+
+/* HPC dispatch routine ****************************************** */
+
+static void CD_HPCdispatch ( BYTE *buf )
+{
+  CD_HPC_IN_OUT *pB = (CD_HPC_IN_OUT *) buf;
+
+  if ( pB->in.common.hpc_id != HPC_CD_ID )
+  {
+    pB->out.common.retcode = HPCERR_NOTPRESENT;
+    return;
+  }
+
+  debug(("CD cmd %Xh", pB->in.common.reason));
+  switch ( pB->in.common.reason )
+  {
+    case HPC_CD_INIT:
+      CD_Init ( &(pB->in.Init), &(pB->out.Init) );
+      break;
+
+    case HPC_CD_READ:
+      CD_Read ( &(pB->in.Read), &(pB->out.Read) );
+      break;
+
+    case HPC_CD_SEEK:
+      CD_Seek ( &(pB->in.Seek), &(pB->out.Seek) );
+      break;
+
+    case HPC_CD_PLAY:
+      CD_Play ( &(pB->in.Play), &(pB->out.Play) );
+      break;
+
+    case HPC_CD_PLAYSTATUS:
+      CD_PlayStatus ( &(pB->in.PlayStatus), &(pB->out.PlayStatus) );
+      break;
+
+    case HPC_CD_DISKINFO:
+      CD_DiskInfo ( &(pB->in.DiskInfo), &(pB->out.DiskInfo) );
+      break;
+
+    case HPC_CD_TRACKINFO:
+      CD_TrackInfo ( &(pB->in.TrackInfo), &(pB->out.TrackInfo) );
+      break;
+
+    case HPC_CD_QCHANNEL:
+      CD_QChannel ( &(pB->in.QChannel), &(pB->out.QChannel) );
+      break;
+
+    case HPC_CD_CONTROL:
+      CD_Control ( &(pB->in.Control), &(pB->out.Control) );
+      break;
+
+    default:
+      pB->out.common.retcode = CDERR_BADFUNC;
+      break;
+  }
+
+}
+
+/* Initialise routine *********************************************** */
+
+extern bool CDR_Init ( void )
+{
+  SYS_registerHPC ( HPC_CD_ID, CD_HPCdispatch, HPC_NORMAL, 1 );
+  return true;
+}
+
+
+
+
+
+
+

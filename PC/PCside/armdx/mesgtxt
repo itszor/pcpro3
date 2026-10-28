@@ -1,0 +1,44 @@
+Date: Tue, 1 Dec 1998 04:05:26 -0000
+From: "Sean_D._Sollé" <sean@solle.net>
+Reply-To: sean@solle.net
+Subject: ARMDRV source!
+To: "Wookey@Aleph1. Co. Uk" <wookey@aleph1.co.uk>
+
+Hiya!
+
+Right, I admit defeat :-) I've been lugging this source back an forward
+to my machine at TDV to attempt to ensure that I can mail you a directory
+that I _know_ will build on a virgin machine, but every time I've sat down
+there to do it, something has come up, and having kept this weekend clear
+so I could sneak in and do it undisturbed, I end up spending it in bed with
+a stinky cold.
+
+So.
+
+I've huddled under my duvet here, and tried to build it all in another
+directory. Chances are it'll complain when you get it, and I'll have to
+mail them to you (the thing I was trying to avoid :-) but at least you'll
+have it.
+
+It should all work in VC5 - that's what I've been using here. There's a
+custom build command defined in the project so that .asm files assemble,
+and there's a small .exe called 'Link.exe' which I wrote to translate
+parameters that DevStudio is passing to the 32bit linker into ones the
+old 16bit linker understands.
+
+The upshot of all this is that you can build everything within the nice
+cosy environment of VC5, use SourceSafe, get throwbacks etc.
+
+There's just a couple of caveats - you should always do a 'rebuild all' -
+(the incremental build doesn't always work), and release builds don't
+work - these are both problems with my link wrapper that I'll fix as soon
+as I get my copy of VC6 :-)
+
+Let me know if it whinges about something - it's bound to.
+
+See you in a couple of weeks,
+
+Cheers,
+
+Sean.
+

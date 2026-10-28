@@ -1,0 +1,22 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.MULTI_IO - header file
+*
+*/
+
+
+extern bool LPT_Open;
+extern bool COM_Open;
+
+/* EXPORTED ROUTINES */
+
+extern bool ReserveLPT ( void );
+extern bool ReleaseLPT ( void );
+
+extern bool ReserveCOM ( void );
+extern bool ReleaseCOM ( void );
+
+extern bool MUL_Init ( void );
+
+extern void SYS_PollDevices(char *parallel, char *serial);

@@ -1,0 +1,41 @@
+; PCVid module
+
+PCVid_SWIBase * &88800
+PCVid_InternalVer * 223
+
+Module_BaseAddr
+
+        DCD     0
+        DCD     Init    - Module_BaseAddr
+        DCD     Final   - Module_BaseAddr
+        DCD     0 ; Service - Module_BaseAddr
+        DCD     Title   - Module_BaseAddr
+        DCD     Help    - Module_BaseAddr
+        DCD     0
+
+        DCD     PCVid_SWIBase
+        DCD     SWI_Handle - Module_BaseAddr
+        DCD     SWI_Decode - Module_BaseAddr
+        DCD     0
+
+Title	DCB	"PCVid", 0
+err_SWI_Unknown
+	DCD	0
+	DCB	"Bad PCVid SWI!", 0
+	ALIGN
+
+SWI_Decode
+	DCB     "PCVid", 0          ; Prefix to all SWI names
+	DCB	"Init", 0
+        DCB     0
+
+        ALIGN
+
+SWI_Handle
+	CMP	R11, #0
+	BGT	SWI_Unknown
+
+SWI_Unknown
+	ADR	R0, err_SWI_Unknown
+
+ END

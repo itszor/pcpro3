@@ -1,0 +1,21 @@
+|Set Diva$Dir SCSI::BIGSCSI.$.!PC
+Set DivaSrc$Path <Obey$Dir>.
+Dir <Obey$Dir>
+RMEnsure DDEUtils 0.00 RMLoad System:Modules.DDEUtils
+Prefix @
+amu all
+Echo ** Copying !Runimage
+copy bin.!RunImageG <Diva$dir>.!RunImage F~C~VN
+Echo ** Copying PCSupport
+copy bin.PCSupport <Diva$dir>.PCBits.Core.PCSupport F~C~VN
+Echo ** Copying PCNE2
+copy bin.PCNE2     <Diva$dir>.PCBits.Netlinks.PCNE2 F~C~VN
+Echo ** Copying PCMEM
+copy bin.PCMem     <Diva$dir>.PCBits.Core.PCMem F~C~VN
+Echo ** Copying PC_IO
+copy bin.PC_IO     <Diva$dir>.PCBits.Core.PC_IO F~C~VN
+Echo ** Copying PCDevHelp
+copy bin.PCDevHelp <Diva$dir>.PCBits.Core.PCDevHelp F~C~VN
+|copy sys.h.version <testPC$dir>.!PC.version
+|GetDates
+Echo ** Done

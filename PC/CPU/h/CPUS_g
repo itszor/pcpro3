@@ -1,0 +1,38 @@
+/*
+*   DIVAPC C source
+*
+*   CPU.H.CPUS_G Header for C and assembler routines
+*                used only internally to CPU module
+*		 Interface to Gemini ASIC
+*
+*   Versions
+*
+*   23-11-94 INH  Original
+*/
+
+/* CPUS module variables */
+
+extern Handler  *CPUS_IOArray;
+extern Handler  *CPUS_MemArray;
+
+extern BYTE *CPU_MemoryBase;
+extern int   CPUS_ErrorWord;
+extern int  *CPUS_pStopFlag;
+
+/* Main CPUS routines */
+
+extern void CPUS_Run ( void );
+
+extern int  CPUS_Read  ( int addr );
+extern void CPUS_Write ( int addr, int data );
+
+extern int  CPUS_BlockIn  ( int ioport, BYTE *ptr, int maxlen );
+extern int  CPUS_BlockOut ( int ioport, BYTE *ptr, int maxlen );
+
+/*extern char *CPUS_HardwareID;*/
+
+/* This is actually in C.CPU_G for test purposes */
+
+extern void CPUS_CauseInt ( int );
+
+
