@@ -39,7 +39,7 @@ configpair     config_list[32]; /* Memory schmemory */
 static char * get_lastname(void)
 {
   static char config_lastfile[128];
-  static char last[8] = "^..Last";
+  static char last[8] = ".^.Last";	/* where !ChooseCfg reads it */
 
   strcpy(config_lastfile, config_dir);
   strcat(config_lastfile, last);
@@ -136,14 +136,16 @@ extern void multicfg_readlist(void)
     sprintf(temp_fname, "%s.%s", config_dir, line);
     fh = fopen(temp_fname, "rb");
     line[0] = 0;
-    while (strncmp(line, "ConfigName", 10) != 0 && !feof(fh))
+    while (fh != NULL && strncmp(line, "ConfigName", 10) != 0 && !feof(fh))
       fgets(line, 256, fh);
-    line[strlen(line)-1] = 0;
-    if (!feof(fh))
+    if (line[0] != 0)
+      line[strlen(line)-1] = 0;
+    if (fh != NULL && !feof(fh))
       strcpy(config_list[num-1].long_name, line+11);
     else
       strcpy(config_list[num-1].long_name, config_list[num-1].fname);
-    fclose(fh);
+    if (fh != NULL)
+      fclose(fh);
     x = read_entry(config_dir, line, count, NULL);
     if (x == -1) count = -1;
     /*fprintf(stderr, "%d: %s -- %s\n", num-1, config_list[num-1].fname, config_list[num-1].long_name);*/
@@ -166,8 +168,10 @@ extern void multicfg_readlist(void)
   else if (file_exists(get_lastname())) {
     fh = fopen(get_lastname(), "rb");
     if (fh != NULL)
+    {
       fread(&about_to_change_config, sizeof(int), 1, fh);
-    fclose(fh);
+      fclose(fh);
+    }
   } else about_to_change_config = 0;
   configuration_changed = FALSE;
   //fprintf(stderr, "about_to_change_config = %d\n", about_to_change_config);
@@ -180,6 +184,8 @@ extern void multicfg_zero_last(void)
   int  xx;
 
   fh = fopen(get_lastname(), "wb");
+  if (fh == NULL)
+    return;
   xx = 0;
   fwrite(&xx, sizeof(int), 1, fh);
   fclose(fh);
@@ -224,9 +230,12 @@ extern void multicfg_new_config_dir(char *import_config_dir)
   sprintf(cmd, "Copy %s %s.Default ~A~C~DF~L~N~P~QRS~T~V", f, config_dir);
   system(cmd);
   fh = fopen(get_lastname(), "wb");
-  xx = 0;
-  fwrite(&xx, sizeof(int), 1, fh);
-  fclose(fh);
+  if (fh != NULL)
+  {
+    xx = 0;
+    fwrite(&xx, sizeof(int), 1, fh);
+    fclose(fh);
+  }
 
   /* Import settings from !NetRun file into new Config */
 
