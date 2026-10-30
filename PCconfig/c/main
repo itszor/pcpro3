@@ -15,6 +15,14 @@
 
 #include "wimp.h"
 #include "toolbox.h"
+
+/* Show types later toolbox.h headers define and Acorn C/C++ 5's predates. */
+#ifndef Toolbox_ShowObject_Centre
+#define Toolbox_ShowObject_Centre    3
+#endif
+#ifndef Toolbox_ShowObject_AtPointer
+#define Toolbox_ShowObject_AtPointer 4
+#endif
 #include "gadgets.h"
 #include "event.h"
 #include "swis.h"
