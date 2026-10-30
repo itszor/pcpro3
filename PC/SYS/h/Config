@@ -27,6 +27,7 @@ struct SysConfig
     bool DirectParallel;
     bool TurboDriverBodge;
     bool BusMouse;
+    bool MiddleToPC;      /* Middle button to the PC; Ctrl+middle is !PC's */
 
     int  FloppySize[4];
     bool DisableFloppies;

@@ -16,6 +16,8 @@
 *    30-03-94      No default int: always set by SYS.C.CONFIG
 *    13-07-94      Cursors are now 32x32
 *    26-06-96 W    Added debug code
+*    30-10-26 JB   MiddleToPC: the middle button goes to the PC, and
+*                  Ctrl+middle does what the middle button did
 */
 
 #include "kernel.h"
@@ -556,6 +558,28 @@ static bool MOU_DisconnectReq; /* Debouncer for 'disconnection' */
 
 /* Subroutines ******************************* */
 
+/* True if Ctrl is held down. PCSupport takes keys from the keyboard event,
+   which comes after the OS has noted the key, so this works while the PC
+   has the keyboard. */
+
+static bool CtrlPressed()
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = 121;                /* Keyboard scan */
+  r.r[1] = 1 ^ 0x80;           /* Ctrl's internal key number, one key */
+  _kernel_swi ( OS_Byte, &r, &r );
+  return r.r[1] == 0xFF;
+}
+
+/* True if the middle button is being used as !PC's own: always, unless
+   MiddleToPC gives it to the PC, in which case only with Ctrl. */
+
+static bool MiddleIsOurs()
+{
+  return !CFG.MiddleToPC || CtrlPressed();
+}
+
 
 static bool MOU_Disconnect()
 {
@@ -608,7 +632,8 @@ static bool MOU_GetMouseChanged()
    _kernel_swi ( OS_Mouse, &regs, &regs );  /* Read a RISCOS mouse event */
 
    if ( (regs.r[2] & CButton) != 0  &&
-        (CFG.SuspendOption & SO_MIDBUTTON) != 0 )
+        (CFG.SuspendOption & SO_MIDBUTTON) != 0 &&
+        MiddleIsOurs() )
    {
      SYS_FEState.SuspendRequest = true;
    }
@@ -618,7 +643,10 @@ static bool MOU_GetMouseChanged()
    _kernel_swi ( PCSupport_MouGetState, &regs, &regs );
 
    if ( regs.r[2] & CButton )      /* Wait for centre button to go */
-     MOU_DisconnectReq = true;       /* down then up */
+   {                                 /* down then up */
+     if ( MOU_DisconnectReq || MiddleIsOurs() )
+       MOU_DisconnectReq = true;
+   }
    else if ( MOU_DisconnectReq )
    {
      MOU_Disconnect();
@@ -632,6 +660,9 @@ static bool MOU_GetMouseChanged()
  if ( regs.r[1] != -1 ) MOU_ArmY = regs.r[1];
                   /* Corrects apparent RISCOS bug */
  MOU_Buttons = regs.r[2];
+
+ if ( CFG.MiddleToPC && (MOU_DisconnectReq || SYS_FEState.SuspendRequest) )
+   MOU_Buttons &= ~CButton;        /* !PC's click, not the PC's */
 
  if ( MOU_ArmX != MOU_LastArmX || MOU_ArmY != MOU_LastArmY
       || MOU_LastButtons != MOU_Buttons )
@@ -686,8 +717,10 @@ static int GetReadData()
   else
     tmp = tmp & 0xF;
 
-  return  tmp + 0x50
+  /* Buttons are active low: left in bit 7, middle 6, right 5 */
+  return  tmp + 0x10
       + ((MOU_Buttons & RButton) ? 0 : 0x20 )
+      + ((CFG.MiddleToPC && (MOU_Buttons & CButton)) ? 0 : 0x40 )
       + ((MOU_Buttons & LButton) ? 0 : 0x80 ) ;
 }
 
