@@ -35,6 +35,13 @@ have no filetypes: `!RunImage*` are Absolute (`&FF8`), the rest Modules
 can be compared; the x86 side (the PC's BIOS, `PC/Bin/ROM`, and its
 drivers) and `PC/Bin/Messages` aren't built.
 
+`make pcconfig`, with the same `RISCOSE` and `ACORN_C`, builds !PCConfig's
+`!RunImage` from `PCconfig` into `build/pcconfig/bin`.  It isn't part of the
+default target: !PCConfig is an application of its own, installed beside !PC
+with the `Res`, `Messages` and sprites it already has.  The original linked a
+file library, `C:o.files`, whose source isn't in the release; `PCconfig/c/files`
+provides the six functions of it that !PCConfig uses.
+
 ## What differs from the 3.06 release
 
 Built this way, the binaries do what the release's do, but aren't
