@@ -174,14 +174,14 @@ $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp: | $(BIN) $(BUILD)/AcornC
 # ---- !PCConfig -----------------------------------------------------------
 
 # Not part of `all`: !PCConfig is its own application.  Built from PCconfig,
-# into build/pcconfig.  PCconfig/c/files stands in for the file library the
-# original linked as C:o.files, whose source isn't in this release.
+# into build/pcconfig.  The original linked James Bye's file library as
+# C:o.files; PCconfig/c/File is its source, from !PCinstall's.
 PCC     := PCconfig
 PCC_OBJ := $(BUILD)/pcconfig/o
 PCC_BIN := $(BUILD)/pcconfig/bin
 PCC_RUN  = cd $(PCC) && $(RISCOSE_BIN) -w $(WIMPSLOT)
 PCC_C   := adv aspi booting Discs LoadConfig main memory multicfg network \
-    printing SaveConf Serial switching Utils Windows files
+    printing SaveConf Serial switching Utils Windows File
 PCC_OBJS := $(addprefix $(PCC_OBJ)/,$(PCC_C) miscfile)
 
 .PHONY: pcconfig
