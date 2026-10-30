@@ -171,5 +171,37 @@ $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp: | $(BIN) $(BUILD)/AcornC
 	$(RUN) $(TOOL)/link -m -o $(call FROMSRC,$@) \
 	    $(foreach o,$^,$(call FROMSRC,$(o))) $(STUBS)
 
+# ---- !PCConfig -----------------------------------------------------------
+
+# Not part of `all`: !PCConfig is its own application.  Built from PCconfig,
+# into build/pcconfig.  PCconfig/c/File is James Bye's file library, which
+# the original linked as C:o.files.
+PCC     := PCconfig
+PCC_OBJ := $(BUILD)/pcconfig/o
+PCC_BIN := $(BUILD)/pcconfig/bin
+PCC_RUN  = cd $(PCC) && $(RISCOSE_BIN) -w $(WIMPSLOT)
+PCC_C   := adv aspi booting Discs LoadConfig main memory multicfg network \
+    printing SaveConf Serial switching Utils Windows File
+PCC_OBJS := $(addprefix $(PCC_OBJ)/,$(PCC_C) miscfile)
+
+.PHONY: pcconfig
+pcconfig: $(PCC_BIN)/!RunImage
+
+$(PCC_OBJ) $(PCC_BIN):
+	mkdir -p $@
+
+$(addprefix $(PCC_OBJ)/,$(PCC_C)): $(PCC_OBJ)/%: $(PCC)/c/% | $(PCC_OBJ) $(BUILD)/AcornC
+	$(PCC_RUN) $(TOOL)/cc -c -fahi $(INCLUDE) c.$* -o $(call FROMSRC,$@)
+
+$(PCC_OBJ)/miscfile: $(PCC)/s/miscfile | $(PCC_OBJ)
+	$(PCC_RUN) $(TOOL)/objasm -from s.miscfile -to $(call FROMSRC,$@) -stamp -quit
+
+$(PCC_BIN)/!RunImage: $(PCC_OBJS) | $(PCC_BIN) $(BUILD)/AcornC
+	printf '%s\n' $(foreach o,$(PCC_OBJS),^.$(call ro,$(o))) \
+	    $(STUBS) $(TBOXLIB).o.toolboxlib $(TBOXLIB).o.wimplib \
+	    $(TBOXLIB).o.eventlib > $(BUILD)/pcconfig/LinkFile
+	$(PCC_RUN) $(TOOL)/link -aif -o $(call FROMSRC,$@) \
+	    -via ^.$(BUILD).pcconfig.LinkFile
+
 clean:
 	rm -rf $(BUILD)

@@ -36,6 +36,12 @@ be compared; 3.08's `!RunImage` is in its binary release, not here.  The x86
 side (the PC's BIOS, `PC/Bin/ROM`, and its drivers) and `PC/Bin/Messages`
 aren't built.
 
+`make pcconfig`, with the same `RISCOSE` and `ACORN_C`, builds !PCConfig's
+`!RunImage` from `PCconfig` into `build/pcconfig/bin`.  It isn't part of the
+default target: !PCConfig is an application of its own, installed beside !PC
+with the `Res`, `Messages` and sprites it already has.  The original linked
+James Bye's file library as `C:o.files`; `PCconfig/c/File` is its source.
+
 ## What differs from the 3.08 release
 
 Built this way, the binaries do what the release's do, but aren't
