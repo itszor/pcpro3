@@ -720,6 +720,10 @@ static void SetFullScreenMode ( ModeSpec mode, int Yheight )
 {
   int  bordersize, bsize_bytes, lwr_offset, bclr;
 
+  /* Growing the screen area moves the screen to the area's new start, which
+     would leave the base VIDS_InitARMmode reads stale. So grow it first. */
+  AllocVESAMem();
+
   VIDS_InitARMmode ( mode );
   VIDS_CursorVisible = false;
 
@@ -748,8 +752,6 @@ static void SetFullScreenMode ( ModeSpec mode, int Yheight )
   }
 
   VID_RealScreenBase = VIDS_HardScreenBase + bsize_bytes;
-
-  AllocVESAMem();
 }
 
 
