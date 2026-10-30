@@ -271,10 +271,17 @@ void find_riscos_three_modes(void)
  * are suitable for use with Windows to modes[]     *
  ****************************************************/
 
+/* The resolution menu is built in a buffer of this size by build_modes_menu(),
+   so no more modes are kept than their names fit, with a comma after each. */
+#define MODES_MENU_SIZE 255
+#define MODES_MAX ((int)(sizeof(modes) / sizeof(modes[0])))
+
 void find_modes(void)
 {
   int count = 0, small_mode_count = -1;
   int last_xres = 0,last_yres = 0;
+  int menu_length = 0;
+  char name[sizeof(modes[0].mode_name)];
 
   _kernel_swi_regs r;
 
@@ -291,6 +298,17 @@ void find_modes(void)
     {
       if(mode_suitable_for_windows(buffer_mode))
       {
+        /* A machine with a modern monitor definition offers far more
+           resolutions than the menu was sized for, and a longer string
+           overran build_modes_menu()'s buffer and crashed the application.
+           Modes come in ascending order, so the ones dropped are the
+           largest. */
+        sprintf(name, "%d x %d", buffer_mode.xres, buffer_mode.yres);
+        if(small_mode_count + 1 >= MODES_MAX ||
+           menu_length + (int)strlen(name) + 1 >= MODES_MENU_SIZE)
+          break;
+        menu_length += strlen(name) + 1;
+
         small_mode_count++;
         modes[small_mode_count].xres = buffer_mode.xres;
         modes[small_mode_count].yres = buffer_mode.yres;
@@ -302,7 +320,7 @@ void find_modes(void)
         last_yres = buffer_mode.yres;
       }
     }
-    else
+    else if(small_mode_count >= 0)
       modes[small_mode_count].max_pixel_depth = buffer_mode.pixel_depth;
 
 
@@ -360,14 +378,17 @@ BOOL mode_suitable_for_windows(big_mode_structure mode)
 void build_modes_menu(void)
 {
   int count = 0;
-  char buffer[255];
+  char buffer[MODES_MENU_SIZE];
   buffer[0] = '\0';
   for(count = 0; count <= total_modes; count++)
   {
+    if(strlen(buffer) + strlen(modes[count].mode_name) + 2 > sizeof(buffer))
+      break;
     strcat(buffer, modes[count].mode_name);
     strcat(buffer,",");
   }
-  buffer[strlen(buffer)-1] = '\0';
+  if(buffer[0] != '\0')
+    buffer[strlen(buffer)-1] = '\0';
   stringset_set_available(0, windows_window, WINDOWS_RESOLUTION_MENU,buffer);
 }
 
