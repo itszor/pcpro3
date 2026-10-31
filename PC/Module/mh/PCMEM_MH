@@ -12,3 +12,6 @@ swi-handler-code:      PCMem_SWI
 swi-chunk-base-number: 0x4B4C0
 swi-decoding-table:    PCMem,
    SetMem, FillPTE, GetMemTbl, ShowInfo
+
+; The dynamic area handler, written in C: the veneer gives it our statics
+generic-veneers: PCMem_DAHandler/PCMem_DAHandler_C

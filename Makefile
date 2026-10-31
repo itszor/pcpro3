@@ -161,11 +161,8 @@ $(OBJ)/PCNE2 $(OBJ)/PCMEM $(OBJ)/PCDevHelp:
 	$(RUN) $(TOOL)/cc $(MFLAGS) $(call ro,$(patsubst $(SRC)/%,%,$<)) \
 	    -o $(call FROMSRC,$@)
 
-$(OBJ)/PCMems: $(SRC)/Module/s/PCMemS | $(OBJ)
-	$(RUN) $(TOOL)/objasm -from Module.s.PCMemS -to $(call FROMSRC,$@) -stamp -quit
-
 $(BIN)/PCNE2: $(OBJ)/PCNE2_MH $(OBJ)/PCNE2
-$(BIN)/PCMEM: $(OBJ)/PCMEM_MH $(OBJ)/PCMEM $(OBJ)/PCMems
+$(BIN)/PCMEM: $(OBJ)/PCMEM_MH $(OBJ)/PCMEM
 $(BIN)/PCDevHelp: $(OBJ)/PCDVH_MH $(OBJ)/PCDevHelp
 $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp: | $(BIN) $(BUILD)/AcornC
 	$(RUN) $(TOOL)/link -m -o $(call FROMSRC,$@) \

@@ -64,9 +64,11 @@
 #define HEAParea 0
 #define VRAMarea 2
 
-extern int  PCMemS_GrowFlag;
-extern int  PCMemS_ShrinkFlag;
-extern void PCMemS_DAHandler(void);
+/* The dynamic area handler: cmhg's veneer, which calls PCMem_DAHandler_C */
+extern void PCMem_DAHandler(void);
+
+static int GrowFlag;    /* Pages PreGrow has still to hand out */
+static int ShrinkFlag;  /* Non-zero to object to shrink */
 
 #undef OS_DynamicArea
 #define OS_DynamicArea 0x66
@@ -107,6 +109,7 @@ typedef enum {false, true} bool;
 
 static _kernel_oserror ErrorBlk   = { 0x00010001, "MemBlk not loaded" };
 static _kernel_oserror MemErrBlk  = { 0x00010002, "Memory size mismatch" };
+static _kernel_oserror ShrinkErrBlk = { 0x00010001, "Cannot reduce this area right now" };
 static _kernel_oserror NowtMemErrBlk  = { 0x00010007, "Cannot find details of this machine's memory" };
 static _kernel_oserror CvtErrBlk  = { 0x00010003, "Error getting page numbers" };
 /*static _kernel_oserror VRAMErrBlk  = { 0x00010004, "Error finding VRAM details" };*/
@@ -804,12 +807,11 @@ static _kernel_oserror *GrowMemToSize ( void )
   fill_count = MemBlks[0].bsize / PageSize;
 
   /* This is used to count the total number of pages
-     filled in by repeated calls to PreGrow. This should
-     be exactly zero when PostGrow is called. If not,
-     PostGrow returns an error.
+     filled in by repeated calls to PreGrow. It should
+     be exactly zero once the area has grown.
   */
 
-  PCMemS_GrowFlag = MemSize / PageSize;
+  GrowFlag = MemSize / PageSize;
   return SetMemSize(MemSize);
 }
 
@@ -857,7 +859,7 @@ static _kernel_oserror *SetAreaCacheable ( int base, int size, int code )
 
 static bool FillPageTable ( struct pblk *tbl, int tblsize )
 {
-  PCMemS_GrowFlag -= tblsize;
+  GrowFlag -= tblsize;
 
   while ( tblsize-- > 0 )
   {
@@ -878,6 +880,38 @@ static bool FillPageTable ( struct pblk *tbl, int tblsize )
   }
 
   return true;
+}
+
+/* -------------------------- */
+
+/* PCMem_DAHandler_C is the area's handler, entered from the
+   kernel through cmhg's PCMem_DAHandler veneer, so it runs with
+   our static data like any other entry to the module. R0 is the
+   reason code; registers go back as they came.
+
+   PostGrow has nothing to do: the kernel calls it after every
+   chunk of a grow and ignores what it returns, so GrowFlag can't
+   be checked there.
+*/
+
+_kernel_oserror *PCMem_DAHandler_C ( _kernel_swi_regs *R, void *pw )
+{
+  NotUsed(pw);
+
+  switch ( R->r[0] )
+  {
+    case 0:  /* PreGrow: R1->page block, R2 = no. of entries */
+      if ( !FillPageTable ((struct pblk *)(R->r[1]), R->r[2] ) )
+        return &MemErrBlk;
+      break;
+
+    case 2:  /* PreShrink */
+      if ( ShrinkFlag != 0 )
+        return &ShrinkErrBlk;
+      break;
+  }
+
+  return NULL;
 }
 
 /* DetectVRAM is called on startup to set the global VRAMSize */
@@ -1258,7 +1292,7 @@ extern _kernel_oserror *init ( char *cmd_tail, int podule_base, int pw )
            (1 << 7) | /* Cannot be dragged in TaskMan */
            (1 << 8);  /* May require specific phys pages */
   R.r[5] = 32*1024*1024;  /* Max size in bytes */
-  R.r[6] = (int) PCMemS_DAHandler;
+  R.r[6] = (int) PCMem_DAHandler;
   R.r[7] = pw;
   R.r[8] = (int) "PC Card Memory";
 
