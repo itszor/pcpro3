@@ -563,3 +563,13 @@ Not yet released: CD-poke at start-up to see if that fixes ROS4 CDROM problems
 
 2008.10.26 (DD) v3.08 for RISC OS 6
 		Various changes to avoid RISC OS 6 obstacles/breakages. Sigh.
+
+2026.11.01 (JB) v3.09
+		PCMem: the dynamic area handler is C, through a cmhg veneer,
+		as its flags were written to the wrong place (could put
+		VRAM page 0 in !PC's slot).
+		Grow the screen area before setting the full-screen mode.
+		MiddleToPC config option gives the middle button to the PC.
+		Mouse port command 9 reads back the ARM's pointer position.
+		PCNAT, a network interface for the PC NATed through RISC OS's
+		own TCP/IP, and a Netlinks PCBits extension to load it.

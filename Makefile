@@ -115,6 +115,10 @@ $(foreach p,$(C_SOURCES),$(eval $(call c_object,$(word 1,$(call pair,$(p))),$(wo
 $(foreach p,$(DEMO_SOURCES),$(eval $(call c_object,$(word 1,$(call pair,$(p))),$(word 2,$(call pair,$(p))),DEMO)))
 $(foreach p,$(S_SOURCES),$(eval $(call s_object,$(word 1,$(call pair,$(p))),$(word 2,$(call pair,$(p))))))
 
+# Headers aren't otherwise tracked: this one is, so a new version number
+# reaches the objects that show it.
+$(OBJ)/main $(OBJ)/WFEbits: $(SRC)/SYS/h/Version
+
 # ---- !RunImage ----------------------------------------------------------
 
 # In LinkFileG's order (LinkFileD's for the demo, with the DEMO objects).
@@ -234,6 +238,30 @@ $(PCC_BIN)/!RunImage: $(PCC_OBJS) | $(PCC_BIN) $(BUILD)/AcornC
 	    $(TBOXLIB).o.eventlib > $(BUILD)/pcconfig/LinkFile
 	$(PCC_RUN) $(TOOL)/link -aif -o $(call FROMSRC,$@) \
 	    -via ^.$(BUILD).pcconfig.LinkFile
+
+# ---- dist ---------------------------------------------------------------
+
+# An update for an installed !PC 3.08: the files that have changed, in a
+# !PC of their own, zipped with their filetypes (dist/mkzip.py), and
+# dist/ReadMe.  Named for the version in SYS/h/Version: PC309.zip.
+VERSION := $(shell sed -n 's/.*"\([0-9]*\)\.\([0-9]*\) .*/\1\2/p' $(SRC)/SYS/h/Version)
+DIST    := $(BUILD)/dist/PC$(VERSION).zip
+NETLINKS := $(SRC)/PCBits/Netlinks
+
+.PHONY: dist
+dist: $(DIST)
+
+$(DIST): dist/mkzip.py dist/ReadMe $(BIN)/!RunImageG $(BIN)/PCMEM $(BIN)/PCNAT \
+         $(SRC)/Bin/PCNE2 $(NETLINKS)/Startup $(NETLINKS)/Shutdown
+	mkdir -p $(@D)
+	python3 -I dist/mkzip.py $@ \
+	    ReadMe:FFF:dist/ReadMe \
+	    '!PC/!RunImage:FF8:$(BIN)/!RunImageG' \
+	    '!PC/PCBits/Core/PCMem:FFA:$(BIN)/PCMEM' \
+	    '!PC/PCBits/Netlinks/PCNAT:FFA:$(BIN)/PCNAT' \
+	    '!PC/PCBits/Netlinks/PCNE2:FFA:$(SRC)/Bin/PCNE2' \
+	    '!PC/PCBits/Netlinks/Startup:FEB:$(NETLINKS)/Startup' \
+	    '!PC/PCBits/Netlinks/Shutdown:FEB:$(NETLINKS)/Shutdown'
 
 clean:
 	rm -rf $(BUILD)

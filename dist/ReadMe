@@ -1,0 +1,52 @@
+!PC 3.09 update
+===============
+
+This updates an installed !PC 3.08 to 3.09.  It holds only the files that
+have changed, in a !PC directory of their own: copy it over your existing
+!PC so that they replace the old ones.  Back up your !PC first.
+
+  !PC.!RunImage                 the application
+  !PC.PCBits.Core.PCMem         the memory manager module
+  !PC.PCBits.Netlinks           networking for the PC (new): PCNAT, PCNE2,
+                                Startup and Shutdown
+
+What's new
+----------
+
+- PCMem's dynamic area handler is C now, through a cmhg veneer.  3.08's
+  wrote two flags to the wrong place in the RMA, which could put a page of
+  video RAM in !PC's slot and crash it.  Seen on the first start of !PC
+  after the machine started.
+
+- The screen area is grown before the full-screen mode is set.
+
+- MiddleToPC: with "MiddleToPC On" in a PC configuration, the middle
+  mouse button goes to the PC; Ctrl+middle still gives !PC's menu.
+
+- Mouse port 0x31B, command 9, latches where the ARM's pointer is, in the
+  PC's pixels, for the PC to read at 0x318-0x31B.
+
+- PCNAT, a network interface for the PC with no card behind it.  The PC
+  gets a private network behind RISC OS, by DHCP: it is 10.0.2.15, the
+  gateway is 10.0.2.2 and DNS is 10.0.2.3, which passes queries on to the
+  first of RISC OS's Inet$Resolvers.  Each connection the PC makes becomes
+  a socket of RISC OS's own, so RISC OS keeps its address and TCP/IP
+  (sharing a card with the PC through PCNE2 alone can't do that).
+
+Networking
+----------
+
+PCNAT needs the Internet 5 module and the Mbuf manager, and RISC OS's own
+TCP/IP set up and working.  PCBits.Netlinks loads PCNAT and then PCNE2,
+which gives the PC an NE2000 (its IRQ is the configuration's NE2000Int).
+In the PC configuration use
+
+  NE2000Basic -pTCPIP
+
+PCNE2 uses PCNAT's interface, pcnat0, unless Diva$SuggestedInterface or a
+-D option names another: to put the PC on a network card of its own as
+before, set Diva$SuggestedInterface to that card's interface.
+
+*PCNATInfo says what PCNAT is doing.
+
+PCNAT's SWI chunk (&5A4C0) is a development one, not yet allocated.
