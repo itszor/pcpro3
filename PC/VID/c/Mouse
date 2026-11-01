@@ -18,6 +18,8 @@
 *    26-06-96 W    Added debug code
 *    30-10-26 JB   MiddleToPC: the middle button goes to the PC, and
 *                  Ctrl+middle does what the middle button did
+*    01-11-26 JB   The pointer port can be read for where the ARM's pointer
+*                  is, in PC pixels, for PC drivers that position their own
 */
 
 #include "kernel.h"
@@ -146,6 +148,12 @@ static struct PointerShape EGAVGAPtr =
    moved by mouse movement) and (ii) the mouse should not have any limits
    (i.e. it is not bounded by the ARM screen).
 
+   A PC driver that draws its own pointer (X under Linux, say) can have it
+   follow the ARM's instead: command 9 to 31Bh latches where the mouse is,
+   in the PC's pixels from the top left, and 318h-31Bh then read back X low,
+   X high, Y low and Y high. Bit 7 of Y high is set while the PC hasn't got
+   the mouse (a window not connected). Until the first command 9 they read
+   FFh, as they always have, which tells a driver this isn't supported.
 */
 
 
@@ -418,11 +426,25 @@ static void SetWINPointerShape ( struct PointerShape *res, BYTE *data )
 
 /* I/O handlers *************************************************** */
 
+static bool MOU_PosLatched;     /* True once the PC has asked for one */
+static int  MOU_PosX, MOU_PosY; /* Latched position, in PC pixels */
+
+static void LatchPointerPos ( void );
+
 static int MOU_PtrPortRd8 ( int addr )
 {
   debug (("Read mouse command port:%x",addr));
-  NotUsed(addr);
-  return 0xFF;
+
+  if ( !MOU_PosLatched )
+    return 0xFF;
+
+  switch ( addr )
+  {
+    case 0x318: return MOU_PosX & 0xFF;
+    case 0x319: return (MOU_PosX >> 8) & 0xFF;
+    case 0x31A: return MOU_PosY & 0xFF;
+    default:    return (MOU_PosY >> 8) & 0xFF;
+  }
 }
 
 
@@ -508,6 +530,10 @@ static void MOU_PtrPortWr8 ( int addr, int data )
                   UpdatePointerShape();
                   break;
 
+          case 9:
+                  LatchPointerPos();
+                  break;
+
         }
         break;
 
@@ -557,6 +583,35 @@ static bool MOU_DisconnectReq; /* Debouncer for 'disconnection' */
 #define RButton 1
 
 /* Subroutines ******************************* */
+
+/* Latch where the mouse is, in PC pixels, for the pointer port: the reverse
+   of UpdatePointerPosition(), and clipped to the PC's screen. */
+
+static void LatchPointerPos ( void )
+{
+  int x, y;
+
+  MOU_PosLatched = true;
+
+  if ( !(SYS_FEState.FullFErunning || MOU_Connected) ||
+       SYS_FEState.Xratio <= 0 || SYS_FEState.Yratio <= 0 )
+  {
+    MOU_PosX = 0;
+    MOU_PosY = 0x8000;           /* The PC hasn't got the mouse */
+    return;
+  }
+
+  x = (MOU_ArmX - SYS_FEState.ArmLeftX) / SYS_FEState.Xratio;
+  y = VID_PCYtotal - 1 - (MOU_ArmY - SYS_FEState.ArmBottomY) / SYS_FEState.Yratio;
+
+  if ( x < 0 ) x = 0;
+  if ( x >= VID_PCXtotal ) x = VID_PCXtotal - 1;
+  if ( y < 0 ) y = 0;
+  if ( y >= VID_PCYtotal ) y = VID_PCYtotal - 1;
+
+  MOU_PosX = x;
+  MOU_PosY = y;
+}
 
 /* True if Ctrl is held down. PCSupport takes keys from the keyboard event,
    which comes after the OS has noted the key, so this works while the PC
@@ -869,6 +924,7 @@ static bool MOU_HardReset()
 
   MOU_PointerX = 0;
   MOU_PointerY = 0;
+  MOU_PosLatched = false;
   MOU_PointerShowing = false;
   MOU_PointerShape   = &MOU_PointerData;
 

@@ -716,6 +716,23 @@ static bool ChooseFullScreenMode( ModeSpec *pMode_out, int *pActualY  )
 
 */
 
+/* The current screen mode's width or height in OS units, from its
+   XWindLimit/XEigFactor or YWindLimit/YEigFactor mode variables. */
+
+static int ScreenOSUnits ( int limit_var, int eig_var )
+{
+  _kernel_swi_regs r;
+  int limit;
+
+  r.r[0] = -1;                   /* The current mode */
+  r.r[1] = limit_var;
+  _kernel_swi ( OS_ReadModeVariable, &r, &r );
+  limit = r.r[2];
+  r.r[1] = eig_var;
+  _kernel_swi ( OS_ReadModeVariable, &r, &r );
+  return (limit + 1) << r.r[2];
+}
+
 static void SetFullScreenMode ( ModeSpec mode, int Yheight )
 {
   int  bordersize, bsize_bytes, lwr_offset, bclr;
@@ -729,8 +746,10 @@ static void SetFullScreenMode ( ModeSpec mode, int Yheight )
 
   bordersize = (Yheight - VID_PCYtotal) >> 1;
 
-  SYS_FEState.Xratio = 1280 / VID_PCXtotal;
-  SYS_FEState.Yratio = 1024 / Yheight;
+  /* OS units per PC pixel: the screen is 1280x1024 OS units in the
+     standard modes, but more in bigger ones, such as VESA's */
+  SYS_FEState.Xratio = ScreenOSUnits(11, 4) / VID_PCXtotal;
+  SYS_FEState.Yratio = ScreenOSUnits(12, 5) / Yheight;
 
   SYS_FEState.ArmLeftX   = 0;
   SYS_FEState.ArmBottomY = bordersize * SYS_FEState.Yratio;
