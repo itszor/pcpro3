@@ -78,8 +78,7 @@ tcp_template(struct tcpcb *tp)
 
 	n->ti_seq = 0;
 	n->ti_ack = 0;
-	n->ti_x2 = 0;
-	n->ti_off = 5;
+	TH_SET_OFF(&n->ti_t, 5);
 	n->ti_flags = 0;
 	n->ti_win = 0;
 	n->ti_sum = 0;
@@ -146,8 +145,7 @@ tcp_respond(struct tcpcb *tp, struct tcpiphdr *ti, struct mbuf *m,
 	ti->ti_x1 = 0;
 	ti->ti_seq = htonl(seq);
 	ti->ti_ack = htonl(ack);
-	ti->ti_x2 = 0;
-	ti->ti_off = sizeof (struct tcphdr) >> 2;
+	TH_SET_OFF(&ti->ti_t, sizeof (struct tcphdr) >> 2);
 	ti->ti_flags = flags;
 	if (tp)
 		ti->ti_win = htons((uint16_t) (win >> tp->rcv_scale));

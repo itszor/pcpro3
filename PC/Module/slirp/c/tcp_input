@@ -290,7 +290,7 @@ tcp_input(struct mbuf *m, int iphlen, struct socket *inso)
 	 * Check that TCP offset makes sense,
 	 * pull out TCP options and adjust length.		XXX
 	 */
-	off = ti->ti_off << 2;
+	off = TH_OFF(&ti->ti_t) << 2;
 	if (off < sizeof (struct tcphdr) || off > tlen) {
 	  goto drop;
 	}

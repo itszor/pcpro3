@@ -1,0 +1,169 @@
+/*
+ * rosock.h - what slirp needs from a Unix host, for RISC OS
+ *
+ * Norcroft's ANSI library has no sockets, select or stdint, so this gives
+ * slirp the types it uses and a BSD socket interface over the Internet
+ * module's Socket_* SWIs (c.rosock).  Socket addresses are 4.3BSD's, with a
+ * 16-bit family and no length byte: the SWIs without the _1 suffix take and
+ * return them, on Internet 4 and on Internet 5 alike.
+ */
+
+#ifndef ROSOCK_H
+#define ROSOCK_H
+
+#include <stddef.h>
+
+typedef unsigned char  uint8_t;
+typedef signed char    int8_t;
+typedef unsigned short uint16_t;
+typedef short          int16_t;
+typedef unsigned int   uint32_t;
+typedef int            int32_t;
+
+typedef unsigned char  u_char;
+typedef unsigned short u_short;
+typedef unsigned int   u_int;
+typedef unsigned long  u_long;
+
+typedef char *caddr_t;
+typedef int   ssize_t;
+typedef int   socklen_t;
+
+/* Errors, as the Internet module numbers them (BSD's) */
+
+#define EINTR          4
+#define EAGAIN        35
+#define EWOULDBLOCK   35
+#define EINPROGRESS   36
+#define EALREADY      37
+#define ENETUNREACH   51
+#define ECONNRESET    54
+#define EISCONN       56
+#define ENOTCONN      57
+#define ETIMEDOUT     60
+#define ECONNREFUSED  61
+#define EHOSTUNREACH  65
+
+/* Byte order: the ARM is little-endian */
+
+#define htons(x) ((uint16_t) ((((x) & 0xffu) << 8) | (((x) >> 8) & 0xffu)))
+#define ntohs(x) htons(x)
+#define htonl(x) rosock_swap32(x)
+#define ntohl(x) rosock_swap32(x)
+extern uint32_t rosock_swap32(uint32_t x);
+
+struct in_addr
+{
+    uint32_t s_addr;
+};
+
+#define INADDR_ANY       0x00000000u
+#define INADDR_LOOPBACK  0x7f000001u
+#define INADDR_NONE      0xffffffffu
+
+struct sockaddr
+{
+    u_short sa_family;
+    char    sa_data[14];
+};
+
+struct sockaddr_in
+{
+    short          sin_family;
+    u_short        sin_port;
+    struct in_addr sin_addr;
+    char           sin_zero[8];
+};
+
+struct iovec
+{
+    void  *iov_base;
+    size_t iov_len;
+};
+
+struct timeval
+{
+    long tv_sec;
+    long tv_usec;
+};
+
+#define AF_INET       2
+#define SOCK_STREAM   1
+#define SOCK_DGRAM    2
+
+#define IPPROTO_IP    0
+#define IPPROTO_ICMP  1
+#define IPPROTO_TCP   6
+#define IPPROTO_UDP  17
+
+#define SOL_SOCKET    0xffff
+#define SO_REUSEADDR  0x0004
+#define SO_KEEPALIVE  0x0008
+#define SO_OOBINLINE  0x0100
+#define SO_SNDBUF     0x1001
+#define SO_RCVBUF     0x1002
+#define SO_ERROR      0x1007
+
+#define TCP_NODELAY   0x01
+
+#define MSG_OOB       0x1
+#define MSG_PEEK      0x2
+
+#define FIONREAD      0x4004667f
+#define FIONBIO       0x8004667e
+#define FIOASYNC      0x8004667d
+
+/* select: the Internet module's sockets are small numbers */
+
+#define FD_SETSIZE 256
+#define NFDBITS    32
+
+typedef struct
+{
+    unsigned long fds_bits[FD_SETSIZE / NFDBITS];
+} fd_set;
+
+#define FD_SET(n, p)   ((p)->fds_bits[(n) / NFDBITS] |= (1ul << ((n) % NFDBITS)))
+#define FD_CLR(n, p)   ((p)->fds_bits[(n) / NFDBITS] &= ~(1ul << ((n) % NFDBITS)))
+#define FD_ISSET(n, p) ((p)->fds_bits[(n) / NFDBITS] & (1ul << ((n) % NFDBITS)))
+#define FD_ZERO(p)     memset((p), 0, sizeof(*(p)))
+
+/* c.rosock: each returns -1 and sets errno on failure, as BSD's do */
+
+extern int socket(int domain, int type, int protocol);
+extern int bind(int s, const struct sockaddr *name, int namelen);
+extern int listen(int s, int backlog);
+extern int accept(int s, struct sockaddr *addr, int *addrlen);
+extern int connect(int s, const struct sockaddr *name, int namelen);
+extern int recv(int s, void *buf, int len, int flags);
+extern int recvfrom(int s, void *buf, int len, int flags,
+                    struct sockaddr *from, int *fromlen);
+extern int send(int s, const void *msg, int len, int flags);
+extern int sendto(int s, const void *msg, int len, int flags,
+                  const struct sockaddr *to, int tolen);
+extern int shutdown(int s, int how);
+extern int setsockopt(int s, int level, int optname,
+                      const void *optval, int optlen);
+extern int getsockopt(int s, int level, int optname,
+                      void *optval, int *optlen);
+extern int getsockname(int s, struct sockaddr *name, int *namelen);
+extern int socketclose(int s);
+extern int socketioctl(int s, unsigned long request, void *argp);
+extern int select(int nfds, fd_set *readfds, fd_set *writefds,
+                  fd_set *exceptfds, struct timeval *timeout);
+
+extern int   inet_aton(const char *cp, struct in_addr *addr);
+extern char *inet_ntoa(struct in_addr in);
+
+#define closesocket(s)        socketclose(s)
+#define ioctlsocket(s, r, a)  socketioctl((s), (r), (a))
+
+/* What the ANSI library lacks */
+extern char *strdup(const char *s);
+extern int rosock_snprintf(char *buf, size_t size, const char *fmt, ...);
+#define snprintf rosock_snprintf
+
+/* Milliseconds, from the monotonic centisecond clock */
+extern uint32_t rosock_time_ms(void);
+
+#endif

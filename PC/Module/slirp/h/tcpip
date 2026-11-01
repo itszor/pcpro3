@@ -50,8 +50,7 @@ struct tcpiphdr {
 #define	ti_dport	ti_t.th_dport
 #define	ti_seq		ti_t.th_seq
 #define	ti_ack		ti_t.th_ack
-#define	ti_x2		ti_t.th_x2
-#define	ti_off		ti_t.th_off
+#define	ti_offx2	ti_t.th_offx2
 #define	ti_flags	ti_t.th_flags
 #define	ti_win		ti_t.th_win
 #define	ti_sum		ti_t.th_sum

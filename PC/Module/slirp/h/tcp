@@ -60,13 +60,7 @@ struct tcphdr {
 	uint16_t th_dport;              /* destination port */
 	tcp_seq	th_seq;			/* sequence number */
 	tcp_seq	th_ack;			/* acknowledgement number */
-#ifdef HOST_WORDS_BIGENDIAN
-	u_char	th_off:4,		/* data offset */
-		th_x2:4;		/* (unused) */
-#else
-	u_char	th_x2:4,		/* (unused) */
-		th_off:4;		/* data offset */
-#endif
+	uint8_t	th_offx2;		/* data offset << 4 | (unused) */
 	uint8_t th_flags;
 #define	TH_FIN	0x01
 #define	TH_SYN	0x02
@@ -78,6 +72,10 @@ struct tcphdr {
 	uint16_t th_sum;                /* checksum */
 	uint16_t th_urp;                /* urgent pointer */
 };
+
+/* The data offset nibble, a byte for the reason IP_HL is (ip.h) */
+#define	TH_OFF(th)		((th)->th_offx2 >> 4)
+#define	TH_SET_OFF(th, off)	((th)->th_offx2 = (uint8_t) ((off) << 4))
 
 #include "tcp_var.h"
 

@@ -6,6 +6,17 @@
 #include "cutils.h"
 #include "slirp_config.h"
 
+#ifdef __riscos
+/* Norcroft and RISC OS: rosock.h has the types, sockets and select */
+# include <stdio.h>
+# include <string.h>
+# include <errno.h>
+# include <stdarg.h>
+# include "rosock.h"
+# define inline
+# define __attribute__(x)
+# define close(s) closesocket(s)
+#else
 #ifdef _WIN32
 # include <inttypes.h>
 
@@ -134,6 +145,8 @@ int inet_aton(const char *cp, struct in_addr *ia);
 
 #include <sys/stat.h>
 
+#endif /* __riscos */
+
 /* Avoid conflicting with the libc insque() and remque(), which
    have different prototypes. */
 #define insque slirp_insque
@@ -245,7 +258,7 @@ void if_start(struct ttys *);
 
 void lprint(const char *, ...) __attribute__((format(printf, 1, 2)));
 
-#ifndef _WIN32
+#if !defined(_WIN32) && !defined(__riscos)
 #include <netdb.h>
 #endif
 

@@ -1,0 +1,208 @@
+/*
+ * rosock.c - BSD sockets over the Internet module's Socket_* SWIs
+ *
+ * Only what slirp uses.  An error from a SWI becomes errno, as the SWI's
+ * error number is the BSD errno (in its bottom byte), and the call returns
+ * -1.  Nothing here blocks unless the socket does: slirp makes every one of
+ * its sockets non-blocking, and PCNAT calls select with a zero timeout.
+ */
+
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "rosock.h"
+
+#define Socket_Creat        0x41200
+#define Socket_Bind         0x41201
+#define Socket_Listen       0x41202
+#define Socket_Accept       0x41203
+#define Socket_Connect      0x41204
+#define Socket_Recv         0x41205
+#define Socket_Recvfrom     0x41206
+#define Socket_Send         0x41208
+#define Socket_Sendto       0x41209
+#define Socket_Shutdown     0x4120b
+#define Socket_Setsockopt   0x4120c
+#define Socket_Getsockopt   0x4120d
+#define Socket_Getsockname  0x4120f
+#define Socket_Close        0x41210
+#define Socket_Select       0x41211
+#define Socket_Ioctl        0x41212
+
+/* Call socket SWI swi with r0-r5, returning R0, or -1 with errno set */
+static int sockswi(int swi, int r0, int r1, int r2, int r3, int r4, int r5)
+{
+  _kernel_swi_regs r;
+  _kernel_oserror *e;
+
+  r.r[0] = r0;
+  r.r[1] = r1;
+  r.r[2] = r2;
+  r.r[3] = r3;
+  r.r[4] = r4;
+  r.r[5] = r5;
+  e = _kernel_swi(swi, &r, &r);
+  if (e != NULL)
+  {
+    errno = e->errnum & 0xff;
+    return -1;
+  }
+  return r.r[0];
+}
+
+uint32_t rosock_swap32(uint32_t x)
+{
+  return (x << 24) | ((x & 0xff00u) << 8) | ((x >> 8) & 0xff00u) | (x >> 24);
+}
+
+int socket(int domain, int type, int protocol)
+{
+  return sockswi(Socket_Creat, domain, type, protocol, 0, 0, 0);
+}
+
+int bind(int s, const struct sockaddr *name, int namelen)
+{
+  return sockswi(Socket_Bind, s, (int) name, namelen, 0, 0, 0);
+}
+
+int listen(int s, int backlog)
+{
+  return sockswi(Socket_Listen, s, backlog, 0, 0, 0, 0);
+}
+
+int accept(int s, struct sockaddr *addr, int *addrlen)
+{
+  return sockswi(Socket_Accept, s, (int) addr, (int) addrlen, 0, 0, 0);
+}
+
+int connect(int s, const struct sockaddr *name, int namelen)
+{
+  return sockswi(Socket_Connect, s, (int) name, namelen, 0, 0, 0);
+}
+
+int recv(int s, void *buf, int len, int flags)
+{
+  return sockswi(Socket_Recv, s, (int) buf, len, flags, 0, 0);
+}
+
+int recvfrom(int s, void *buf, int len, int flags,
+             struct sockaddr *from, int *fromlen)
+{
+  return sockswi(Socket_Recvfrom, s, (int) buf, len, flags,
+                 (int) from, (int) fromlen);
+}
+
+int send(int s, const void *msg, int len, int flags)
+{
+  return sockswi(Socket_Send, s, (int) msg, len, flags, 0, 0);
+}
+
+int sendto(int s, const void *msg, int len, int flags,
+           const struct sockaddr *to, int tolen)
+{
+  return sockswi(Socket_Sendto, s, (int) msg, len, flags, (int) to, tolen);
+}
+
+int shutdown(int s, int how)
+{
+  return sockswi(Socket_Shutdown, s, how, 0, 0, 0, 0);
+}
+
+int setsockopt(int s, int level, int optname, const void *optval, int optlen)
+{
+  return sockswi(Socket_Setsockopt, s, level, optname, (int) optval,
+                 optlen, 0);
+}
+
+int getsockopt(int s, int level, int optname, void *optval, int *optlen)
+{
+  return sockswi(Socket_Getsockopt, s, level, optname, (int) optval,
+                 (int) optlen, 0);
+}
+
+int getsockname(int s, struct sockaddr *name, int *namelen)
+{
+  return sockswi(Socket_Getsockname, s, (int) name, (int) namelen, 0, 0, 0);
+}
+
+int socketclose(int s)
+{
+  return sockswi(Socket_Close, s, 0, 0, 0, 0, 0);
+}
+
+int socketioctl(int s, unsigned long request, void *argp)
+{
+  return sockswi(Socket_Ioctl, s, (int) request, (int) argp, 0, 0, 0);
+}
+
+int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
+           struct timeval *timeout)
+{
+  return sockswi(Socket_Select, nfds, (int) readfds, (int) writefds,
+                 (int) exceptfds, (int) timeout, 0);
+}
+
+int inet_aton(const char *cp, struct in_addr *addr)
+{
+  unsigned int a, b, c, d;
+  char tail;
+
+  if (sscanf(cp, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) != 4 ||
+      a > 255 || b > 255 || c > 255 || d > 255)
+    return 0;
+  addr->s_addr = htonl((a << 24) | (b << 16) | (c << 8) | d);
+  return 1;
+}
+
+char *inet_ntoa(struct in_addr in)
+{
+  static char buf[16];
+  uint32_t a = ntohl(in.s_addr);
+
+  sprintf(buf, "%u.%u.%u.%u", (unsigned) (a >> 24), (unsigned) (a >> 16) & 255,
+          (unsigned) (a >> 8) & 255, (unsigned) a & 255);
+  return buf;
+}
+
+char *strdup(const char *s)
+{
+  char *p = malloc(strlen(s) + 1);
+
+  if (p != NULL)
+    strcpy(p, s);
+  return p;
+}
+
+/* snprintf through a buffer big enough for anything slirp formats */
+int rosock_snprintf(char *buf, size_t size, const char *fmt, ...)
+{
+  static char tmp[256];
+  va_list ap;
+  int n;
+
+  va_start(ap, fmt);
+  n = vsprintf(tmp, fmt, ap);
+  va_end(ap);
+  if (size > 0)
+  {
+    size_t c = (size_t) n < size ? (size_t) n : size - 1;
+
+    memcpy(buf, tmp, c);
+    buf[c] = 0;
+  }
+  return n;
+}
+
+uint32_t rosock_time_ms(void)
+{
+  _kernel_swi_regs r;
+
+  _kernel_swi(OS_ReadMonotonicTime, &r, &r);
+  return (uint32_t) r.r[0] * 10;
+}

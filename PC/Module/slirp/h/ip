@@ -74,13 +74,7 @@ typedef uint32_t n_long;                 /* long as received from the net */
  */
 #pragma pack(1)
 struct ip {
-#ifdef HOST_WORDS_BIGENDIAN
-	u_char ip_v:4,			/* version */
-		ip_hl:4;		/* header length */
-#else
-	u_char ip_hl:4,		/* header length */
-		ip_v:4;			/* version */
-#endif
+	uint8_t ip_vhl;			/* version << 4 | header length */
 	uint8_t		ip_tos;			/* type of service */
 	uint16_t	ip_len;			/* total length */
 	uint16_t	ip_id;			/* identification */
@@ -93,6 +87,15 @@ struct ip {
 	uint16_t	ip_sum;			/* checksum */
 	struct	in_addr ip_src,ip_dst;	/* source and dest address */
 } __attribute__((packed));
+
+/*
+ * The version and header length nibbles.  Not bitfields: Norcroft gives
+ * every bitfield a word, which would make struct ip 24 bytes.
+ */
+#define	IP_HL(ip)	((ip)->ip_vhl & 0x0f)
+#define	IP_V(ip)	((ip)->ip_vhl >> 4)
+#define	IP_SET_VHL(ip, v, hl)	((ip)->ip_vhl = (uint8_t) (((v) << 4) | ((hl) & 0x0f)))
+#define	IP_SET_HL(ip, hl)	((ip)->ip_vhl = (uint8_t) (((ip)->ip_vhl & 0xf0) | ((hl) & 0x0f)))
 
 #define	IP_MAXPACKET	65535		/* maximum packet size */
 
@@ -141,13 +144,7 @@ struct	ip_timestamp {
 	uint8_t	ipt_code;		/* IPOPT_TS */
 	uint8_t	ipt_len;		/* size of structure (variable) */
 	uint8_t	ipt_ptr;		/* index of current entry */
-#ifdef HOST_WORDS_BIGENDIAN
-	u_char	ipt_oflw:4,		/* overflow counter */
-		ipt_flg:4;		/* flags, see below */
-#else
-	u_char	ipt_flg:4,		/* flags, see below */
-		ipt_oflw:4;		/* overflow counter */
-#endif
+	uint8_t	ipt_oflw_flg;		/* overflow counter << 4 | flags */
 	union ipt_timestamp {
 		n_long	ipt_time[1];
 		struct	ipt_ta {
@@ -184,7 +181,7 @@ struct	ip_timestamp {
 struct mbuf_ptr {
 	union {
 		struct mbuf *mptr;
-		uint64_t dummy;
+		uint32_t dummy[2];	/* 8 bytes, so ipovly overlays struct ip */
 	} m;
 };
 

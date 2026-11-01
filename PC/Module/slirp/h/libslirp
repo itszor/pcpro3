@@ -3,7 +3,9 @@
 
 #ifdef CONFIG_SLIRP
 
-#ifdef _WIN32
+#if defined(__riscos)
+#include "rosock.h"
+#elif defined(_WIN32)
 #include <winsock2.h>
 #else
 #include <netinet/in.h>

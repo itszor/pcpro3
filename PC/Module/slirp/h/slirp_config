@@ -186,3 +186,14 @@
 
 /* Define if you have <sys/type32.h> */
 #undef HAVE_SYS_TYPES32_H
+
+#ifdef __riscos
+/* Norcroft's ANSI library and rosock.h are all there is */
+#undef HAVE_UNISTD_H
+#undef HAVE_SYS_IOCTL_H
+#undef HAVE_SYS_SELECT_H
+#undef HAVE_ARPA_INET_H
+#undef HAVE_GETHOSTID
+#define HAVE_GETHOSTID
+#define NO_UNIX_SOCKETS
+#endif

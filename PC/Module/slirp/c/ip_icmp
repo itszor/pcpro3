@@ -212,7 +212,7 @@ icmp_error(struct mbuf *msrc, u_char type, u_char code, int minsize,
 #endif
   if(ip->ip_off & IP_OFFMASK) goto end_error;    /* Only reply to fragment 0 */
 
-  shlen=ip->ip_hl << 2;
+  shlen=IP_HL(ip) << 2;
   s_ip_len=ip->ip_len;
   if(ip->ip_p == IPPROTO_ICMP) {
     icp = (struct icmp *)((char *)ip + shlen);
@@ -283,7 +283,7 @@ icmp_error(struct mbuf *msrc, u_char type, u_char code, int minsize,
   m->m_len += hlen;
 
   /* fill in ip */
-  ip->ip_hl = hlen >> 2;
+  IP_SET_HL(ip, hlen >> 2);
   ip->ip_len = m->m_len;
 
   ip->ip_tos=((ip->ip_tos & 0x1E) | 0xC0);  /* high priority for errors */
@@ -307,7 +307,7 @@ void
 icmp_reflect(struct mbuf *m)
 {
   register struct ip *ip = mtod(m, struct ip *);
-  int hlen = ip->ip_hl << 2;
+  int hlen = IP_HL(ip) << 2;
   int optlen = hlen - sizeof(struct ip );
   register struct icmp *icp;
 
@@ -334,7 +334,7 @@ icmp_reflect(struct mbuf *m)
     memmove((caddr_t)(ip + 1), (caddr_t)ip + hlen,
 	    (unsigned )(m->m_len - hlen));
     hlen -= optlen;
-    ip->ip_hl = hlen >> 2;
+    IP_SET_HL(ip, hlen >> 2);
     ip->ip_len -= optlen;
     m->m_len -= optlen;
   }

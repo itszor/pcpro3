@@ -67,10 +67,9 @@ ip_output(struct socket *so, struct mbuf *m0)
 	/*
 	 * Fill in IP header.
 	 */
-	ip->ip_v = IPVERSION;
 	ip->ip_off &= IP_DF;
 	ip->ip_id = htons(slirp->ip_id++);
-	ip->ip_hl = hlen >> 2;
+	IP_SET_VHL(ip, IPVERSION, hlen >> 2);
 
 	/*
 	 * If small enough for interface, can just send directly.

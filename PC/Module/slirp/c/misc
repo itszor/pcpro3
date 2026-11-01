@@ -87,11 +87,15 @@ int os_socket(int domain, int type, int protocol)
 
 uint32_t os_get_time_ms(void)
 {
+#ifdef __riscos
+    return rosock_time_ms();
+#else
     struct timespec ts;
 
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec * 1000 +
         (ts.tv_nsec / 1000000);
+#endif
 }
 
 

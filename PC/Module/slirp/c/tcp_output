@@ -351,7 +351,7 @@ send:
 	ti->ti_ack = htonl(tp->rcv_nxt);
 	if (optlen) {
 		memcpy((caddr_t)(ti + 1), (caddr_t)opt, optlen);
-		ti->ti_off = (sizeof (struct tcphdr) + optlen) >> 2;
+		TH_SET_OFF(&ti->ti_t, (sizeof (struct tcphdr) + optlen) >> 2);
 	}
 	ti->ti_flags = flags;
 	/*
