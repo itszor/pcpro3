@@ -273,6 +273,35 @@ Slirp *slirp_init(int restricted, struct in_addr vnetwork,
 
 void slirp_cleanup(Slirp *slirp)
 {
+#ifdef __riscos
+    /*
+     * A module's sockets and RMA outlive it, so close every socket and
+     * free every mbuf.  (Packets waiting in if_fastq or if_batchq are left:
+     * at most a few.)
+     */
+    struct socket *so;
+    struct mbuf *m;
+
+    while ((so = slirp->tcb.so_next) != &slirp->tcb) {
+        if (so->so_tcpcb != NULL) {
+            tcp_close(so->so_tcpcb);
+        } else {
+            closesocket(so->s);
+            sofree(so);
+        }
+    }
+    while ((so = slirp->udb.so_next) != &slirp->udb) {
+        udp_detach(so);
+    }
+    while ((m = slirp->m_usedlist.m_next) != &slirp->m_usedlist) {
+        m->m_flags |= M_DOFREE;
+        m_free(m);
+    }
+    while ((m = slirp->m_freelist.m_next) != &slirp->m_freelist) {
+        remque(m);
+        free(m);
+    }
+#endif
     free(slirp->tftp_prefix);
     free(slirp->bootp_filename);
     free(slirp);

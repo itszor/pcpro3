@@ -1,0 +1,14 @@
+; > s.PCNATs
+;
+; PCNAT_CallRx (dib, mbufs, handler, pw): call a protocol module's receive
+; handler as DCI4 drivers do, with R0 the driver's dib, R1 the mbuf chains
+; and R12 the private word it gave Filter.  It returns to our caller.
+
+        AREA    |C$$code|, CODE, READONLY
+
+        EXPORT  PCNAT_CallRx
+PCNAT_CallRx
+        MOV     r12, r3
+        MOV     pc, r2
+
+        END

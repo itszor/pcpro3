@@ -1,0 +1,33 @@
+; CMHG file for PCNAT, the PC card's network interface onto the Internet
+; through RISC OS: a DCI4 driver, pcnat0, for PCNE2 to bind to, whose far
+; end is slirp doing NAT through the Internet module's sockets.
+;
+; 2026-11-01    v0.01 Original
+
+help-string:  PCNAT 0.01
+
+title-string: PCNAT
+
+initialisation-code: PCNAT_Init
+
+finalisation-code: PCNAT_Final
+
+; Wanted: Service_EnumerateNetworkDrivers, Service_DCIProtocolStatus and
+; Service_MbufManagerStatus.  Not listed here, as cmhg under riscose can't
+; build a service table, so PCNAT_Service sees every service call.
+service-call-handler: PCNAT_Service
+
+; A development chunk: a real one has to be allocated before release
+swi-chunk-base-number: 0x5A4C0
+swi-handler-code:      PCNAT_SWI
+swi-decoding-table:    PCNAT,
+   DCIVersion, Inquire, GetNetworkMTU, SetNetworkMTU, Transmit, Filter,
+   Stats, MulticastRequest
+
+; PCNAT_Tick: OS_CallEvery's, in IRQ mode.  PCNAT_Poll: the callback that
+; does everything else.  PCNAT_Started: a callback, to say we've started.
+generic-veneers: PCNAT_Tick, PCNAT_Poll, PCNAT_Started
+
+command-keyword-table:  PCNAT_Command
+                        PCNATInfo(min-args:0, max-args:0,
+                                  help-text: "*PCNATInfo shows what PCNAT is doing\n")

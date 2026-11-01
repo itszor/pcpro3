@@ -1,0 +1,10 @@
+| PC networking: PCNE2 gives the PC an NE2000, and PCNAT puts it on the
+| Internet through RISC OS (a NAT, so RISC OS keeps its own address).
+| PCNE2 reads its NE2000Basic and NE2000Advanced options from the PC
+| configuration (-F): -pTCPIP for TCP/IP.  It uses PCNAT unless
+| Diva$SuggestedInterface or a -D option names another network interface.
+RMEnsure PCNAT 0.01 RMLoad <Obey$Dir>.PCNAT
+RMEnsure PCNAT 0.01 Error <Obey$Dir>.PCNAT not found or too old
+If "<Diva$SuggestedInterface>" = "" Then Set Diva$SuggestedInterface pcnat0
+RMEnsure PCNE2 2.15 RMLoad <Obey$Dir>.PCNE2 -F
+RMEnsure PCNE2 2.15 Error <Obey$Dir>.PCNE2 not found or too old

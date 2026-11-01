@@ -1,0 +1,8 @@
+| PCNE2 goes, to read the configuration again next time, and then PCNAT,
+| which closes the sockets the PC had open
+Unset NoMod
+RMEnsure PCNE2 0.00 Set NoMod 1
+If "<NoMod>"="1" Then Unset NoMod Else RMKill PCNE2
+Unset NoMod
+RMEnsure PCNAT 0.00 Set NoMod 1
+If "<NoMod>"="1" Then Unset NoMod Else RMKill PCNAT

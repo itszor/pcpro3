@@ -28,6 +28,7 @@ Both may be set in the environment instead.  Everything is built in `build/`:
 | `!RunImageD` | the demo version (`PC/LinkFileD`'s) |
 | `PCSupport`, `PC_IO` | `PC/Module/s`, assembled with objasm and linked as a binary at 0 |
 | `PCNE2`, `PCMEM`, `PCDevHelp` | `PC/Module/c` and their cmhg headers in `PC/Module/mh` |
+| `PCNAT` | `PC/Module/c/PCNAT`, `PC/Module/s/PCNATs` and slirp in `PC/Module/slirp` (new: see *PCNAT*, below) |
 
 with the link maps (`build/linkMapG`, `linkMapD`) beside them.  The files
 have no filetypes: `!RunImage*` are Absolute (`&FF8`), the rest Modules
@@ -73,6 +74,29 @@ Each is a commit of its own on top of the release:
   `toolbox.h` predates.
 - Two files are compiled with `-Ec`, as they pass `-1` for a pointer, which
   this compiler won't allow otherwise.
+
+## PCNAT
+
+`PCNAT` is new: a network interface for the PC with no card behind it.  It is
+a DCI4 driver, `pcnat0`, for PCNE2 to use in place of a real card.  Behind it
+is slirp (QEMU's, as RPCEmu has it, ported to Norcroft and to the Internet
+module's sockets), which gives the PC a private network behind RISC OS: DHCP
+gives the PC 10.0.2.15, with the gateway at 10.0.2.2 and DNS at 10.0.2.3 (the
+first of RISC OS's `Inet$Resolvers`), and each TCP connection or UDP flow the
+PC makes becomes a socket of RISC OS's own.  RISC OS keeps its address and
+its TCP/IP, which a PC sharing a card with it through PCNE2 can't do: both
+would claim IP's frame types.  It needs Internet 5 and the Mbuf manager.
+
+`PC/PCBits/Netlinks` is the `PCBits` extension that loads it: `Startup` loads
+PCNAT, and then PCNE2 with `-F`, so that PCNE2 reads `NE2000Basic` from the
+configuration (`-pTCPIP` for TCP/IP), and sets `Diva$SuggestedInterface` to
+`pcnat0` unless something else has.  Install it as `!PC.PCBits.Netlinks`,
+with PCNAT and `PC/Bin/PCNE2` beside the two Obey files.  `*PCNATInfo` says
+what it's doing.  Its SWI chunk, `&5A4C0`, is a development one: it needs an
+allocation before it's released.
+
+The cmhg file has no list of service calls, as building the table under
+riscose fails, so PCNAT's handler sees every service call.
 
 ## Building riscose
 

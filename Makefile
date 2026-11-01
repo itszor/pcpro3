@@ -8,7 +8,7 @@
 #          cmhg) and Libraries (clib, tboxlibs) directories
 #
 # Builds into build/bin: !RunImageG, !RunImageD (the demo), and the modules
-# PCSupport, PC_IO, PCNE2, PCMEM and PCDevHelp.  PC/Bin, the release's
+# PCSupport, PC_IO, PCNE2, PCMEM, PCDevHelp and PCNAT.  PC/Bin, the release's
 # binaries, is left alone.  PC/MakeFile is the original, for amu on RISC OS.
 
 RISCOSE ?= riscose
@@ -67,7 +67,8 @@ CFLAGS_wfebits := -Ec
 .PHONY: all clean $(BUILD)/AcornC
 
 all: $(BIN)/!RunImageG $(BIN)/!RunImageD \
-     $(BIN)/PCSupport $(BIN)/PC_IO $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp
+     $(BIN)/PCSupport $(BIN)/PC_IO $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp \
+     $(BIN)/PCNAT
 
 $(BUILD)/AcornC: | $(BUILD)
 	ln -sfn $(ACORN_DIR) $@
@@ -167,6 +168,40 @@ $(BIN)/PCDevHelp: $(OBJ)/PCDVH_MH $(OBJ)/PCDevHelp
 $(BIN)/PCNE2 $(BIN)/PCMEM $(BIN)/PCDevHelp: | $(BIN) $(BUILD)/AcornC
 	$(RUN) $(TOOL)/link -m -o $(call FROMSRC,$@) \
 	    $(foreach o,$^,$(call FROMSRC,$(o))) $(STUBS)
+
+# PCNAT: a C module too, with slirp (PC/Module/slirp) and PCNATs, the veneer
+# that calls a protocol module's receive handler.  Its cmhg header also
+# writes build/h/PCNATHdr, the C declarations c.PCNAT includes.
+SLIRP   := bootp cksum cutils if ip_icmp ip_input ip_output mbuf misc rosock \
+    sbuf slirp socket tcp_input tcp_output tcp_subr tcp_timer udp
+SLIRP_O := $(addprefix $(OBJ)/slirp/,$(SLIRP))
+NATFLAGS := -c -zM -fah -DCONFIG_SLIRP -I@,$(CLIB),Module.slirp,^.$(BUILD)
+
+$(OBJ)/slirp $(BUILD)/h:
+	mkdir -p $@
+
+$(OBJ)/PCNAT_MH: $(BUILD)/h/PCNATHdr ;
+$(BUILD)/h/PCNATHdr: $(SRC)/Module/mh/PCNAT_MH | $(OBJ) $(BUILD)/h
+	$(RUN) $(TOOL)/cmhg Module.mh.PCNAT_MH -o $(call FROMSRC,$(OBJ)/PCNAT_MH) \
+	    -d $(call FROMSRC,$@)
+
+$(SLIRP_O): $(OBJ)/slirp/%: $(SRC)/Module/slirp/c/% $(wildcard $(SRC)/Module/slirp/h/*) \
+    | $(OBJ)/slirp $(BUILD)/AcornC
+	$(RUN) $(TOOL)/cc $(NATFLAGS) Module.slirp.c.$* -o $(call FROMSRC,$@)
+
+$(OBJ)/PCNAT: $(SRC)/Module/c/PCNAT $(BUILD)/h/PCNATHdr \
+    $(wildcard $(SRC)/Module/slirp/h/*) | $(OBJ) $(BUILD)/AcornC
+	$(RUN) $(TOOL)/cc $(NATFLAGS) Module.c.PCNAT -o $(call FROMSRC,$@)
+
+$(OBJ)/PCNATs: $(SRC)/Module/s/PCNATs | $(OBJ)
+	$(RUN) $(TOOL)/objasm -from Module.s.PCNATs -to $(call FROMSRC,$@) -quit
+
+# Linked through a via file: riscose can't take this many objects on a line
+$(BIN)/PCNAT: $(OBJ)/PCNAT_MH $(OBJ)/PCNAT $(OBJ)/PCNATs $(SLIRP_O) \
+    | $(BIN) $(BUILD)/AcornC
+	printf '%s\n' $(foreach o,$^,$(call FROMSRC,$(o))) $(STUBS) \
+	    > $(BUILD)/LinkFileNAT
+	$(RUN) $(TOOL)/link -m -o $(call FROMSRC,$@) -via ^.$(BUILD).LinkFileNAT
 
 # ---- !PCConfig -----------------------------------------------------------
 

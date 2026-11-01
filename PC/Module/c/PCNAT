@@ -1,0 +1,721 @@
+/*
+*    DivaPC ARM C source
+*
+*    C.PCNAT - a network interface for the PC card, onto the Internet
+*              through RISC OS
+*
+*    PCNAT is a DCI4 network driver, "pcnat0", with no hardware behind it.
+*    PCNE2, told to use it ("-Dpcnat0" in NE2000Basic), gives it the PC's
+*    NE2000 frames.  At the other end is slirp: a DHCP server, an ARP
+*    responder, a DNS forwarder, and TCP and UDP NAT, which makes each of the
+*    PC's connections with an Internet module socket of its own.  So the PC
+*    is on a private network (10.0.2.0/24, the PC 10.0.2.15, the gateway
+*    10.0.2.2 and DNS 10.0.2.3) behind RISC OS, which keeps its own address,
+*    and nothing outside sees anything but RISC OS's sockets.
+*
+*    Frames go both ways in a callback, PCNAT_Poll.  Transmit only queues the
+*    PC's frame and asks for one; while a protocol module has claimed frames
+*    from us, a ticker asks every 2cs too, for slirp's sockets and timers.
+*    slirp's sockets are all non-blocking, and select is given no time to
+*    wait, so the callback never blocks.
+*
+*    2026-11-01      0.01 Original
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "kernel.h"
+#include "swis.h"
+
+#include "h.dci4"
+#include "h.mbuf"
+#include "PCNATHdr.h"
+#include "libslirp.h"
+
+typedef int bool;
+#define false 0
+#define true  1
+
+#define NotUsed(r) (void) r
+
+#define DCI_VERSION    403      /* with dib_inquire, after the dib */
+#define DCI_Stats      6
+#define DCI_Multicast  7
+
+#define OS_Module_Claim 6
+
+/* As DCI 4.03 defines them for Inquire and dib_inquire */
+#define INQ_HWADDRVALID (1u << 5)
+#define INQ_HASSTATS    (1u << 8)
+#define INQ_SWVIRTUAL   (1u << 11)
+#define INQUIRE_FLAGS   (INQ_HWADDRVALID | INQ_HASSTATS | INQ_SWVIRTUAL)
+
+#define ETH_HLEN   14
+#define ETH_MTU    1500
+#define ETH_MAXLEN (ETH_HLEN + ETH_MTU)
+
+/* The PC's network, as slirp gives it out */
+#define NET_ADDR   0x0a000200u  /* 10.0.2.0 */
+#define NET_MASK   0xffffff00u
+#define NET_HOST   0x0a000202u  /* 10.0.2.2, the gateway */
+#define NET_DHCP   0x0a00020fu  /* 10.0.2.15, the PC's */
+#define NET_DNS    0x0a000203u  /* 10.0.2.3 */
+
+/* Callback state */
+#define TICK_CS    2
+
+extern void PCNAT_CallRx ( struct dib *pDib, struct mbuf *pChain,
+                           void *handler, void *pw );
+
+/* Errors, as DCI4 numbers them: 0x20E00 + errno ======================= */
+
+static _kernel_oserror Err_ENXIO   = { 0x20E06, "Device not configured" };
+static _kernel_oserror Err_EINVAL  = { 0x20E16, "Invalid argument" };
+static _kernel_oserror Err_ENOTTY  = { 0x20E19, "Inappropriate ioctl for device" };
+static _kernel_oserror Err_ENOBUFS = { 0x20E37, "No buffer space available" };
+static _kernel_oserror Err_Claimed = { 0x20E87, "Frame type already claimed" };
+static _kernel_oserror Err_NoMbufs = { 0x20E00, "PCNAT needs the Mbuf manager" };
+static _kernel_oserror Err_NoNAT   = { 0x20E00, "PCNAT could not start its NAT" };
+
+/* Globals ============================================================== */
+
+static void *PCNAT_pw;
+
+/* Our dib, with DCI 4.03's copy of the Inquire flags after it */
+static struct
+{
+  struct dib   dib;
+  unsigned int inquire;
+} Dib;
+
+/* The PC's hardware address, which PCNE2 gives the PC's NE2000: locally
+   administered, and spelling "PCNAT" */
+static unsigned char PCNAT_Addr[6] = { 0x02, 'P', 'C', 'N', 'A', 'T' };
+
+static struct mbctl Mbctl;
+static bool Mbufs_Open;
+
+/* A protocol module's claim on frames, from Filter */
+typedef struct claim
+{
+  struct claim *next;
+  int    frame_type;            /* if frame_level is FRMLVL_E2SPECIFIC */
+  unsigned int frame_level;     /* FRMLVL_*, shifted down */
+  int    address_level;
+  int    error_level;
+  void  *pw;
+  void  *handler;
+} Claim;
+
+static Claim *Claims;
+
+static Slirp *NAT;
+
+static bool Ticking;
+static volatile bool PollPending;
+
+/* Frames from the PC, queued by Transmit for PCNAT_Poll */
+#define TXQ_LEN 16
+
+static struct
+{
+  int len;
+  unsigned char data[ETH_MAXLEN];
+} TxQ[TXQ_LEN];
+static int TxQ_Head, TxQ_Count;
+
+/* Statistics */
+static unsigned long Stat_TxFrames, Stat_TxDropped;
+static unsigned long Stat_RxFrames, Stat_RxDropped, Stat_RxUnwanted;
+static unsigned long Stat_Polls;
+
+/* Mbuf manager ========================================================= */
+
+static _kernel_oserror *MbufOpen ( void )
+{
+  _kernel_swi_regs R;
+
+  memset ( &Mbctl, 0, sizeof(Mbctl) );
+  Mbctl.mbcsize = sizeof(Mbctl);
+  Mbctl.mbcvers = MBUF_MANAGER_VERSION;
+  R.r[0] = (int) &Mbctl;
+  if ( _kernel_swi ( Mbuf_OpenSession, &R, &R ) != NULL )
+    return &Err_NoMbufs;
+  Mbufs_Open = true;
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+static void MbufClose ( void )
+{
+  _kernel_swi_regs R;
+
+  if ( Mbufs_Open )
+  {
+    R.r[0] = (int) &Mbctl;
+    _kernel_swi ( Mbuf_CloseSession, &R, &R );
+  }
+  Mbufs_Open = false;
+}
+
+/* Callbacks ============================================================ */
+
+/* Ask for PCNAT_Poll, unless it's been asked for already */
+
+static void WantPoll ( void )
+{
+  _kernel_swi_regs R;
+  int irqs_were_off = _kernel_irqs_disabled();
+
+  _kernel_irqs_off();
+  if ( !PollPending )
+  {
+    PollPending = true;
+    R.r[0] = (int) PCNAT_Poll;
+    R.r[1] = (int) PCNAT_pw;
+    if ( _kernel_swi ( OS_AddCallBack, &R, &R ) != NULL )
+      PollPending = false;
+  }
+  if ( !irqs_were_off )
+    _kernel_irqs_on();
+}
+
+/* ---------------------------------------- */
+
+/* OS_CallEvery's ticker, in IRQ mode: all it does is ask for a poll */
+
+extern _kernel_oserror *PCNAT_Tick_handler ( _kernel_swi_regs *R, void *pw )
+{
+  NotUsed(R);
+  NotUsed(pw);
+  WantPoll();
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+/* The ticker runs while there's a protocol module to give frames to */
+
+static void SetTicker ( bool on )
+{
+  _kernel_swi_regs R;
+
+  if ( on == Ticking )
+    return;
+  R.r[0] = on ? TICK_CS - 1 : (int) PCNAT_Tick;
+  R.r[1] = on ? (int) PCNAT_Tick : (int) PCNAT_pw;
+  R.r[2] = (int) PCNAT_pw;
+  if ( _kernel_swi ( on ? OS_CallEvery : OS_RemoveTickerEvent, &R, &R ) == NULL )
+    Ticking = on;
+}
+
+/* ---------------------------------------- */
+
+static void DriverStatus ( int status )
+{
+  _kernel_swi_regs R;
+
+  R.r[0] = (int) &Dib.dib;
+  R.r[1] = Service_DCIDriverStatus;
+  R.r[2] = status;
+  R.r[3] = DCI_VERSION;
+  _kernel_swi ( OS_ServiceCall, &R, &R );
+}
+
+/* ---------------------------------------- */
+
+/* Protocol modules hear we've started from a callback, once we're in the
+   module chain and they can call our SWIs */
+
+extern _kernel_oserror *PCNAT_Started_handler ( _kernel_swi_regs *R,
+                                                void *pw )
+{
+  NotUsed(R);
+  NotUsed(pw);
+  DriverStatus ( DriverStatus_Starting );
+  return NULL;
+}
+
+/* Frames to the PC ===================================================== */
+
+/* Which claim, if any, wants frames of this type */
+
+static Claim *FindClaim ( int frame_type )
+{
+  Claim *c;
+
+  if ( frame_type <= ETH_MTU )
+  {
+    for ( c = Claims; c != NULL; c = c->next )
+      if ( c->frame_level == FRMLVL_IEEE >> FRMLVL_SHIFT )
+        return c;
+    return NULL;
+  }
+
+  for ( c = Claims; c != NULL; c = c->next )
+    if ( ( c->frame_level == FRMLVL_E2SPECIFIC >> FRMLVL_SHIFT &&
+           c->frame_type == frame_type ) ||
+         c->frame_level == FRMLVL_E2MONITOR >> FRMLVL_SHIFT )
+      return c;
+
+  for ( c = Claims; c != NULL; c = c->next )
+    if ( c->frame_level == FRMLVL_E2SINK >> FRMLVL_SHIFT )
+      return c;
+
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+int slirp_can_output ( void *opaque )
+{
+  NotUsed(opaque);
+  return 1;
+}
+
+/* ---------------------------------------- */
+
+/* slirp's frame for the PC: to the protocol module that claimed its type,
+   as an rx_hdr mbuf followed by the data, without the Ethernet header */
+
+void slirp_output ( void *opaque, const uint8_t *pkt, int pkt_len )
+{
+  struct rx_hdr hdr;
+  struct mbuf *pHdr, *pData;
+  Claim *c;
+  int frame_type;
+
+  NotUsed(opaque);
+
+  if ( pkt_len <= ETH_HLEN || pkt_len > ETH_MAXLEN )
+    return;
+
+  frame_type = (pkt[12] << 8) | pkt[13];
+  c = FindClaim ( frame_type );
+  if ( c == NULL )
+  {
+    Stat_RxUnwanted++;
+    return;
+  }
+
+  memset ( &hdr, 0, sizeof(hdr) );
+  memcpy ( hdr.rx_dst_addr, pkt, 6 );
+  memcpy ( hdr.rx_src_addr, pkt + 6, 6 );
+  hdr.rx_frame_type  = frame_type;
+  hdr.rx_error_level = 0;
+
+  pHdr  = Mbctl.alloc ( &Mbctl, sizeof(hdr), &hdr );
+  pData = Mbctl.alloc ( &Mbctl, pkt_len - ETH_HLEN, (void *) (pkt + ETH_HLEN) );
+  if ( pHdr == NULL || pData == NULL )
+  {
+    if ( pHdr != NULL )  Mbctl.freem ( &Mbctl, pHdr );
+    if ( pData != NULL ) Mbctl.freem ( &Mbctl, pData );
+    Stat_RxDropped++;
+    return;
+  }
+  pHdr->m_type = MT_HEADER;
+  pHdr->m_next = pData;
+  pHdr->m_list = NULL;
+  pData->m_list = NULL;
+
+  Stat_RxFrames++;
+  /* The protocol module frees the chain */
+  PCNAT_CallRx ( &Dib.dib, pHdr, c->handler, c->pw );
+}
+
+/* The poll ============================================================= */
+
+extern _kernel_oserror *PCNAT_Poll_handler ( _kernel_swi_regs *R, void *pw )
+{
+  fd_set rfds, wfds, xfds;
+  struct timeval none;
+  int nfds = -1, got;
+
+  NotUsed(R);
+  NotUsed(pw);
+
+  PollPending = false;
+  if ( NAT == NULL )
+    return NULL;
+  Stat_Polls++;
+
+  /* The PC's frames, in the order it sent them */
+  while ( TxQ_Count > 0 )
+  {
+    slirp_input ( NAT, TxQ[TxQ_Head].data, TxQ[TxQ_Head].len );
+    TxQ_Head = (TxQ_Head + 1) % TXQ_LEN;
+    TxQ_Count--;
+  }
+
+  /* Then the sockets, and slirp's timers */
+  FD_ZERO ( &rfds );
+  FD_ZERO ( &wfds );
+  FD_ZERO ( &xfds );
+  slirp_select_fill ( NAT, &nfds, &rfds, &wfds, &xfds );
+  got = 0;
+  if ( nfds >= 0 )
+  {
+    none.tv_sec = 0;
+    none.tv_usec = 0;
+    got = select ( nfds + 1, &rfds, &wfds, &xfds, &none );
+    if ( got <= 0 )
+    {
+      FD_ZERO ( &rfds );
+      FD_ZERO ( &wfds );
+      FD_ZERO ( &xfds );
+    }
+  }
+  slirp_select_poll ( NAT, &rfds, &wfds, &xfds, got < 0 );
+
+  return NULL;
+}
+
+/* Init and exit ======================================================== */
+
+extern _kernel_oserror *PCNAT_Init ( const char *cmd_tail, int podule_base,
+                                     void *pw )
+{
+  struct in_addr net, mask, host, dhcp, dns;
+  _kernel_oserror *err;
+  _kernel_swi_regs R;
+
+  NotUsed(cmd_tail);
+  NotUsed(podule_base);
+
+  PCNAT_pw = pw;
+
+  err = MbufOpen();
+  if ( err != NULL )
+    return err;
+
+  net.s_addr  = htonl(NET_ADDR);
+  mask.s_addr = htonl(NET_MASK);
+  host.s_addr = htonl(NET_HOST);
+  dhcp.s_addr = htonl(NET_DHCP);
+  dns.s_addr  = htonl(NET_DNS);
+  NAT = slirp_init ( 0, net, mask, host, NULL, NULL, NULL, dhcp, dns, NULL );
+  if ( NAT == NULL )
+  {
+    MbufClose();
+    return &Err_NoNAT;
+  }
+
+  Dib.dib.dib_swibase  = PCNAT_00;
+  Dib.dib.dib_name     = "pcnat";
+  Dib.dib.dib_unit     = 0;
+  Dib.dib.dib_address  = PCNAT_Addr;
+  Dib.dib.dib_module   = "PCNAT";
+  Dib.dib.dib_location = "PC card NAT";
+  Dib.inquire          = INQUIRE_FLAGS;
+
+  R.r[0] = (int) PCNAT_Started;
+  R.r[1] = (int) pw;
+  _kernel_swi ( OS_AddCallBack, &R, &R );
+
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+extern _kernel_oserror *PCNAT_Final ( int fatal, int podule, void *pw )
+{
+  _kernel_swi_regs R;
+  Claim *c;
+
+  NotUsed(fatal);
+  NotUsed(podule);
+
+  SetTicker ( false );
+  R.r[0] = (int) PCNAT_Poll;
+  R.r[1] = (int) pw;
+  _kernel_swi ( OS_RemoveCallBack, &R, &R );
+  R.r[0] = (int) PCNAT_Started;
+  R.r[1] = (int) pw;
+  _kernel_swi ( OS_RemoveCallBack, &R, &R );
+
+  DriverStatus ( DriverStatus_Terminating );
+
+  while ( Claims != NULL )
+  {
+    c = Claims;
+    Claims = c->next;
+    free ( c );
+  }
+
+  if ( NAT != NULL )
+    slirp_cleanup ( NAT );
+  NAT = NULL;
+
+  MbufClose();
+  return NULL;
+}
+
+/* Service calls ======================================================== */
+
+extern void PCNAT_Service ( int service_number, _kernel_swi_regs *R,
+                            void *pw )
+{
+  _kernel_swi_regs RM;
+  struct chaindib *pCD;
+  Claim **pc, *c;
+
+  NotUsed(pw);
+
+  switch ( service_number )
+  {
+    case Service_EnumerateNetworkDrivers:
+      /* Add our dib to the chain, in RMA the caller frees */
+      memset ( &RM, 0, sizeof(RM) );
+      RM.r[0] = OS_Module_Claim;
+      RM.r[3] = sizeof(struct chaindib);
+      if ( _kernel_swi ( OS_Module, &RM, &RM ) == NULL )
+      {
+        pCD = (struct chaindib *) RM.r[2];
+        pCD->chd_dib  = &Dib.dib;
+        pCD->chd_next = (struct chaindib *) R->r[0];
+        R->r[0] = (int) pCD;
+      }
+      break;
+
+    case Service_DCIProtocolStatus:
+      /* A protocol module stopping: forget its claims */
+      if ( R->r[2] == 1 )
+      {
+        pc = &Claims;
+        while ( *pc != NULL )
+        {
+          c = *pc;
+          if ( c->pw == (void *) R->r[0] )
+          {
+            *pc = c->next;
+            free ( c );
+          }
+          else
+            pc = &c->next;
+        }
+        SetTicker ( Claims != NULL );
+      }
+      break;
+
+    case Service_MbufManagerStatus:
+      /* It can't stop while we've a session */
+      if ( R->r[0] == MbufManagerStatus_Stopping && Mbufs_Open )
+        R->r[1] = 0;
+      break;
+
+    default:
+      break;
+  }
+}
+
+/* SWIs ================================================================= */
+
+/* Transmit: copy each frame to the queue for PCNAT_Poll */
+
+static _kernel_oserror *Transmit ( _kernel_swi_regs *R )
+{
+  struct mbuf *pChain, *pNext;
+  unsigned char *src, *f;
+  int len, n;
+
+  src = (R->r[0] & 1) ? (unsigned char *) R->r[5] : PCNAT_Addr;
+
+  for ( pChain = (struct mbuf *) R->r[3]; pChain != NULL; pChain = pNext )
+  {
+    pNext = pChain->m_list;
+    len = Mbctl.count_bytes ( &Mbctl, pChain );
+
+    if ( TxQ_Count == TXQ_LEN || len > ETH_MTU )
+      Stat_TxDropped++;
+    else
+    {
+      n = (TxQ_Head + TxQ_Count) % TXQ_LEN;
+      f = TxQ[n].data;
+      memcpy ( f, (unsigned char *) R->r[4], 6 );
+      memcpy ( f + 6, src, 6 );
+      f[12] = (unsigned char) (R->r[2] >> 8);
+      f[13] = (unsigned char) R->r[2];
+      Mbctl.export ( &Mbctl, pChain, len, f + ETH_HLEN );
+      TxQ[n].len = ETH_HLEN + len;
+      TxQ_Count++;
+      Stat_TxFrames++;
+    }
+
+    if ( (R->r[0] & 2) == 0 )
+      Mbctl.freem ( &Mbctl, pChain );
+  }
+
+  WantPoll();
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+/* Filter: claim or release frames */
+
+static _kernel_oserror *Filter ( _kernel_swi_regs *R )
+{
+  unsigned int level = FRMLVLOF(R->r[2]) >> FRMLVL_SHIFT;
+  int type = FRMTYPOF(R->r[2]);
+  Claim **pc, *c;
+
+  if ( R->r[0] & 1 )
+  {
+    /* Release */
+    for ( pc = &Claims; *pc != NULL; pc = &(*pc)->next )
+    {
+      c = *pc;
+      if ( c->frame_level == level && c->frame_type == type &&
+           c->pw == (void *) R->r[5] && c->handler == (void *) R->r[6] )
+      {
+        *pc = c->next;
+        free ( c );
+        break;
+      }
+    }
+  }
+  else
+  {
+    /* Claim: frame type 0, unless it's a specific one */
+    if ( level != FRMLVL_E2SPECIFIC >> FRMLVL_SHIFT )
+      type = 0;
+
+    for ( c = Claims; c != NULL; c = c->next )
+    {
+      switch ( level )
+      {
+        case FRMLVL_E2SPECIFIC >> FRMLVL_SHIFT:
+          if ( c->frame_level == level && c->frame_type == type )
+            return &Err_Claimed;
+          break;
+
+        case FRMLVL_E2SINK >> FRMLVL_SHIFT:
+        case FRMLVL_IEEE >> FRMLVL_SHIFT:
+          if ( c->frame_level == level )
+            return &Err_Claimed;
+          break;
+
+        case FRMLVL_E2MONITOR >> FRMLVL_SHIFT:
+          if ( c->frame_level != FRMLVL_IEEE >> FRMLVL_SHIFT )
+            return &Err_Claimed;
+          break;
+
+        default:
+          return &Err_EINVAL;
+      }
+    }
+    if ( level < 1 || level > 4 )
+      return &Err_EINVAL;
+
+    c = malloc ( sizeof(Claim) );
+    if ( c == NULL )
+      return &Err_ENOBUFS;
+    c->frame_type    = type;
+    c->frame_level   = level;
+    c->address_level = R->r[3];
+    c->error_level   = R->r[4];
+    c->pw            = (void *) R->r[5];
+    c->handler       = (void *) R->r[6];
+    c->next          = Claims;
+    Claims = c;
+  }
+
+  SetTicker ( Claims != NULL );
+  return NULL;
+}
+
+/* ---------------------------------------- */
+
+extern _kernel_oserror *PCNAT_SWI ( int swi_offset, _kernel_swi_regs *R,
+                                    void *pw )
+{
+  NotUsed(pw);
+
+  /* All but DCIVersion are for unit 0, our only one */
+  if ( swi_offset != DCI_DCIversion && R->r[1] != 0 )
+    return &Err_ENXIO;
+
+  switch ( swi_offset )
+  {
+    case DCI_DCIversion:
+      R->r[1] = DCI_VERSION;
+      return NULL;
+
+    case DCI_Inquire:
+      R->r[2] = INQUIRE_FLAGS;
+      return NULL;
+
+    case DCI_GetNetworkMTU:
+      R->r[2] = ETH_MTU;
+      return NULL;
+
+    case DCI_SetNetworkMTU:
+      return &Err_ENOTTY;
+
+    case DCI_Transmit:
+      return Transmit ( R );
+
+    case DCI_Filter:
+      return Filter ( R );
+
+    case DCI_Stats:
+      /* struct stats, 100 bytes: only the frame counts are kept (words
+         7, 19 and 20), so bit 0 clear says just those are supplied */
+      {
+        unsigned char *b = (unsigned char *) R->r[2];
+        unsigned long *st = (unsigned long *) b;
+        bool actual = (R->r[0] & 1) != 0;
+
+        memset ( b, 0, 100 );
+        b[0] = actual ? 3 : 0xFF;     /* interface type: 10BaseT */
+        b[1] = actual ? 0x1F : 0xFF;  /* link: OK, active, promiscuous,
+                                         full duplex */
+        b[2] = actual ? 1 : 0xFF;     /* polarity correct */
+        st[7]  = actual ? Stat_TxFrames : 0xFFFFFFFF;
+        st[19] = actual ? Stat_RxUnwanted : 0xFFFFFFFF;
+        st[20] = actual ? Stat_RxFrames : 0xFFFFFFFF;
+      }
+      return NULL;
+
+    case DCI_Multicast:
+      /* slirp sends no multicasts, so there's nothing to filter */
+      return NULL;
+
+    default:
+      return error_BAD_SWI;
+  }
+}
+
+/* *Commands ============================================================ */
+
+extern _kernel_oserror *PCNAT_Command ( const char *arg_string, int argc,
+                                        int cmd_no, void *pw )
+{
+  Claim *c;
+
+  NotUsed(arg_string);
+  NotUsed(argc);
+  NotUsed(pw);
+
+  if ( cmd_no != CMD_PCNATInfo )
+    return NULL;
+
+  printf ( "PC's address    : %02X:%02X:%02X:%02X:%02X:%02X\n",
+           PCNAT_Addr[0], PCNAT_Addr[1], PCNAT_Addr[2],
+           PCNAT_Addr[3], PCNAT_Addr[4], PCNAT_Addr[5] );
+  printf ( "PC's network    : 10.0.2.0/24, gateway 10.0.2.2, DNS 10.0.2.3\n" );
+  printf ( "Frames from PC  : %lu (%lu dropped)\n", Stat_TxFrames,
+           Stat_TxDropped );
+  printf ( "Frames to PC    : %lu (%lu dropped, %lu unclaimed)\n",
+           Stat_RxFrames, Stat_RxDropped, Stat_RxUnwanted );
+  printf ( "Polls           : %lu%s\n", Stat_Polls,
+           Ticking ? " (ticking)" : "" );
+  printf ( "Claims:\n" );
+  for ( c = Claims; c != NULL; c = c->next )
+    printf ( "  level %u type %04X, address level %d\n", c->frame_level,
+             c->frame_type, c->address_level );
+  return NULL;
+}
