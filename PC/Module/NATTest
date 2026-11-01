@@ -1,0 +1,136 @@
+10 REM > NATTest: be the PC's NE2000 driver, through PCNE2's SWIs, and
+20 REM try DHCP, ARP, DNS and an HTTP GET through PCNAT
+30 ON ERROR PRINT REPORT$;" at line ";ERL:END
+40 DIM f% 2048, r% 2048, gw% 7
+50 SYS "PCNE2_Initialise",0,0,0 TO ok%,hdr%,ram%,ver%
+60 IF ok%<>&8390 THEN PRINT "PCNE2 not bound to a driver":END
+70 mac%=hdr%+5
+80 PRINT "PCNE2 version ";ver%;", PC MAC ";FNmac(mac%)
+90 REM Tx at page &40 (RAM offset 0), Rx ring &46-&7F
+100 hdr%!20=&46:hdr%!24=&80:hdr%!12=&46:hdr%!16=&46:rd%=&46
+110 SYS "PCNE2_SetRxOptions",4
+120 SYS "PCNE2_Enable",1
+130 me%=0:ipid%=1
+140 REM ---- DHCP discover ----
+150 PROCeth(-1,&0800):PROCudp(0,-1,68,67,548)
+160 b%=42:PROCb(b%,1):PROCb(b%+1,1):PROCb(b%+2,6):PROCl(b%+4,&12345678)
+170 FOR i%=0 TO 5:f%?(b%+28+i%)=mac%?i%:NEXT
+180 PROCl(b%+236,&63825363):PROCb(b%+240,53):PROCb(b%+241,1):PROCb(b%+242,1):PROCb(b%+243,255)
+190 PROCipsum:PROCsend(42+548)
+200 IF FNwait(&0800,17,300)=0 THEN PRINT "No DHCP offer":END
+210 me%=FNgetl(r%+42+16)
+220 PRINT "DHCP offer: ";FNip(me%);" from ";FNip(FNgetl(r%+26))
+230 REM ---- ARP for the gateway ----
+240 PROCeth(-1,&0806):PROCw(14,1):PROCw(16,&0800):PROCb(18,6):PROCb(19,4):PROCw(20,1)
+250 FOR i%=0 TO 5:f%?(22+i%)=mac%?i%:f%?(32+i%)=0:NEXT
+260 PROCl(28,me%):PROCl(38,&0A000202):PROCsend(60)
+270 IF FNwait(&0806,0,300)=0 THEN PRINT "No ARP reply":END
+280 PRINT "ARP: 10.0.2.2 is at ";FNmac(r%+22)
+290 FOR i%=0 TO 5:gw%?i%=r%?(22+i%):NEXT
+300 REM ---- DNS: example.com A ----
+310 q$=CHR$7+"example"+CHR$3+"com"+CHR$0
+320 n%=12+LEN q$+4
+330 PROCeth(0,&0800):PROCudp(me%,&0A000203,1234,53,n%)
+340 PROCw(42,&4242):PROCw(44,&0100):PROCw(46,1):PROCw(48,0):PROCw(50,0):PROCw(52,0)
+350 FOR i%=1 TO LEN q$:f%?(53+i%)=ASC MID$(q$,i%,1):NEXT
+360 PROCw(54+LEN q$,1):PROCw(56+LEN q$,1)
+370 PROCipsum:PROCsend(42+n%)
+380 IF FNwait(&0800,17,500)=0 THEN PRINT "No DNS reply":END
+390 an%=FNgetw(r%+42+6):o%=42+12+LEN q$+4:host%=0
+400 WHILE an%>0 AND host%=0
+410 o%+=2:t%=FNgetw(r%+o%):l%=FNgetw(r%+o%+8)
+420 IF t%=1 THEN host%=FNgetl(r%+o%+10)
+430 o%+=10+l%:an%-=1
+440 ENDWHILE
+450 IF host%=0 THEN PRINT "DNS reply had no address":END
+460 PRINT "DNS: example.com is ";FNip(host%)
+470 REM ---- TCP: GET / ----
+480 seq%=1000
+490 PROCtcp(host%,4000,80,seq%,0,&02,""):seq%+=1
+500 IF FNwait(&0800,6,500)=0 THEN PRINT "No SYN-ACK":END
+510 fl%=r%?47:their%=FNgetl(r%+38)
+520 PRINT "TCP: flags &";~fl%;" ack ";FNgetl(r%+42);" (expected ";seq%;")"
+530 IF (fl% AND &12)<>&12 THEN PRINT "Not a SYN-ACK":END
+540 ack%=their%+1
+550 g$="GET / HTTP/1.0"+CHR$13+CHR$10+"Host: example.com"+CHR$13+CHR$10+CHR$13+CHR$10
+560 PROCtcp(host%,4000,80,seq%,ack%,&18,g$):seq%+=LEN g$
+570 got%=0:t0%=TIME
+580 REPEAT
+590 IF FNwait(&0800,6,100) THEN
+600 dl%=FNgetw(r%+16)-20-((r%?46)>>4)*4
+610 IF dl%>0 THEN
+620 IF got%=0 THEN PROCfirstline(r%+34+((r%?46)>>4)*4,dl%)
+630 got%+=dl%:ack%=FNgetl(r%+38)+dl%:PROCtcp(host%,4000,80,seq%,ack%,&10,"")
+640 ENDIF
+650 IF r%?47 AND 1 THEN PROCtcp(host%,4000,80,seq%,ack%+1,&11,""):t0%=-1000
+660 ENDIF
+670 UNTIL TIME-t0%>500
+680 PRINT "HTTP: ";got%;" bytes"
+690 SYS "PCNE2_Enable",0
+700 END
+710 DEF PROCfirstline(d%,n%):LOCAL s$,i%
+720 WHILE i%<n% AND d%?i%<>13:s$+=CHR$(d%?i%):i%+=1:ENDWHILE
+730 PRINT "HTTP: ";s$
+740 ENDPROC
+750 DEF PROCb(o%,v%):f%?o%=v%:ENDPROC
+760 DEF PROCw(o%,v%):f%?o%=v%>>8:f%?(o%+1)=v%:ENDPROC
+770 DEF PROCl(o%,v%):PROCw(o%,v%>>>16):PROCw(o%+2,v%):ENDPROC
+780 DEF FNgetw(a%)=(a%?0<<8)+a%?1
+790 DEF FNgetl(a%)=(FNgetw(a%)<<16) OR FNgetw(a%+2)
+800 DEF FNip(a%)=STR$(a%>>>24)+"."+STR$(a%>>16 AND255)+"."+STR$(a%>>8 AND255)+"."+STR$(a% AND255)
+810 DEF FNmac(a%):LOCAL s$,i%:FOR i%=0 TO 5:s$+=RIGHT$("0"+STR$~(a%?i%),2)+":":NEXT:=LEFT$(s$)
+820 DEF PROCeth(to%,type%):LOCAL i%
+830 FOR i%=0 TO 599:f%?i%=0:NEXT
+840 FOR i%=0 TO 5
+850 IF to%=-1 THEN f%?i%=255 ELSE f%?i%=gw%?i%
+860 f%?(6+i%)=mac%?i%
+870 NEXT
+880 PROCw(12,type%)
+890 ENDPROC
+900 DEF PROCip(src%,dst%,proto%,len%)
+910 PROCb(14,&45):PROCw(16,20+len%):PROCw(18,ipid%):ipid%+=1:PROCb(22,64):PROCb(23,proto%)
+920 PROCl(26,src%):PROCl(30,dst%)
+930 ENDPROC
+940 DEF PROCipsum:PROCw(24,0):PROCw(24,FNsum(14,20,0) EOR &FFFF):ENDPROC
+950 DEF FNsum(o%,n%,s%):LOCAL i%
+960 FOR i%=0 TO n%-2 STEP 2:s%+=FNgetw(f%+o%+i%):NEXT
+970 IF n% AND 1 THEN s%+=f%?(o%+n%-1)<<8
+980 WHILE s%>&FFFF:s%=(s% AND &FFFF)+(s%>>>16):ENDWHILE
+990 =s%
+1000 DEF PROCudp(src%,dst%,sp%,dp%,len%)
+1010 PROCip(src%,dst%,17,8+len%):PROCw(34,sp%):PROCw(36,dp%):PROCw(38,8+len%):PROCw(40,0)
+1020 ENDPROC
+1030 DEF PROCtcp(dst%,sp%,dp%,sq%,ak%,fl%,d$):LOCAL i%,n%,s%
+1040 n%=20+LEN d$
+1050 PROCeth(0,&0800):PROCip(me%,dst%,6,n%)
+1060 PROCw(34,sp%):PROCw(36,dp%):PROCl(38,sq%):PROCl(42,ak%):PROCb(46,&50):PROCb(47,fl%):PROCw(48,8192)
+1070 FOR i%=1 TO LEN d$:f%?(53+i%)=ASC MID$(d$,i%,1):NEXT
+1080 s%=FNsum(26,8,6+n%):s%=FNsum(34,n%,s%):PROCw(50,s% EOR &FFFF)
+1090 PROCipsum:PROCsend(34+n%)
+1100 ENDPROC
+1110 DEF PROCsend(len%):LOCAL i%
+1120 IF len%<60 THEN len%=60
+1130 FOR i%=0 TO len%-1:ram%?i%=f%?i%:NEXT
+1140 SYS "PCNE2_Transmit",0,len% TO e%
+1150 IF e% THEN PRINT "PCNE2_Transmit failed"
+1160 ENDPROC
+1170 REM Wait up to cs centiseconds for an IP (proto, 0=any) or ARP frame
+1180 DEF FNwait(type%,proto%,cs%):LOCAL t%
+1190 t%=TIME
+1200 REPEAT
+1210 WHILE hdr%!12<>rd%
+1220 IF FNrecv THEN
+1230 IF FNgetw(r%+12)=type% AND (proto%=0 OR r%?23=proto%) THEN =TRUE
+1240 ENDIF
+1250 ENDWHILE
+1260 SYS "OS_Byte",19
+1270 UNTIL TIME-t%>cs%
+1280 =FALSE
+1290 REM Take the next frame from the ring into r%
+1300 DEF FNrecv:LOCAL a%,n%,i%,nx%
+1310 a%=ram%+(rd%<<8 AND &3FFF):nx%=a%?1:n%=a%?2+(a%?3<<8)-4
+1320 FOR i%=0 TO n%-1
+1330 r%?i%=ram%?(((rd%<<8)+4+i%-(&46<<8)) MOD ((&80-&46)<<8)+(&46<<8) AND &3FFF)
+1340 NEXT
+1350 rd%=nx%:hdr%!16=rd%
+1360 =TRUE
