@@ -30,6 +30,7 @@ extern void update_adv_window(void)
   raise_error(radiobutton_set_state(0,adv_window,ADV_VIDRETRACE_NORMAL+config.adv.retraceemulation,1));
   raise_error(optionbutton_set_state(0,adv_window,ADV_BUSMOUSE,config.adv.busmouse));
   raise_error(numberrange_set_value(0,adv_window,ADV_BUSMOUSEINT,config.adv.busmouseint));
+  raise_error(optionbutton_set_state(0,adv_window,ADV_MIDDLETOPC,config.adv.middletopc));
   raise_error(writablefield_set_value(0,adv_window,ADV_NE2000OPTS,config.adv.ne2000advanced));
   raise_error(numberrange_set_value(0,adv_window,ADV_NE2000INT,config.adv.ne2000int));
   raise_error(radiobutton_set_state(0,adv_window,ADV_PRESERVEVIDMEM_NEVER+config.adv.preservevidmem,1));
@@ -58,6 +59,7 @@ extern int  adv_window_click_handler(int event_code, ToolboxEvent *event, IdBloc
     GET_RADIO_SET(&tmp_config.adv.retraceemulation, ADV_VIDRETRACE_NORMAL);
     raise_error(numberrange_get_value(0,adv_window,ADV_BUSMOUSEINT,&tmp_config.adv.busmouseint));
     raise_error(optionbutton_get_state(0,adv_window,ADV_BUSMOUSE,&tmp_config.adv.busmouse));
+    raise_error(optionbutton_get_state(0,adv_window,ADV_MIDDLETOPC,&tmp_config.adv.middletopc));
     raise_error(writablefield_get_value(0,adv_window,ADV_NE2000OPTS,tmp_config.adv.ne2000advanced,256,&x));
     raise_error(numberrange_get_value(0,adv_window,ADV_NE2000INT,&tmp_config.adv.ne2000int));
     GET_RADIO_SET(&tmp_config.adv.sharedmemflags, ADV_SHAREDMEM_ALLON);

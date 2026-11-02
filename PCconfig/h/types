@@ -117,6 +117,7 @@ typedef struct
   int  retraceemulation;
   int  busmouse;
   int  busmouseint;
+  int  middletopc;
   char ne2000advanced[64];
   int  ne2000int;
   int  sharedmemflags;

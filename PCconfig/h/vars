@@ -275,6 +275,7 @@
 #define ADV_VIDRETRACE_FASTB       0x16
 #define ADV_BUSMOUSE               0x18
 #define ADV_BUSMOUSEINT            0x19
+#define ADV_MIDDLETOPC             0x44
 #define ADV_NE2000INT              0x1D
 #define ADV_NE2000OPTS             0x20
 #define ADV_SHAREDMEM_ALLON        0x2C // can't be arsed with rest!

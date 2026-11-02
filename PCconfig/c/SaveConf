@@ -334,6 +334,11 @@ lse
   copy_text_to_ptr("BusMouseInt", config.adv.busmouseint,&config_lines[x++]);
   config_lines[x++] = "\0";
 
+  config_lines[x++] = "# Middle button to the PC (Ctrl+middle for !PC's menu)";
+  if (config.adv.middletopc) config_lines[x++]="MiddleToPC On";
+                        else config_lines[x++]="MiddleToPC Off";
+  config_lines[x++] = "\0";
+
   config_lines[x++] = "# Advanced NE2000 options (other than packet types)";
   sprintf(buffer, "NE2000Advanced %s\0", config.adv.ne2000advanced);
   copy_text_to_ptr(buffer,-1,&config_lines[x++]);
