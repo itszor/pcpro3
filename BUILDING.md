@@ -43,6 +43,30 @@ default target: !PCConfig is an application of its own, installed beside !PC
 with the `Res`, `Messages` and sprites it already has.  The original linked
 James Bye's file library as `C:o.files`; `PCconfig/c/File` is its source.
 
+## The release
+
+    make RISCOSE=... ACORN_C=... PC308=".../PC (FR) 3.08 ()().zip" \
+        PC307=".../PC (FR) 3.07 ()().zip" all pcconfig dist
+
+makes `build/dist/PC309.zip` (named for `PC/SYS/h/Version`), everything a
+Risc PC with a PC card needs, with its RISC OS filetypes in Info-ZIP's
+Acorn extra field for SparkFS or RISC OS's unzip to set.  `dist/mkdist.py`
+puts it together from:
+
+- the 3.08 release's !PC and !PCConfig, with their filetypes, but for the
+  files built here: !PC's `!RunImage`, `PCBits.Core.PCMem` and
+  `PCBits.Netlinks`, and !PCConfig's `!RunImage` and `Res`;
+- the 3.07 release, the last with Aleph One's installer, for what 3.08
+  takes to be installed already: GuardDD and PCSleep from its `!Boot`
+  additions, into `Boot`; its user guide, unzipped into `Docs.UserGuide`;
+  and Aleph One's PC-side drivers from its boot disc, on a DOS floppy image
+  of their own (`PCDrivers`, made with mtools) without the disc's DR-DOS
+  and others' files;
+- `dist/ReadMe`.
+
+`PCconfig/!PCConfig/Res` is the 3.08 release's, which differs from the
+source release's, with "Middle button to PC" added to the Adv window.
+
 ## What differs from the 3.08 release
 
 Built this way, the binaries do what the release's do, but aren't

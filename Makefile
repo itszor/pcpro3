@@ -241,9 +241,13 @@ $(PCC_BIN)/!RunImage: $(PCC_OBJS) | $(PCC_BIN) $(BUILD)/AcornC
 
 # ---- dist ---------------------------------------------------------------
 
-# An update for an installed !PC 3.08: the files that have changed, in a
-# !PC of their own, zipped with their filetypes (dist/mkzip.py), and
-# dist/ReadMe.  Named for the version in SYS/h/Version: PC309.zip.
+# The release: all of !PC and !PCConfig, the !Boot additions, the PC-side
+# drivers and the user guide, zipped with their filetypes by dist/mkdist.py
+# from this tree's builds and the 3.08 and 3.07 releases, whose zips it
+# needs: PC308 and PC307 ("PC (FR) 3.08 ()().zip" and "PC (FR) 3.07 ()().zip"
+# from riscos.info).  Named for the version in SYS/h/Version: PC309.zip.
+PC308 ?=
+PC307 ?=
 VERSION := $(shell sed -n 's/.*"\([0-9]*\)\.\([0-9]*\) .*/\1\2/p' $(SRC)/SYS/h/Version)
 DIST    := $(BUILD)/dist/PC$(VERSION).zip
 NETLINKS := $(SRC)/PCBits/Netlinks
@@ -251,17 +255,12 @@ NETLINKS := $(SRC)/PCBits/Netlinks
 .PHONY: dist
 dist: $(DIST)
 
-$(DIST): dist/mkzip.py dist/ReadMe $(BIN)/!RunImageG $(BIN)/PCMEM $(BIN)/PCNAT \
-         $(SRC)/Bin/PCNE2 $(NETLINKS)/Startup $(NETLINKS)/Shutdown
+$(DIST): dist/mkdist.py dist/mkzip.py dist/ReadMe $(BIN)/!RunImageG \
+         $(BIN)/PCMEM $(BIN)/PCNAT $(SRC)/Bin/PCNE2 $(NETLINKS)/Startup \
+         $(NETLINKS)/Shutdown $(PCC_BIN)/!RunImage $(PCC)/!PCConfig/Res
+	$(if $(and $(PC308),$(PC307)),,$(error Set PC308 and PC307 to the 3.08 and 3.07 release zips))
 	mkdir -p $(@D)
-	python3 -I dist/mkzip.py $@ \
-	    ReadMe:FFF:dist/ReadMe \
-	    '!PC/!RunImage:FF8:$(BIN)/!RunImageG' \
-	    '!PC/PCBits/Core/PCMem:FFA:$(BIN)/PCMEM' \
-	    '!PC/PCBits/Netlinks/PCNAT:FFA:$(BIN)/PCNAT' \
-	    '!PC/PCBits/Netlinks/PCNE2:FFA:$(SRC)/Bin/PCNE2' \
-	    '!PC/PCBits/Netlinks/Startup:FEB:$(NETLINKS)/Startup' \
-	    '!PC/PCBits/Netlinks/Shutdown:FEB:$(NETLINKS)/Shutdown'
+	python3 dist/mkdist.py $@ '$(PC308)' '$(PC307)'
 
 clean:
 	rm -rf $(BUILD)
