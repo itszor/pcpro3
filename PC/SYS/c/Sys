@@ -597,7 +597,6 @@ static bool ModuleShutdown(void)
 bool SYS_Init (void)
 {
   _kernel_swi_regs R;
-  float version ;
 
   /* Get details from PCSupport modules */
 
@@ -612,8 +611,8 @@ bool SYS_Init (void)
 
   if ( R.r[0] != 223)
   {
-    version =  (float)R.r[0]/100;
-    printf("PCSupport module is the wrong version!\nFound version: %f.2, should be 2.23\n",version);
+    printf("PCSupport module is the wrong version!\nFound version: %d.%02d, should be 2.23\n",
+           R.r[0] / 100, R.r[0] % 100);
     return false;
   }
 
