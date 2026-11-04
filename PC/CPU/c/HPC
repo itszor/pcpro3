@@ -7,6 +7,7 @@
 *
 *   2.00 10-11-95  INH  Original
 *   2.34 1998.09.07 W   Added DebugT port and HPC_SINGLE_REQ 
+*   3.09 2026.11.04 JB  Write interlock for packets sent in shared memory
 */
 
 #include <stdlib.h>  /* For malloc */
@@ -34,6 +35,32 @@
 #define HPC_DataB_Port   (HPC_PORT_FIRST+0x6)
 
 #define HPC_IRQ_LINE  15
+
+/* Write interlock --------------------------------------------------------
+
+   On the Gemini card the PC's stores reach its memory, and so the shared
+   HPC buffers, through a write FIFO in the ASIC (MISCRwr_ENWRFIFO), while
+   its I/O is caught by the ARM at once. So a DO_CALL can arrive while the
+   end of a packet assembled in shared memory is still in the FIFO, and the
+   call is run on whatever the buffer held before: an "Unknown HPC
+   Dispatch", or, worse, a disc write of the wrong sectors or data.
+
+   A driver which knows of this (HPC_SYS_INFO gives version 1.1 or later)
+   writes a token as the buffer's last 16-bit word, after the packet, then
+   writes the same token to HPC_Lock_Port, then sends DO_CALL. The call is
+   not dispatched until the token can be seen in the buffer: the FIFO keeps
+   the PC's writes in order, so by then the whole packet is there. Windrv's
+   BUF_LOCKFLAG does the same for the video driver.
+
+   Bit 0 of the token selects the buffer, as in the commands; the rest must
+   not be 0, and should change from call to call, so that a token left in
+   the buffer by an earlier call is not taken for this one's. A packet sent
+   this way must stop short of the token's word. Drivers that never write
+   HPC_Lock_Port are not affected. */
+
+#define HPC_Lock_Port    (HPC_PORT_FIRST+0x2)  /* 16-bit writes */
+#define HPC_LOCK_OFFSET  (HPC_BUF_LEN-2)
+#define HPC_LOCK_SPINS   200000                /* Some tens of ms */
 
 /* Extras defined locally */
 #define HPC_DebugB_Port  (HPC_PORT_FIRST+0x1)
@@ -91,6 +118,7 @@ typedef struct
   bool  irq_needed; /* True if Irq needed on completion */
   BYTE *bufptr;     /* Buffer for holding results */
   int   PCbufaddr;  /* PC physical address of buffer */
+  int   lock_token; /* Token to wait for before dispatching, or 0 */
 }
   HPCBUFFER;
 
@@ -105,6 +133,33 @@ static bool HPC_IntSuspReq;   /* True if suspend due to HPC command is
                                    requested */
 
 static HPCBUFFER HPC_Bufs[2]; /* Buffer A and buffer B */
+
+static int HPC_LockWaits;     /* Calls whose token was not there at once */
+static int HPC_LockTimeouts;  /* Calls whose token never came */
+
+/* Wait for a buffer's token to arrive in it - see 'Write interlock' */
+
+static void HPC_WaitForToken ( HPCBUFFER *pB )
+{
+  volatile BYTE *p = pB->bufptr + HPC_LOCK_OFFSET;
+  int token = pB->lock_token;
+  int spins = 0;
+
+  pB->lock_token = 0;
+  while ( (p[0] | (p[1] << 8)) != token )
+  {
+    if ( ++spins >= HPC_LOCK_SPINS )
+    {
+      if ( ++HPC_LockTimeouts <= 10 )
+        SYS_trace("HPC: token %X not seen in buffer, ran the call anyway",
+                  token);
+      return;
+    }
+  }
+
+  if ( spins > 0 && ++HPC_LockWaits <= 10 )
+    SYS_trace("HPC: waited %d spins for the packet", spins);
+}
 
 /* Main HPC callback ************************** */
 
@@ -130,6 +185,8 @@ static void HPC_callback ( int x )
     {
       if ( HPC_NoSuspendForCmd || HPC_Suspended )
       {
+        if ( HPC_Bufs[i].lock_token != 0 )
+          HPC_WaitForToken ( &HPC_Bufs[i] );
         SYS_DispatchHPC ( HPC_Bufs[i].bufptr );
         HPC_Bufs[i].state = IN_USE;
         if ( HPC_Bufs[i].irq_needed )
@@ -177,6 +234,7 @@ static void Do_Cmd_Write( int data )
   {
     case HPC_WRITE_IO:
       pB->state = IN_USE;
+      pB->lock_token = 0;
       pB->data_ptr = pB->bufptr;
       pB->data_len = HPC_BUF_LEN;
       tmp = CPU_BlockOut ( pB->dataport, pB->data_ptr, pB->data_len );
@@ -193,8 +251,10 @@ static void Do_Cmd_Write( int data )
       pB->data_len -= tmp;
       return;
 
-    case HPC_READ_MEM:
     case HPC_WRITE_MEM:
+      pB->lock_token = 0;
+      /* Drop through */
+    case HPC_READ_MEM:
       pB->state = IN_USE;
       /* Area is uncached, no further action needed */
       return;
@@ -208,6 +268,7 @@ static void Do_Cmd_Write( int data )
 
     case HPC_RELEASE_BUF:
       pB->state = IDLE;
+      pB->lock_token = 0;
       pB->data_len = 0;   /* Stop transfers */
       return;
 
@@ -420,8 +481,18 @@ static void HPC_Out16 ( int addr, int data )
       WordWrite ( &HPC_Bufs[HPC_BUFFER_B], data );
       return;
 
-    case HPC_Req_Port: /* Not yet implemented */
-      break;
+    case HPC_Lock_Port:
+      /* A token to wait for in a buffer sent in shared memory. Only
+         for the buffer's owner: one in use, and not yet called. */
+    {
+      HPCBUFFER *pB = &HPC_Bufs[data & HPC_BUFSEL_BIT];
+
+      data &= 0xFFFF;
+      if ( (data >> 1) != 0 && pB->state == IN_USE &&
+           pB->PCbufaddr != 0xFFFFFFFF )
+        pB->lock_token = data;
+      return;
+    }
 
     case HPC_DebugW_Port:
       SYS_trace("DebugW %X", data );
@@ -463,6 +534,7 @@ static bool HPC_Reset()
   {
     HPC_Bufs[i].state = IDLE;
     HPC_Bufs[i].data_len = 0;   /* Stop transfers */
+    HPC_Bufs[i].lock_token = 0;
   }
 
   HPC_IntSuspReq = false;
@@ -514,7 +586,7 @@ static void HPC_SysFunctions ( BYTE *buf )
   if ( pB->In.reason == 0 ) /* System info cmd */
   {
     pB->Out.identifier = 0xEE435048;
-    pB->Out.ver_minor  = 0;
+    pB->Out.ver_minor  = 1;     /* 1.1: the write interlock */
     pB->Out.ver_major  = 1;
     pB->Out.pad1 = pB->Out.pad2 = 0;
     if ( CFG.SharedMemFlags & SM_DONT_USE )
