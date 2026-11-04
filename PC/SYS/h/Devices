@@ -19,6 +19,7 @@ extern bool PRN_Init(void);
 extern bool CDR_Init(void);
 extern bool NE2_Init(void);
 extern bool MUL_Init(void);
+extern bool SWP_Init(void);
 
 
 

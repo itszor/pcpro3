@@ -1411,6 +1411,7 @@ int main (int argc, char **argv)
         !MUL_Init()  ||
         !NE2_Init()  ||
         !CDR_Init()  ||
+        !SWP_Init()  ||
         !DeviceMod_Init()         /* Initialise device modules */
      )
    SYS_error ( true, "ieinitfail" ) ;

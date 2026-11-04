@@ -56,6 +56,19 @@ static void set_pcram(char *opt)
    tmp_config.memory.memory_allocated = config.memory.memory_allocated = atoi_h(opt);
 }
 
+static void set_swapsize(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.memory.swapsize = config.memory.swapsize = atoi_h(opt);
+}
+
+static void set_swapinitial(char *opt)
+{
+  opt = strip_header(opt);
+  tmp_config.memory.swapinitial = config.memory.swapinitial = atoi_h(opt);
+  tmp_config.memory.swapinitial_set = config.memory.swapinitial_set = TRUE;
+}
+
 static void set_videoram(char *opt)
 {
   opt = strip_header(opt);
@@ -468,6 +481,8 @@ static void set_config_option(char *opt)
 {
   if(strstr(opt, "configname") != NULL)        { set_configname(opt); return;       }
   if(strstr(opt, "pcram") != NULL)             { set_pcram(opt); return;            }
+  if(strstr(opt, "swapsize") != NULL)          { set_swapsize(opt); return;         }
+  if(strstr(opt, "swapinitial") != NULL)       { set_swapinitial(opt); return;      }
   if(strstr(opt, "videoram") != NULL)          { set_videoram(opt); return;         }
   if(strstr(opt, "includevram") != NULL)       { set_includevram(opt); return;      }
   if(strstr(opt, "windrvmode") != NULL)        { set_windowmode(opt); return;       }
@@ -522,6 +537,10 @@ static void parse_config_file(void)
       count = 0;
 
   char ch;
+
+  /* Swap settings that are left out mean none, not the last file's */
+  tmp_config.memory.swapsize = config.memory.swapsize = 0;
+  tmp_config.memory.swapinitial_set = config.memory.swapinitial_set = FALSE;
 
   while(x < total_config_lines)
   {

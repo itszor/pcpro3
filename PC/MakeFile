@@ -3,7 +3,7 @@ all:      bin.PCDevHelp bin.!RunimageD
 
 # Main !PC app bits ----------------------
 
-BaseObjs = o.main o.veneerss o.veneers o.sys o.syss o.wfebits o.wfes o.config o.hpc o.CD_HPC  o.CD_HPCs o.hdd_hpc o.fdd_hpc o.rtc o.ne2000 o.kbd o.multiio o.printer o.modes o.ports o.tables o.vids o.vgas o.cursor o.scroll o.mouse o.palette o.winblt o.wins o.fddem o.ideem o.turbolut o.ext o.veneers o.veneerss o.divaserial
+BaseObjs = o.main o.veneerss o.veneers o.sys o.syss o.wfebits o.wfes o.config o.hpc o.CD_HPC  o.CD_HPCs o.hdd_hpc o.swp_hpc o.fdd_hpc o.rtc o.ne2000 o.kbd o.multiio o.printer o.modes o.ports o.tables o.vids o.vgas o.cursor o.scroll o.mouse o.palette o.winblt o.wins o.fddem o.ideem o.turbolut o.ext o.veneers o.veneerss o.divaserial
 
 bin.!RunImageG: $(BaseObjs) o.cpu_g o.cpus_g o.dma o.windrv
     | ************* LINKING !RunImageG
@@ -86,6 +86,9 @@ o.cpus_g: Cpu.s.cpus_g Sys.S.StdDefs
 
 o.CD_HPC: Dev.c.CD_HPC Sys.h.stdtypes Sys.h.sys dev.h.HPC_CD
           mc dev cd_hpc
+
+o.SWP_HPC: Dev.c.SWP_HPC Sys.h.stdtypes Sys.h.sys Sys.h.config dev.h.HPC_HD dev.h.HPC_SWP
+          mc dev swp_hpc
 
 o.CD_HPCs: Dev.s.CD_HPCs Sys.s.stddefs
           ms dev cd_hpcs

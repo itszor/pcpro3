@@ -1,0 +1,17 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.H.HPC_SWP - HPC swap device service
+*
+*   2026-11-04 JB  Original
+*
+*   One drive, 0, in a RISC OS dynamic area, for the PC to swap to. Its
+*   calls and packets are the hard disc service's (DEV.H.HPC_HD): INFO,
+*   READ and WRITE, with HD_INFO_RESULT's flags DF_VOLATILE, as what is
+*   written does not outlive !PC or a reset of the PC. INFO gives a size
+*   of 0 when no swap is configured.
+*/
+
+#define HPC_SWAP_ID 0x0004
+
+extern bool SWP_Init ( void );

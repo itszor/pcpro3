@@ -91,6 +91,19 @@ void build_configuration(void)
   config_lines[x++] = "# Approximate size of RAM available to PC Card\0";
   copy_text_to_ptr("PCRAM",config.memory.memory_allocated,&config_lines[x++]);
   config_lines[x++] = "\0";
+  /* Not in a window yet: kept as they were read */
+  if (config.memory.swapsize > 0)
+  {
+    config_lines[x++] = "# MB of swap device for the PC, in a dynamic area\0";
+    copy_text_to_ptr("SwapSize",config.memory.swapsize,&config_lines[x++]);
+    if (config.memory.swapinitial_set)
+    {
+      config_lines[x++] = "# MB of it taken at start (-1 for all of it)\0";
+      sprintf(buffer, "SwapInitial %d\0", config.memory.swapinitial);
+      copy_text_to_ptr(buffer,-1,&config_lines[x++]);
+    }
+    config_lines[x++] = "\0";
+  }
   config_lines[x++] = "# Minimum amount to allocate for display emulation\0";
   copy_text_to_ptr("VideoRAM",config.memory.display_min,&config_lines[x++]);
   config_lines[x++] = "\0";

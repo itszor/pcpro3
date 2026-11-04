@@ -50,6 +50,9 @@ typedef struct
   int  memory_allocated;
   int  display_min;
   BOOL includevram;
+  int  swapsize;          /* SwapSize, MB; 0 for none */
+  int  swapinitial;       /* SwapInitial, MB, if swapinitial_set */
+  BOOL swapinitial_set;
 }mem;
 
 typedef struct

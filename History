@@ -578,3 +578,9 @@ Not yet released: CD-poke at start-up to see if that fixes ROS4 CDROM problems
 		after the DO_CALL, so the call ran on the old contents. A
 		driver writes a token as the buffer's last word and to port
 		302h; the call waits for it, as Windrv's BUF_LOCKFLAG does.
+		A swap device for the PC: HPC service 4, the hard disc
+		service's calls on one drive kept in a "PC swap" dynamic
+		area. SwapSize gives its size in MB, and SwapInitial how much
+		of that is taken at start (all, by default). The rest is taken
+		as the PC first writes there, and given back when the PC is
+		reset. !PCConfig keeps both options when it saves.

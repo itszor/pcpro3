@@ -105,6 +105,8 @@ struct SysConfig
 
     bool Toolbar;
     bool MiddleToPC;      /* Middle button to the PC; Ctrl+middle is !PC's */
+    int  SwapSize;        /* MB of swap device for the PC (0 for none) */
+    int  SwapInitial;     /* MB of it taken at start; -1 for all of it */
 };
 
 extern struct SysConfig CFG;

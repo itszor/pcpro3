@@ -1,0 +1,323 @@
+/*
+*   DIVAPC  ARM C source
+*
+*   DEV.C.SWP_HPC - a swap device for the PC, in a RISC OS dynamic area
+*
+*   2026-11-04 JB  Original
+*
+*   The PC card can be given at most 32MB of RAM, however much the Risc PC
+*   has. This gives the PC a disc of SwapSize MB that lives in a dynamic
+*   area ("PC swap"), for its OS to swap to: Linux's apcdisk driver offers
+*   it as /dev/apdc.
+*
+*   SwapInitial MB of it are taken when !PC starts (all of it, by default).
+*   The rest is taken from RISC OS's free memory as the PC first writes
+*   there, a MB at a time; reads of what has never been written give zeros.
+*   If RISC OS has no memory to give, the write fails, and the PC's OS sees
+*   a disc error - which for a swap device can lose a process's memory, so
+*   SwapInitial less than SwapSize is a bet on RISC OS having it to spare.
+*   The area is shrunk back to SwapInitial when the PC is reset, as nothing
+*   in it is wanted after that, and removed when !PC quits. It cannot be
+*   dragged smaller in the Task Manager.
+*
+*   The service is the hard disc service's packets under its own ID
+*   (DEV.H.HPC_SWP), so the PC's hard disc drivers never see it.
+*/
+
+#include "kernel.h"
+#include "swis.h"
+#include <stdio.h>
+#include <string.h>
+
+#include "sys.h.stdtypes"
+#include "sys.h.sys"
+#include "sys.h.config"
+
+#include "dev.h.hpc_hd"
+#include "dev.h.hpc_swp"
+
+#define MEG        (1 << 20)
+#define GROW_STEP  MEG
+
+static int   SWP_Area = -1;   /* Dynamic area number, or -1 for none */
+static BYTE *SWP_Base;        /* Its base */
+static uint  SWP_Size;        /* Bytes it has now */
+static uint  SWP_Initial;     /* Bytes it has at start and after a reset */
+static uint  SWP_Max;         /* Bytes the PC sees */
+static bool  SWP_GrowFailed;  /* Said so once already */
+
+/* Helpers ********************************************** */
+
+/* A warning the user sees: there is no message token for these in the
+   release's Messages file, so they are reported here */
+
+static void SWP_Warn ( char *s )
+{
+  _kernel_swi_regs r;
+  struct { int errnum; char errmess[252]; } er;
+
+  SYS_trace("Swap: %s", s);
+  er.errnum = 0;
+  strncpy ( er.errmess, s, sizeof(er.errmess)-1 );
+  er.errmess[sizeof(er.errmess)-1] = 0;
+  r.r[0] = (int) &er;
+  r.r[1] = 1;            /* OK box */
+  r.r[2] = (int) "PC";
+  _kernel_swi ( Wimp_ReportError, &r, &r );
+}
+
+/* ------------------------ */
+
+static void SWP_ReadSize ( void )
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = 2;            /* Read area info */
+  r.r[1] = SWP_Area;
+  if ( _kernel_swi ( OS_DynamicArea, &r, &r ) == NULL )
+    SWP_Size = r.r[2];
+}
+
+/* ------------------------ */
+
+static void SWP_Change ( int delta )
+{
+  _kernel_swi_regs r;
+
+  r.r[0] = SWP_Area;
+  r.r[1] = delta;
+  _kernel_swi ( OS_ChangeDynamicArea, &r, &r ); /* It may do only some */
+  SWP_ReadSize();
+}
+
+/* ------------------------ */
+
+/* Make the area at least 'need' bytes: a MB beyond, where it can */
+
+static bool SWP_Grow ( uint need )
+{
+  uint want;
+
+  if ( need <= SWP_Size )
+    return true;
+
+  want = (need + GROW_STEP - 1) & ~(GROW_STEP - 1);
+  if ( want > SWP_Max )
+    want = SWP_Max;
+  SWP_Change ( want - SWP_Size );
+  if ( SWP_Size < need )
+    SWP_Change ( need - SWP_Size );
+
+  if ( SWP_Size >= need )
+    return true;
+
+  if ( !SWP_GrowFailed )
+  {
+    SYS_trace("Swap: RISC OS has no memory to grow to %d bytes", need);
+    SWP_GrowFailed = true;
+  }
+  return false;
+}
+
+/* ------------------------ */
+
+static void SWP_Remove ( void )
+{
+  _kernel_swi_regs r;
+
+  if ( SWP_Area < 0 )
+    return;
+  r.r[0] = 1;            /* Remove area */
+  r.r[1] = SWP_Area;
+  _kernel_swi ( OS_DynamicArea, &r, &r );
+  SWP_Area = -1;
+  SWP_Base = NULL;
+  SWP_Size = SWP_Max = 0;
+}
+
+/* HPC calls ******************************************** */
+
+/* Packets in and out share the buffer, so what is needed of one is read
+   before the other is written */
+
+static void SWP_GetInfo ( struct HD_INFO_PARAMS *pIn,
+                          struct HD_INFO_RESULT *pOut )
+{
+  uint nsects = ( pIn->drvnum == 0 && SWP_Area >= 0 ) ? SWP_Max >> SectShift
+                                                      : 0;
+
+  pOut->status  = HDERR_OK;
+  pOut->ndrives = 1;
+  pOut->drvsize = nsects;
+  pOut->flags   = DF_VOLATILE;
+  pOut->nheads  = 64;    /* A geometry for those that want one: 1MB a */
+  pOut->nsects  = 32;    /* cylinder */
+  pOut->ncyls   = nsects >> 11;
+}
+
+/* ------------------------ */
+
+/* Whether a read or write is of the drive, and within it */
+
+static bool SWP_InRange ( struct HD_READWRITE_PARAMS *pIn )
+{
+  uint start = pIn->sect_start, count = pIn->sect_count;
+
+  return pIn->drvnum == 0 && SWP_Area >= 0 &&
+         count <= (HD_MAX_RDWR_LEN >> SectShift) &&
+         start < (SWP_Max >> SectShift) &&
+         count <= (SWP_Max >> SectShift) - start;
+}
+
+/* ------------------------ */
+
+static void SWP_Read ( struct HD_READWRITE_PARAMS *pIn,
+                       struct HD_READWRITE_RESULT *pOut )
+{
+  uint start, len, have;
+
+  if ( !SWP_InRange ( pIn ) )
+  {
+    pOut->status = HDERR_BADADDR;
+    return;
+  }
+  start = pIn->sect_start << SectShift;
+  len   = pIn->sect_count << SectShift;
+
+  /* What has never been written isn't there: it reads as zeros */
+  have = start < SWP_Size ? SWP_Size - start : 0;
+  if ( have > len )
+    have = len;
+  if ( have > 0 )
+    memmove ( pOut->read_data, SWP_Base + start, have );
+  if ( have < len )
+    memset ( pOut->read_data + have, 0, len - have );
+
+  pOut->status = HDERR_OK;
+}
+
+/* ------------------------ */
+
+static void SWP_Write ( struct HD_READWRITE_PARAMS *pIn,
+                        struct HD_READWRITE_RESULT *pOut )
+{
+  uint start, len;
+
+  if ( !SWP_InRange ( pIn ) )
+  {
+    pOut->status = HDERR_BADADDR;
+    return;
+  }
+  start = pIn->sect_start << SectShift;
+  len   = pIn->sect_count << SectShift;
+
+  if ( !SWP_Grow ( start + len ) )
+  {
+    pOut->status = HDERR_DATAERR;
+    return;
+  }
+  memcpy ( SWP_Base + start, pIn->write_data, len );
+  pOut->status = HDERR_OK;
+}
+
+/* ------------------------ */
+
+static void SWP_HPCdispatch ( BYTE *buf )
+{
+  HD_HPC_IN_OUT *pB = (HD_HPC_IN_OUT *) buf;
+
+  switch ( pB->in.common.reason )
+  {
+    case HPC_HD_INFO:
+      SWP_GetInfo ( &(pB->in.Info), &(pB->out.Info) );
+      break;
+
+    case HPC_HD_READ:
+      SWP_Read ( &(pB->in.Read), &(pB->out.Read) );
+      break;
+
+    case HPC_HD_WRITE:
+      SWP_Write ( &(pB->in.Write), &(pB->out.Write) );
+      break;
+
+    default:
+      pB->out.common.retcode = HDERR_UNKNOWN;
+      break;
+  }
+}
+
+/* Events *********************************************** */
+
+static bool SWP_SetConfig ( void )
+{
+  _kernel_swi_regs r;
+  _kernel_oserror *e;
+  static char msg[300];
+  int size = CFG.SwapSize, initial = CFG.SwapInitial;
+
+  SWP_Remove();
+  SWP_GrowFailed = false;
+  if ( size <= 0 )
+    return false;
+
+  if ( initial < 0 || initial > size )
+    initial = size;
+
+  r.r[0] = 0;                  /* Create area */
+  r.r[1] = -1;                 /* Any number */
+  r.r[2] = initial * MEG;
+  r.r[3] = -1;                 /* Anywhere */
+  r.r[4] = 0x80;               /* Not draggable; user R/W, cached */
+  r.r[5] = size * MEG;
+  r.r[6] = 0;                  /* No handler */
+  r.r[7] = 0;
+  r.r[8] = (int) "PC swap";
+  e = _kernel_swi ( OS_DynamicArea, &r, &r );
+  if ( e != NULL )
+  {
+    sprintf ( msg, "No swap for the PC: could not make a %dMB dynamic "
+                   "area with %dMB in it (%s)", size, initial, e->errmess );
+    SWP_Warn ( msg );
+    return false;
+  }
+
+  SWP_Area = r.r[1];
+  SWP_Base = (BYTE *) r.r[3];
+  SWP_Max  = size * MEG;
+  SWP_Initial = initial * MEG;
+  SWP_ReadSize();
+  SYS_trace("Swap: area %d at %X, %d of %d bytes", SWP_Area, (int) SWP_Base,
+            SWP_Size, SWP_Max);
+  return false;
+}
+
+/* ------------------------ */
+
+static bool SWP_Reset ( void )
+{
+  /* The PC's OS is gone, and with it any use for what it swapped out */
+  if ( SWP_Area >= 0 && SWP_Size > SWP_Initial )
+    SWP_Change ( (int) SWP_Initial - (int) SWP_Size );
+  SWP_GrowFailed = false;
+  return false;
+}
+
+/* ------------------------ */
+
+static bool SWP_Shutdown ( void )
+{
+  SWP_Remove();
+  return false;
+}
+
+/* ------------------------ */
+
+bool SWP_Init ( void )
+{
+  SYS_registerEvent ( SYS_SetConfig, SWP_SetConfig, 0 );
+  SYS_registerEvent ( SYS_HardReset, SWP_Reset,     0 );
+  SYS_registerEvent ( SYS_Shutdown,  SWP_Shutdown,  0 );
+
+  SYS_registerHPC ( HPC_SWAP_ID, SWP_HPCdispatch, HPC_NORMAL, 0 );
+  return true;
+}

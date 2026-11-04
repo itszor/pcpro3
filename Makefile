@@ -101,7 +101,7 @@ C_SOURCES := \
     rtc:DEV/c/RTC            hdd_hpc:DEV/c/HDD_HPC    ideem:DEV/c/IDEEm \
     fdd_hpc:DEV/c/Fdd_hpc    fddem:DEV/c/FddEm        kbd:DEV/c/Kbd \
     printer:DEV/c/Printer    ne2000:DEV/c/NE2000      cd_hpc:DEV/c/CD_HPC \
-    multiio:DEV/c/MultiIO
+    multiio:DEV/c/MultiIO    swp_hpc:DEV/c/SWP_HPC
 
 DEMO_SOURCES := cpu_gDEMO:CPU/c/cpu_g windrvDEMO:VID/c/Windrv
 
@@ -125,7 +125,7 @@ $(OBJ)/main $(OBJ)/WFEbits: $(SRC)/SYS/h/Version
 RUNIMAGE_G := main veneers veneerss sys cpu_g cpus_g vgas ports vids hpc \
     rtc scroll modes windrv winblt wins tables cursor palette hdd_hpc \
     ideem fdd_hpc fddem kbd mouse config syss WFEbits wfes printer ne2000 \
-    cd_hpc cd_hpcs multiio dma turbolut ext
+    cd_hpc cd_hpcs multiio dma turbolut ext swp_hpc
 RUNIMAGE_D := $(subst windrv,windrvDEMO,$(subst cpu_g,cpu_gDEMO,$(RUNIMAGE_G)))
 RUNIMAGE_LIBS := $(STUBS) $(TBOXLIB).o.eventlib $(TBOXLIB).o.toolboxlib \
     $(TBOXLIB).o.wimplib

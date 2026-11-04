@@ -110,6 +110,8 @@ static struct ParmRec ConfigOptions[] =
   false, Boolean, "TRACE",         &CFG.Trace,          false,
   true, Boolean, "BUSMOUSE",      &CFG.BusMouse,       true,
   true, Boolean, "MIDDLETOPC",    &CFG.MiddleToPC,     false,
+  true, Numeric, "SWAPSIZE",      &CFG.SwapSize,       0,
+  true, Numeric, "SWAPINITIAL",   &CFG.SwapInitial,    -1,
   true, Numeric, "BUSMOUSEINT",   &CFG.BusMouseInt,    3,
   true, Numeric, "NE2000INT",     &CFG.NE2000Int,      5,
   true, Numeric, "RETRACEEMULATION", &CFG.RetraceEmulation, 0,
