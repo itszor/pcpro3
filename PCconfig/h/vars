@@ -140,6 +140,11 @@
 #define MEMORY_USER_SELECTED       0xc
 #define MEMORY_INCLUDEVRAM         0x11
 #define MEMORY_DISPLAY_ACTUAL      0x16
+#define MEMORY_SWAP_SIZE           0x19
+#define MEMORY_SWAP_ALL            0x1b
+#define MEMORY_SWAP_INITIAL_LABEL  0x1c
+#define MEMORY_SWAP_INITIAL        0x1d
+#define MEMORY_SWAP_INITIAL_MB     0x1e
 #define MEMORY_OK                  0x7
 #define MEMORY_CANCEL              0x8
 

@@ -42,8 +42,40 @@ static int memory_window_vram_adjust(void)
   return (0);
 }
 
+/* The swap space taken at start can be set only when not all of it is */
+static void memory_window_swap_fade(void)
+{
+  static const ComponentId ids[] =
+    { MEMORY_SWAP_INITIAL_LABEL, MEMORY_SWAP_INITIAL, MEMORY_SWAP_INITIAL_MB };
+  int all, i;
+  unsigned int flags;
+
+  raise_error(optionbutton_get_state(0, memory_window, MEMORY_SWAP_ALL, &all));
+  for (i = 0; i < 3; i++)
+  {
+    raise_error(gadget_get_flags(0, memory_window, ids[i], &flags));
+    flags = all ? (flags | Gadget_Faded) : (flags & ~Gadget_Faded);
+    raise_error(gadget_set_flags(0, memory_window, ids[i], flags));
+  }
+}
+
+static int memory_window_option_changed(int event_code, ToolboxEvent *event,
+                                        IdBlock *id_block, void *handle)
+{
+  NotUsed (handle);
+  NotUsed (event);
+  NotUsed (event_code);
+
+  if (id_block->self_component == MEMORY_SWAP_ALL)
+    memory_window_swap_fade();
+  else
+    memory_window_vram_adjust();
+  return (1);
+}
+
 void update_memory_window(void)
 {
+  int all;
   _kernel_swi_regs r;
   int temp =0;
 
@@ -60,6 +92,15 @@ void update_memory_window(void)
   raise_error(stringset_set_selected(0,memory_window,MEMORY_USER_SELECTED,buffer));
   raise_error(numberrange_set_value(0,memory_window,MEMORY_DISPLAY_MIN,config.memory.display_min));
   raise_error(optionbutton_set_state(0,memory_window,MEMORY_INCLUDEVRAM,config.memory.includevram));
+
+  /* SwapInitial is left out (all of it) unless it was set to less */
+  all = !config.memory.swapinitial_set || config.memory.swapinitial < 0 ||
+        config.memory.swapinitial >= config.memory.swapsize;
+  raise_error(numberrange_set_value(0,memory_window,MEMORY_SWAP_SIZE,config.memory.swapsize));
+  raise_error(optionbutton_set_state(0,memory_window,MEMORY_SWAP_ALL,all));
+  raise_error(numberrange_set_value(0,memory_window,MEMORY_SWAP_INITIAL,
+              all ? config.memory.swapsize : config.memory.swapinitial));
+  memory_window_swap_fade();
 
   raise_error(_kernel_swi(OS_ReadMemMapInfo,&r,&r));
   sprintf(buffer,"%d\0",(r.r[0]*r.r[1])/1024/1024);
@@ -107,6 +148,18 @@ int memory_window_click_handler(int event_code, ToolboxEvent *event, IdBlock *id
       raise_error(optionbutton_get_state(0,memory_window,MEMORY_INCLUDEVRAM,&tmp_config.memory.includevram));
       raise_error(numberrange_get_value(0,memory_window,MEMORY_DISPLAY_MIN,&tmp_config.memory.display_min));
 
+      {
+        int all;
+
+        raise_error(numberrange_get_value(0,memory_window,MEMORY_SWAP_SIZE,&tmp_config.memory.swapsize));
+        raise_error(optionbutton_get_state(0,memory_window,MEMORY_SWAP_ALL,&all));
+        raise_error(numberrange_get_value(0,memory_window,MEMORY_SWAP_INITIAL,&tmp_config.memory.swapinitial));
+        tmp_config.memory.swapinitial_set =
+          !all && tmp_config.memory.swapinitial < tmp_config.memory.swapsize;
+        if (!tmp_config.memory.swapinitial_set)
+          tmp_config.memory.swapinitial = 0;
+      }
+
       /* Find nearest legal memory allocation */
       for(count = 0; count <= 15; count++)
       {
@@ -134,7 +187,7 @@ void do_memory_initialise(void)
   raise_error(event_register_toolbox_handler(memory_window,NumberRange_ValueChanged,memory_window_handler,0));
   raise_error(event_register_toolbox_handler(memory_window,ActionButton_Selected, memory_window_click_handler,0));
   raise_error(event_register_toolbox_handler(memory_window,StringSet_ValueChanged, (ToolboxEventHandler*)memory_window_vram_adjust,0));
-  raise_error(event_register_toolbox_handler(memory_window,OptionButton_StateChanged, (ToolboxEventHandler*)memory_window_vram_adjust,0));
+  raise_error(event_register_toolbox_handler(memory_window,OptionButton_StateChanged, memory_window_option_changed,0));
 
   update_memory_window();
 }
