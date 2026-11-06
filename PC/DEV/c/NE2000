@@ -13,8 +13,11 @@
 *     10-05-95	      1.77 New PCNE2 using callbacks
 *     02-06-95	      1.80 '0x42' in ethernet address bug
 *     01-03-96	      1.995 Clear IRQ bit for NE2000 autodetect
+*     06-11-26 JB     3.09 A fast path: frame rings in the PC's memory
 */
 #define DEBUG 0
+
+#include <string.h>
 
 #include "kernel.h"
 
@@ -24,6 +27,7 @@
 #include "sys.h.transfer"  /* For BlockIn/Out routines */
 #include "module.h.pcne2"
 #include "dev.h.ne2000"
+#include "cpu.h.cpu"       /* For CPU_PCtoARMaddr, CPU_PCtoARMcheck */
 
 /* I/O ports */
 
@@ -207,6 +211,10 @@ static BYTE             *NE2_RAMbuf;
 static bool              NE2_Enabled;
 static bool              NE2_IntActive = false;
 
+/* The fast path (see 'Fast path', below) */
+static bool PV_Active = false;
+static void PV_Notify ( void );
+
 
 /* Misc routines =============================================== */
 
@@ -254,8 +262,15 @@ static void ResetNE2State ( void )
 
 static void NetIntCheck ( void )
 {
-  register int t = NE2_Regs[ISR] | NE2_Hdr->TxIntStatus |
-                    NE2_Hdr->RxIntStatus;
+  register int t;
+
+  if ( PV_Active )
+  {
+    PV_Notify();
+    return;
+  }
+
+  t = NE2_Regs[ISR] | NE2_Hdr->TxIntStatus | NE2_Hdr->RxIntStatus;
 
 #if DEBUG
   static int lastt=0;
@@ -700,11 +715,641 @@ static int  NE2_In16 ( int addr )
 
 /* ---------------------------------------- */
 
+/* Fast path ==============================================================
+
+   A driver that knows of it can use the same card - the same PCNE2
+   connection, Ethernet address and interrupt - without the 8390: frames
+   go both ways through two rings in the PC's own memory, which the ARM
+   reads and writes directly. A frame then costs the PC one port write to
+   send, and a batch of them one port read to receive, where the 8390's
+   remote DMA costs a mailbox access for every word. A driver that does
+   not know of it sees an NE2000 as before.
+
+   Ports, 16-bit:
+
+     PV_CMD   write: command; read: PV_ID if the fast path is there
+     PV_PARLO write: parameter bits 0-15; read: PV_VERSION
+     PV_PARHI write: parameter bits 16-31
+     PV_KICK  write: frames are waiting to be sent; the value is the low
+              16 bits of the new tx_head (see 'Write interlock'). Not
+              needed while tx_busy is set: the ARM is already sending, and
+              looks for more before it clears it.
+              read: what interrupted (PVINT_*), which also clears the
+              interrupt
+
+   Commands:
+
+     PVCMD_ATTACH  parameter = PC physical address of the shared block,
+                   word aligned. The PC fills in the block with status 0
+                   and writes the magic word last. The ARM checks it,
+                   empties both rings, gives the Ethernet address, sets
+                   status to 1 (or a negative PVERR_*), and starts
+                   receiving.
+     PVCMD_DETACH  stop, and go back to being an NE2000.
+     PVCMD_RXOPTS  parameter = RCR_BROADCAST/MULTICAST/PROMISC, with the
+                   multicast filter in the block.
+     PVCMD_RXKICK  the PC has made room in the receive ring after the ARM
+                   found it full (rx_stalled).
+
+   The shared block, little-endian words, in memory the PC does not cache:
+
+     W_MAGIC .. W_SIZE   set by the PC before attaching
+     tx_head, rx_tail, flags, rx_stalled (cleared)   written by the PC
+     tx_tail, tx_busy, rx_head, rx_stalled (set), status, mac, counters
+                                                           by the ARM
+
+   Each ring holds records: a word with the frame's length in its low 16
+   bits, then the frame (from its destination address, no CRC), padded to
+   a word. Heads and tails count bytes and are never wrapped; a record
+   sits at (count & (size-1)) and may wrap round the end of the ring.
+   Sizes are powers of two.
+
+   Write interlock. On the Gemini card the PC's stores reach memory
+   through a write FIFO, but its I/O reaches the ARM at once, so a kick
+   can arrive before the frames it is about. The PC writes the frames,
+   then tx_head, then the kick with tx_head's low bits; the ARM waits for
+   tx_head to reach that value, and the FIFO keeps the writes in order, so
+   by then the frames are there too. Attaching waits for the magic word
+   in the same way.
+
+   Receiving uses PCNE2 as the NE2000 does: it writes each frame into its
+   RAM at RxCURR. Here that RAM is just a staging ring, pages
+   PV_RX_PSTART-PV_RX_PSTOP, which PV_RxDrain empties into the PC's ring.
+   Frames to send are copied into pages PV_TX_PAGE onwards and given to
+   PCNE2_Transmit, which sends at once.
+*/
+
+#define PV_FIRST        0x310   /* 0x300-7 are HPC's, 0x308-B Windrv's */
+#define PV_LAST         0x317
+#define PV_CMD          (PV_FIRST+0)
+#define PV_PARLO        (PV_FIRST+2)
+#define PV_PARHI        (PV_FIRST+4)
+#define PV_KICK         (PV_FIRST+6)
+
+#define PV_ID           0x4E50   /* "PN" */
+#define PV_VERSION      1
+
+#define PVCMD_ATTACH    1
+#define PVCMD_DETACH    2
+#define PVCMD_RXOPTS    3
+#define PVCMD_RXKICK    4
+
+#define PVINT_RX        1        /* frames in the receive ring */
+#define PVINT_TXSPACE   2        /* room in the send ring, as asked for */
+
+#define PVF_TXSPACE     1        /* flags: interrupt when frames are sent */
+
+#define PVERR_MAGIC     (-1)     /* status values */
+#define PVERR_LAYOUT    (-2)
+
+#define PV_MAGIC        0x4E435041  /* "APCN" */
+
+/* Word offsets in the shared block */
+#define W_MAGIC         0
+#define W_VERSION       1
+#define W_SIZE          2        /* of the whole block, bytes */
+#define W_TXOFF         3
+#define W_TXSIZE        4
+#define W_RXOFF         5
+#define W_RXSIZE        6
+#define W_TXHEAD        7
+#define W_TXTAIL        8
+#define W_RXHEAD        9
+#define W_RXTAIL        10
+#define W_FLAGS         11
+#define W_RXSTALLED     12
+#define W_STATUS        13
+#define W_MAC0          14       /* bytes 0-3 */
+#define W_MAC1          15       /* bytes 4-5 */
+#define W_MCAST0        16       /* the 8390's multicast filter */
+#define W_MCAST1        17
+#define W_TXFRAMES      18
+#define W_TXERRORS      19
+#define W_RXFRAMES      20
+#define W_RXDROPPED     21
+#define W_TXBUSY        22       /* the ARM is sending: no kick needed */
+#define W_HDRWORDS      32
+
+#define PV_MAXFRAME     1514
+#define PV_SPINS        200000   /* Some tens of ms */
+
+/* PCNE2's RAM: frames to send from page 40h, received into 46h-7Fh */
+#define PV_TX_PAGE      0x40
+#define PV_RX_PSTART    0x46
+#define PV_RX_PSTOP     0x80
+
+static volatile unsigned *PV_Sh;  /* The shared block, as the ARM sees it */
+static BYTE    *PV_TxRing, *PV_RxRing;
+static unsigned PV_TxSize, PV_RxSize;
+static int      PV_ParLo, PV_ParHi;
+static int      PV_TxKick;        /* tx_head's low bits from the last kick */
+static bool     PV_KickWaiting;   /* PV_TxWork should wait for PV_TxKick */
+static int      PV_IntCause;
+static bool     PV_IntUp;
+static bool     PV_Busy, PV_Again;
+static BYTE     PV_MultiMask[8];
+static Callback PV_TxCB, PV_RxCB;
+static int      PV_Waits, PV_Timeouts;
+
+/* Ring copies, either way round the end ----------------------------- */
+
+static void PV_RingWrite ( BYTE *ring, unsigned size, unsigned pos,
+                           BYTE *src, unsigned len )
+{
+  unsigned off = pos & (size-1);
+  unsigned first = size - off;
+
+  if ( first > len )
+    first = len;
+  memcpy ( ring + off, src, first );
+  if ( len > first )
+    memcpy ( ring, src + first, len - first );
+}
+
+static void PV_RingRead ( BYTE *dst, BYTE *ring, unsigned size,
+                          unsigned pos, unsigned len )
+{
+  unsigned off = pos & (size-1);
+  unsigned first = size - off;
+
+  if ( first > len )
+    first = len;
+  memcpy ( dst, ring + off, first );
+  if ( len > first )
+    memcpy ( dst + first, ring, len - first );
+}
+
+static unsigned PV_RingWord ( BYTE *ring, unsigned size, unsigned pos )
+{
+  return *(volatile unsigned *)(ring + (pos & (size-1)));
+}
+
+/* Interrupts --------------------------------------------------------- */
+
+static void PV_Raise ( int cause )
+{
+  PV_IntCause |= cause;
+  if ( !PV_IntUp )
+  {
+    PV_IntUp = true;
+    SYS_Interrupt ( NE2_IntNum );
+  }
+}
+
+static int PV_TakeCause ( void )
+{
+  int cause = PV_IntCause;
+
+  PV_IntCause = 0;
+  if ( PV_IntUp )
+  {
+    PV_IntUp = false;
+    SYS_Interrupt ( NE2_IntNum | IRQ_CLEAR_BIT );
+  }
+  return cause;
+}
+
+/* Receiving ---------------------------------------------------------- */
+
+/* Copies one frame's data out of PCNE2's staging ring, which wraps from
+   PV_RX_PSTOP back to PV_RX_PSTART */
+
+static void PV_StagingRead ( BYTE *dst, unsigned addr, unsigned len )
+{
+  unsigned start = PV_RX_PSTART << 8, stop = PV_RX_PSTOP << 8;
+
+  while ( len > 0 )
+  {
+    unsigned seg;
+
+    if ( addr >= stop )
+      addr = start + (addr - stop);
+    seg = stop - addr;
+    if ( seg > len )
+      seg = len;
+    memcpy ( dst, NE2_RAMbuf + (addr & RAM_AMASK), seg );
+    dst  += seg;
+    addr += seg;
+    len  -= seg;
+  }
+}
+
+/* Moves whatever PCNE2 has received into the PC's ring. May be entered
+   again from a callback while it runs: then it just says so, and the
+   outer one goes round again. */
+
+static void PV_RxDrain ( void )
+{
+  struct BufHeader *pH = NE2_Hdr;
+  int intstate;
+
+  intstate = _kernel_irqs_disabled();
+  _kernel_irqs_off();
+  if ( PV_Busy )
+  {
+    PV_Again = true;
+    if ( !intstate ) _kernel_irqs_on();
+    return;
+  }
+  PV_Busy = true;
+  if ( !intstate ) _kernel_irqs_on();
+
+  do
+  {
+    unsigned head, tail, delivered = 0;
+    int curr;
+
+    PV_Again = false;
+    if ( !PV_Active )
+      break;
+
+    head = PV_Sh[W_RXHEAD];
+    tail = PV_Sh[W_RXTAIL];
+    curr = pH->RxCURR;
+
+    while ( pH->RxBNDRY != curr )
+    {
+      BYTE *p = NE2_RAMbuf + ((pH->RxBNDRY << 8) & RAM_AMASK);
+      int next = p[1];
+      unsigned len = (p[2] | (p[3] << 8)) - 4;
+      unsigned rec = (4 + len + 3) & ~3u;
+      unsigned word;
+
+      if ( len < 14 || len > PV_MAXFRAME + 4 ||
+           next < PV_RX_PSTART || next >= PV_RX_PSTOP )
+      {
+        SYS_trace("NE2000 fast path: bad frame in staging ring, dropped");
+        pH->RxBNDRY = curr;
+        PV_Sh[W_RXDROPPED]++;
+        break;
+      }
+
+      if ( PV_RxSize - (head - tail) < rec )
+      {
+        /* No room: the PC sends PVCMD_RXKICK when it has made some */
+        PV_Sh[W_RXSTALLED] = 1;
+        tail = PV_Sh[W_RXTAIL];
+        if ( PV_RxSize - (head - tail) < rec )
+          break;
+      }
+
+      word = len;
+      PV_RingWrite ( PV_RxRing, PV_RxSize, head, (BYTE *)&word, 4 );
+      {
+        /* Into the ring directly when it doesn't wrap there */
+        unsigned off = (head + 4) & (PV_RxSize-1);
+
+        if ( off + len <= PV_RxSize )
+          PV_StagingRead ( PV_RxRing + off, (pH->RxBNDRY << 8) + 4, len );
+        else
+        {
+          PV_StagingRead ( SYS_TempBuf, (pH->RxBNDRY << 8) + 4, len );
+          PV_RingWrite ( PV_RxRing, PV_RxSize, head + 4, SYS_TempBuf,
+                         len );
+        }
+      }
+      head += rec;
+      pH->RxBNDRY = next;
+      delivered++;
+    }
+
+    if ( delivered != 0 )
+    {
+      /* The ring's contents first, then its head, then the interrupt */
+      PV_Sh[W_RXHEAD] = head;
+      PV_Sh[W_RXFRAMES] += delivered;
+      PV_Raise ( PVINT_RX );
+    }
+  }
+  while ( PV_Again );
+
+  PV_Busy = false;
+  pH->RxIntStatus = 0;
+}
+
+/* Called when PCNE2 has received or sent something, and from the poll */
+
+static void PV_Notify ( void )
+{
+  NE2_Hdr->TxIntStatus = 0;
+  PV_RxDrain();
+}
+
+static void PV_RxWork ( int x )
+{
+  NotUsed(x);
+  PV_RxDrain();
+}
+
+/* Sending ------------------------------------------------------------ */
+
+static void PV_TxWork ( int x )
+{
+  unsigned head, tail;
+  int spins = 0;
+  NotUsed(x);
+
+  if ( !PV_Active )
+    return;
+
+  if ( PV_KickWaiting )
+  {
+    PV_KickWaiting = false;
+    while ( (PV_Sh[W_TXHEAD] & 0xFFFF) != PV_TxKick )
+    {
+      if ( ++spins >= PV_SPINS )
+      {
+        if ( ++PV_Timeouts <= 10 )
+          SYS_trace("NE2000 fast path: tx_head %X never came",
+                    PV_TxKick);
+        break;
+      }
+    }
+    if ( spins > 0 && spins < PV_SPINS && ++PV_Waits <= 10 )
+      SYS_trace("NE2000 fast path: waited %d spins for frames", spins);
+  }
+
+  tail = PV_Sh[W_TXTAIL];
+
+  for (;;)
+  {
+    head = PV_Sh[W_TXHEAD];
+
+    while ( tail != head )
+    {
+      unsigned len = PV_RingWord ( PV_TxRing, PV_TxSize, tail ) & 0xFFFF;
+      unsigned rec = (4 + len + 3) & ~3u;
+
+      if ( len < 14 || len > PV_MAXFRAME || rec > head - tail )
+      {
+        SYS_trace("NE2000 fast path: bad record (length %d), ring reset",
+                  len);
+        PV_Sh[W_TXERRORS]++;
+        tail = head;
+        break;
+      }
+
+      PV_RingRead ( NE2_RAMbuf + ((PV_TX_PAGE << 8) & RAM_AMASK),
+                    PV_TxRing, PV_TxSize, tail + 4, len );
+      regs(0) = (PV_TX_PAGE << 8) & RAM_AMASK;
+      regs(1) = len;
+      SWI ( PCNE2_Transmit );
+      if ( regs(0) == 0 )
+        PV_Sh[W_TXFRAMES]++;
+      else
+        PV_Sh[W_TXERRORS]++;
+
+      tail += rec;
+    }
+
+    PV_Sh[W_TXTAIL] = tail;
+
+    /* Kicks resume once tx_busy is clear, so look once more after
+       clearing it: anything queued before then is sent now. */
+    PV_Sh[W_TXBUSY] = 0;
+    if ( PV_Sh[W_TXHEAD] == tail )
+      break;
+    PV_Sh[W_TXBUSY] = 1;
+  }
+
+  NE2_Hdr->TxIntStatus = 0;
+
+  if ( PV_Sh[W_FLAGS] & PVF_TXSPACE )
+    PV_Raise ( PVINT_TXSPACE );
+}
+
+/* Attaching and detaching -------------------------------------------- */
+
+static bool PV_PowerOfTwo ( unsigned x )
+{
+  return x != 0 && (x & (x-1)) == 0;
+}
+
+static void PV_Detach ( void )
+{
+  if ( !PV_Active )
+    return;
+  PV_Active = false;
+  (void) PV_TakeCause();
+  PV_Sh = NULL;
+  ResetNE2State();    /* An NE2000 again, stopped */
+  SYS_trace("NE2000 fast path: detached");
+}
+
+static void PV_Attach ( unsigned addr )
+{
+  volatile unsigned *sh;
+  unsigned size, txoff, txsize, rxoff, rxsize;
+  int spins = 0;
+  char *mac = NE2_Hdr->NetAddr;
+
+  PV_Detach();
+
+  if ( (addr & 3) != 0 || CPU_PCtoARMcheck ( addr, W_HDRWORDS*4 ) <
+                          W_HDRWORDS*4 )
+  {
+    SYS_trace("NE2000 fast path: no memory at %X", addr);
+    return;
+  }
+  sh = (volatile unsigned *) CPU_PCtoARMaddr ( addr );
+
+  /* The PC writes the magic word last: wait for it (Write interlock) */
+  while ( sh[W_MAGIC] != PV_MAGIC )
+  {
+    if ( ++spins >= PV_SPINS )
+    {
+      SYS_trace("NE2000 fast path: no magic at %X", addr);
+      sh[W_STATUS] = (unsigned) PVERR_MAGIC;
+      return;
+    }
+  }
+
+  size   = sh[W_SIZE];
+  txoff  = sh[W_TXOFF];
+  txsize = sh[W_TXSIZE];
+  rxoff  = sh[W_RXOFF];
+  rxsize = sh[W_RXSIZE];
+
+  if ( sh[W_VERSION] != PV_VERSION ||
+       size > 0x100000 || CPU_PCtoARMcheck ( addr, size ) < size ||
+       !PV_PowerOfTwo(txsize) || !PV_PowerOfTwo(rxsize) ||
+       txsize < 2048 || rxsize < 2048 ||
+       (txoff & 3) != 0 || (rxoff & 3) != 0 ||
+       txoff < W_HDRWORDS*4 || rxoff < W_HDRWORDS*4 ||
+       txoff + txsize > size || rxoff + rxsize > size ||
+       (txoff < rxoff + rxsize && rxoff < txoff + txsize) )
+  {
+    SYS_trace("NE2000 fast path: bad layout at %X", addr);
+    sh[W_STATUS] = (unsigned) PVERR_LAYOUT;
+    return;
+  }
+
+  PV_Sh     = sh;
+  PV_TxRing = (BYTE *) sh + txoff;
+  PV_RxRing = (BYTE *) sh + rxoff;
+  PV_TxSize = txsize;
+  PV_RxSize = rxsize;
+
+  sh[W_TXTAIL]     = sh[W_TXHEAD];
+  sh[W_RXHEAD]     = sh[W_RXTAIL];
+  sh[W_RXSTALLED]  = 0;
+  sh[W_TXBUSY]     = 0;
+  sh[W_TXFRAMES]   = sh[W_TXERRORS] = 0;
+  sh[W_RXFRAMES]   = sh[W_RXDROPPED] = 0;
+  sh[W_MAC0] = (mac[0] & 0xFF) | ((mac[1] & 0xFF) << 8) |
+               ((mac[2] & 0xFF) << 16) | ((unsigned)(mac[3] & 0xFF) << 24);
+  sh[W_MAC1] = (mac[4] & 0xFF) | ((mac[5] & 0xFF) << 8);
+
+  /* PCNE2's RAM as a staging ring, emptied */
+  NE2_Enable(false);
+  NE2_Hdr->RxPSTART = PV_RX_PSTART;
+  NE2_Hdr->RxPSTOP  = PV_RX_PSTOP;
+  NE2_Hdr->RxCURR   = PV_RX_PSTART;
+  NE2_Hdr->RxBNDRY  = PV_RX_PSTART;
+  NE2_Hdr->RxIntStatus = NE2_Hdr->TxIntStatus = 0;
+  if ( NE2_IntActive )
+  {
+    NE2_IntActive = false;
+    SYS_Interrupt ( NE2_IntNum | IRQ_CLEAR_BIT );
+  }
+
+  PV_IntCause = 0;
+  PV_IntUp = false;
+  PV_KickWaiting = false;
+  PV_Busy = PV_Again = false;
+  PV_Active = true;
+
+  regs(0) = RCR_BROADCAST;
+  SWI ( PCNE2_SetRxOptions );
+  NE2_Enable(true);
+
+  sh[W_STATUS] = 1;
+  SYS_trace("NE2000 fast path: attached at %X, rings %X+%X, %X+%X",
+            addr, txoff, txsize, rxoff, rxsize);
+}
+
+static void PV_SetRxOptions ( int rcr )
+{
+  unsigned m0, m1;
+  int i;
+
+  if ( !PV_Active )
+    return;
+  m0 = PV_Sh[W_MCAST0];
+  m1 = PV_Sh[W_MCAST1];
+  for ( i = 0; i < 4; i++ )
+  {
+    PV_MultiMask[i]   = (m0 >> (8*i)) & 0xFF;
+    PV_MultiMask[i+4] = (m1 >> (8*i)) & 0xFF;
+  }
+  regs(0) = rcr & (RCR_BROADCAST | RCR_MULTICAST | RCR_PROMISC);
+  regs(1) = (int) PV_MultiMask;
+  if ( (m0 | m1) == 0 )
+    regs(0) &= ~RCR_MULTICAST;
+  SWI ( PCNE2_SetRxOptions );
+}
+
+/* I/O handlers -------------------------------------------------------- */
+
+static void PV_Out16 ( int addr, int data )
+{
+  data &= 0xFFFF;
+  switch ( addr )
+  {
+    case PV_PARLO:
+      PV_ParLo = data;
+      return;
+
+    case PV_PARHI:
+      PV_ParHi = data;
+      return;
+
+    case PV_KICK:
+      if ( PV_Active )
+      {
+        PV_Sh[W_TXBUSY] = 1;   /* Before the PC goes on: no more kicks */
+        PV_TxKick = data;
+        PV_KickWaiting = true;
+        SYS_SetCallback ( &PV_TxCB, PV_TxWork, 0 );
+      }
+      return;
+
+    case PV_CMD:
+      switch ( data )
+      {
+        case PVCMD_ATTACH:
+          PV_Attach ( (unsigned) PV_ParLo | ((unsigned) PV_ParHi << 16) );
+          return;
+        case PVCMD_DETACH:
+          PV_Detach();
+          return;
+        case PVCMD_RXOPTS:
+          PV_SetRxOptions ( PV_ParLo );
+          return;
+        case PVCMD_RXKICK:
+          if ( PV_Active )
+            SYS_SetCallback ( &PV_RxCB, PV_RxWork, 0 );
+          return;
+      }
+      break;
+  }
+  SYS_trace("NE2000 fast path: OUT %Xh = %Xh", addr, data);
+}
+
+static void PV_Out8 ( int addr, int data )
+{
+  NotUsed(addr);
+  NotUsed(data);  /* All the ports are 16-bit */
+}
+
+static int PV_In16 ( int addr )
+{
+  switch ( addr )
+  {
+    case PV_CMD:
+      return PV_ID;
+    case PV_PARLO:
+      return PV_VERSION;
+    case PV_KICK:
+      return PV_TakeCause();
+  }
+  return 0xFFFF;
+}
+
+static int PV_In8 ( int addr )
+{
+  NotUsed(addr);
+  return 0xFF;
+}
+
+/* The poll: anything a lost kick or callback left behind */
+
+static void PV_Poll ( void )
+{
+  if ( PV_Sh[W_TXHEAD] != PV_Sh[W_TXTAIL] )
+  {
+    PV_Sh[W_TXBUSY] = 1;
+    SYS_SetCallback ( &PV_TxCB, PV_TxWork, 0 );
+  }
+  PV_RxDrain();
+}
+
+static bool PV_Reset ( void )
+{
+  PV_Detach();
+  return false;
+}
+
+/* ---------------------------------------- */
+
 static bool NE2_Poll ( void )
 {
   /* This is put in in case the module is, for whatever reason,
      unable to call us back */
-  NetIntCheck();
+  if ( PV_Active )
+    PV_Poll();
+  else
+    NetIntCheck();
   return false;
 }
 
@@ -769,6 +1414,10 @@ extern bool NE2_Init ( void )
   SYS_registerIO ( NE2_FIRST, NE2_LAST,
                      NE2_In8, NE2_In16, NE2_Out8, NE2_Out16, 0 );
   SYS_registerEvent ( SYS_Shutdown, NE2_Shutdown, 0 );
+
+  /* The fast path, beside it */
+  SYS_registerIO ( PV_FIRST, PV_LAST, PV_In8, PV_In16, PV_Out8, PV_Out16, 0 );
+  SYS_registerEvent ( SYS_HardReset, PV_Reset, 0 );
 
   ResetNE2State();
 
