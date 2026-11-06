@@ -741,10 +741,11 @@ static int  NE2_In16 ( int addr )
 
      PVCMD_ATTACH  parameter = PC physical address of the shared block,
                    word aligned. The PC fills in the block with status 0
-                   and writes the magic word last. The ARM checks it,
-                   empties both rings, gives the Ethernet address, sets
-                   status to 1 (or a negative PVERR_*), and starts
-                   receiving.
+                   and writes the magic word last. Shortly after (on a
+                   callback), the ARM checks it, empties both rings, gives
+                   the Ethernet address, sets status to 1 (or a negative
+                   PVERR_*), and starts receiving. The PC waits for the
+                   status to change.
      PVCMD_DETACH  stop, and go back to being an NE2000.
      PVCMD_RXOPTS  parameter = RCR_BROADCAST/MULTICAST/PROMISC, with the
                    multicast filter in the block.
@@ -770,7 +771,12 @@ static int  NE2_In16 ( int addr )
    then tx_head, then the kick with tx_head's low bits; the ARM waits for
    tx_head to reach that value, and the FIFO keeps the writes in order, so
    by then the frames are there too. Attaching waits for the magic word
-   in the same way.
+   in the same way. The waiting is done on a callback, never in the port
+   handler: the FIFO does not empty while the PC is held in the mailbox
+   on the port write, so a wait there could only time out (as HPC 1.1's
+   does, on its callback). So commands that read the block (ATTACH,
+   RXOPTS) are carried out a little after the port write, and the PC
+   waits for the status word.
 
    Receiving uses PCNE2 as the NE2000 does: it writes each frame into its
    RAM at RxCURR. Here that RAM is just a staging ring, pages
@@ -848,7 +854,11 @@ static int      PV_IntCause;
 static bool     PV_IntUp;
 static bool     PV_Busy, PV_Again;
 static BYTE     PV_MultiMask[8];
-static Callback PV_TxCB, PV_RxCB;
+static Callback PV_TxCB, PV_RxCB, PV_CmdCB;
+static unsigned PV_AttachAddr;    /* Commands waiting for PV_CmdWork */
+static bool     PV_AttachPending;
+static int      PV_RxOpts;
+static bool     PV_RxOptsPending;
 static int      PV_Waits, PV_Timeouts;
 
 /* Ring copies, either way round the end ----------------------------- */
@@ -1249,6 +1259,24 @@ static void PV_SetRxOptions ( int rcr )
   SWI ( PCNE2_SetRxOptions );
 }
 
+/* Commands that read the shared block, after the PC has gone on (see
+   'Write interlock') */
+
+static void PV_CmdWork ( int x )
+{
+  NotUsed(x);
+  if ( PV_AttachPending )
+  {
+    PV_AttachPending = false;
+    PV_Attach ( PV_AttachAddr );
+  }
+  if ( PV_RxOptsPending )
+  {
+    PV_RxOptsPending = false;
+    PV_SetRxOptions ( PV_RxOpts );
+  }
+}
+
 /* I/O handlers -------------------------------------------------------- */
 
 static void PV_Out16 ( int addr, int data )
@@ -1278,13 +1306,21 @@ static void PV_Out16 ( int addr, int data )
       switch ( data )
       {
         case PVCMD_ATTACH:
-          PV_Attach ( (unsigned) PV_ParLo | ((unsigned) PV_ParHi << 16) );
+          PV_Detach();
+          PV_AttachAddr = (unsigned) PV_ParLo | ((unsigned) PV_ParHi << 16);
+          PV_AttachPending = true;
+          PV_RxOptsPending = false;
+          SYS_SetCallback ( &PV_CmdCB, PV_CmdWork, 0 );
           return;
         case PVCMD_DETACH:
+          PV_AttachPending = false;
+          PV_RxOptsPending = false;
           PV_Detach();
           return;
         case PVCMD_RXOPTS:
-          PV_SetRxOptions ( PV_ParLo );
+          PV_RxOpts = PV_ParLo;
+          PV_RxOptsPending = true;
+          SYS_SetCallback ( &PV_CmdCB, PV_CmdWork, 0 );
           return;
         case PVCMD_RXKICK:
           if ( PV_Active )
