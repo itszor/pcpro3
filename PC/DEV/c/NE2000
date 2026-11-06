@@ -27,7 +27,6 @@
 #include "sys.h.transfer"  /* For BlockIn/Out routines */
 #include "module.h.pcne2"
 #include "dev.h.ne2000"
-#include "cpu.h.cpu"       /* For CPU_PCtoARMaddr, CPU_PCtoARMcheck */
 
 /* I/O ports */
 
@@ -719,15 +718,17 @@ static int  NE2_In16 ( int addr )
 
    A driver that knows of it can use the same card - the same PCNE2
    connection, Ethernet address and interrupt - without the 8390: frames
-   go both ways through two rings in the PC's own memory, which the ARM
-   reads and writes directly. A frame then costs the PC one port write to
+   go both ways through two rings in memory shared by the PC and the ARM,
+   which the ARM reads and writes directly. A frame then costs the PC one port write to
    send, and a batch of them one port read to receive, where the 8390's
    remote DMA costs a mailbox access for every word. A driver that does
    not know of it sees an NE2000 as before.
 
    Ports, 16-bit:
 
-     PV_CMD   write: command; read: PV_ID if the fast path is there
+     PV_CMD   write: command; read: PV_ID if the fast path is there, or
+              after PVCMD_WHERE, the shared block's address >> 4 and then
+              its length >> 4
      PV_PARLO write: parameter bits 0-15; read: PV_VERSION
      PV_PARHI write: parameter bits 16-31; read: how the last attach went
               (PVA_*), as the status word says, but through the mailbox:
@@ -741,8 +742,16 @@ static int  NE2_In16 ( int addr )
 
    Commands:
 
-     PVCMD_ATTACH  parameter = PC physical address of the shared block,
-                   word aligned. The PC fills in the block with status 0
+     PVCMD_WHERE   the next two reads of PV_CMD give the shared block's
+                   PC address >> 4 (0 if there is none) and its length >>
+                   4. It is in the E0000-EFFFF window: 32K if the Windows
+                   driver isn't given any (SharedMemFlags bit 2), else 16K, from CPU_AllocSharedMem
+                   as HPC's buffers are: on a real card the Gemini's L2
+                   cache holds the PC's ordinary RAM (CFGR_RAM_CACHED) and
+                   does not see the ARM write to it, whatever the PC's page
+                   tables say, while this window it leaves alone.
+     PVCMD_ATTACH  parameter = the shared block's PC address, from
+                   PVCMD_WHERE. The PC fills in the block with status 0
                    and writes the magic word last. Shortly after (on a
                    callback), the ARM checks it, empties both rings, gives
                    the Ethernet address, sets status to 1 (or a negative
@@ -763,9 +772,9 @@ static int  NE2_In16 ( int addr )
 
    Each ring holds records: a word with the frame's length in its low 16
    bits, then the frame (from its destination address, no CRC), padded to
-   a word. Heads and tails count bytes and are never wrapped; a record
-   sits at (count & (size-1)) and may wrap round the end of the ring.
-   Sizes are powers of two.
+   a word. Heads and tails are byte offsets in the ring, wrapping at its
+   size, which is a multiple of 4; a record may wrap round the end. A ring
+   is empty when head == tail, so it is never filled to the last word.
 
    Write interlock. On the Gemini card the PC's stores reach memory
    through a write FIFO, but its I/O reaches the ARM at once, so a kick
@@ -795,12 +804,17 @@ static int  NE2_In16 ( int addr )
 #define PV_KICK         (PV_FIRST+6)
 
 #define PV_ID           0x4E50   /* "PN" */
-#define PV_VERSION      1
+#define PV_VERSION      3        /* 1 had the rings in the PC's own RAM,
+                                    2 power-of-two rings in a 16K block */
+
+#define PV_SHM_LEN      0x4000   /* The shared block: 16K, or */
+#define PV_SHM_BIGLEN   0x8000   /*   32K when Windrv has none */
 
 #define PVCMD_ATTACH    1
 #define PVCMD_DETACH    2
 #define PVCMD_RXOPTS    3
 #define PVCMD_RXKICK    4
+#define PVCMD_WHERE     5
 
 #define PVINT_RX        1        /* frames in the receive ring */
 #define PVINT_TXSPACE   2        /* room in the send ring, as asked for */
@@ -809,7 +823,7 @@ static int  NE2_In16 ( int addr )
 
 #define PVERR_MAGIC     (-1)     /* status values */
 #define PVERR_LAYOUT    (-2)
-#define PVERR_ADDRESS   (-3)     /* not PC memory: given by PV_PARHI only */
+#define PVERR_ADDRESS   (-3)     /* not the shared block */
 
 #define PVA_NONE        0        /* PV_PARHI's reading: no attach asked */
 #define PVA_ATTACHED    1        /*   attached; or a PVERR_* */
@@ -867,14 +881,35 @@ static bool     PV_AttachPending;
 static int      PV_RxOpts;
 static bool     PV_RxOptsPending;
 static int      PV_AttachResult;  /* PVA_* or PVERR_*, for PV_PARHI */
+static BYTE    *PV_ShmARM;        /* The shared block, or NULL */
+static unsigned PV_ShmPC;         /* its PC address */
+static unsigned PV_ShmLen;
+static int      PV_WhereReads;    /* PV_CMD reads left of PVCMD_WHERE's */
 static int      PV_Waits, PV_Timeouts;
 
 /* Ring copies, either way round the end ----------------------------- */
 
+static unsigned PV_Wrap ( unsigned pos, unsigned size )
+{
+  return pos >= size ? pos - size : pos;
+}
+
+static unsigned PV_Used ( unsigned head, unsigned tail, unsigned size )
+{
+  return head >= tail ? head - tail : head + size - tail;
+}
+
+/* Room for a record: a ring is never filled to the last word */
+
+static unsigned PV_Room ( unsigned head, unsigned tail, unsigned size )
+{
+  return size - 4 - PV_Used ( head, tail, size );
+}
+
 static void PV_RingWrite ( BYTE *ring, unsigned size, unsigned pos,
                            BYTE *src, unsigned len )
 {
-  unsigned off = pos & (size-1);
+  unsigned off = PV_Wrap ( pos, size );
   unsigned first = size - off;
 
   if ( first > len )
@@ -887,7 +922,7 @@ static void PV_RingWrite ( BYTE *ring, unsigned size, unsigned pos,
 static void PV_RingRead ( BYTE *dst, BYTE *ring, unsigned size,
                           unsigned pos, unsigned len )
 {
-  unsigned off = pos & (size-1);
+  unsigned off = PV_Wrap ( pos, size );
   unsigned first = size - off;
 
   if ( first > len )
@@ -899,7 +934,7 @@ static void PV_RingRead ( BYTE *dst, BYTE *ring, unsigned size,
 
 static unsigned PV_RingWord ( BYTE *ring, unsigned size, unsigned pos )
 {
-  return *(volatile unsigned *)(ring + (pos & (size-1)));
+  return *(volatile unsigned *)(ring + PV_Wrap ( pos, size ));
 }
 
 /* Interrupts --------------------------------------------------------- */
@@ -1002,12 +1037,12 @@ static void PV_RxDrain ( void )
         break;
       }
 
-      if ( PV_RxSize - (head - tail) < rec )
+      if ( PV_Room ( head, tail, PV_RxSize ) < rec )
       {
         /* No room: the PC sends PVCMD_RXKICK when it has made some */
         PV_Sh[W_RXSTALLED] = 1;
         tail = PV_Sh[W_RXTAIL];
-        if ( PV_RxSize - (head - tail) < rec )
+        if ( PV_Room ( head, tail, PV_RxSize ) < rec )
           break;
       }
 
@@ -1015,7 +1050,7 @@ static void PV_RxDrain ( void )
       PV_RingWrite ( PV_RxRing, PV_RxSize, head, (BYTE *)&word, 4 );
       {
         /* Into the ring directly when it doesn't wrap there */
-        unsigned off = (head + 4) & (PV_RxSize-1);
+        unsigned off = PV_Wrap ( head + 4, PV_RxSize );
 
         if ( off + len <= PV_RxSize )
           PV_StagingRead ( PV_RxRing + off, (pH->RxBNDRY << 8) + 4, len );
@@ -1026,7 +1061,7 @@ static void PV_RxDrain ( void )
                          len );
         }
       }
-      head += rec;
+      head = PV_Wrap ( head + rec, PV_RxSize );
       pH->RxBNDRY = next;
       delivered++;
     }
@@ -1098,7 +1133,8 @@ static void PV_TxWork ( int x )
       unsigned len = PV_RingWord ( PV_TxRing, PV_TxSize, tail ) & 0xFFFF;
       unsigned rec = (4 + len + 3) & ~3u;
 
-      if ( len < 14 || len > PV_MAXFRAME || rec > head - tail )
+      if ( len < 14 || len > PV_MAXFRAME ||
+           rec > PV_Used ( head, tail, PV_TxSize ) )
       {
         SYS_trace("NE2000 fast path: bad record (length %d), ring reset",
                   len);
@@ -1117,7 +1153,7 @@ static void PV_TxWork ( int x )
       else
         PV_Sh[W_TXERRORS]++;
 
-      tail += rec;
+      tail = PV_Wrap ( tail + rec, PV_TxSize );
     }
 
     PV_Sh[W_TXTAIL] = tail;
@@ -1137,11 +1173,6 @@ static void PV_TxWork ( int x )
 }
 
 /* Attaching and detaching -------------------------------------------- */
-
-static bool PV_PowerOfTwo ( unsigned x )
-{
-  return x != 0 && (x & (x-1)) == 0;
-}
 
 static void PV_Detach ( void )
 {
@@ -1163,14 +1194,15 @@ static void PV_Attach ( unsigned addr )
 
   PV_Detach();
 
-  if ( (addr & 3) != 0 || CPU_PCtoARMcheck ( addr, W_HDRWORDS*4 ) <
-                          W_HDRWORDS*4 )
+  if ( PV_ShmARM == NULL || addr != PV_ShmPC )
   {
-    SYS_trace("NE2000 fast path: no memory at %X", addr);
+    SYS_trace("NE2000 fast path: %X is not the shared block", addr);
     PV_AttachResult = PVERR_ADDRESS;
+    if ( PV_ShmARM != NULL )
+      ((volatile unsigned *) PV_ShmARM)[W_STATUS] = (unsigned) PVERR_ADDRESS;
     return;
   }
-  sh = (volatile unsigned *) CPU_PCtoARMaddr ( addr );
+  sh = (volatile unsigned *) PV_ShmARM;
 
   /* The PC writes the magic word last: wait for it (Write interlock) */
   while ( sh[W_MAGIC] != PV_MAGIC )
@@ -1192,8 +1224,8 @@ static void PV_Attach ( unsigned addr )
   rxsize = sh[W_RXSIZE];
 
   if ( sh[W_VERSION] != PV_VERSION ||
-       size > 0x100000 || CPU_PCtoARMcheck ( addr, size ) < size ||
-       !PV_PowerOfTwo(txsize) || !PV_PowerOfTwo(rxsize) ||
+       size > PV_ShmLen ||
+       (txsize & 3) != 0 || (rxsize & 3) != 0 ||
        txsize < 2048 || rxsize < 2048 ||
        (txoff & 3) != 0 || (rxoff & 3) != 0 ||
        txoff < W_HDRWORDS*4 || rxoff < W_HDRWORDS*4 ||
@@ -1212,8 +1244,8 @@ static void PV_Attach ( unsigned addr )
   PV_TxSize = txsize;
   PV_RxSize = rxsize;
 
-  sh[W_TXTAIL]     = sh[W_TXHEAD];
-  sh[W_RXHEAD]     = sh[W_RXTAIL];
+  sh[W_TXTAIL]     = sh[W_TXHEAD] = 0;
+  sh[W_RXHEAD]     = sh[W_RXTAIL] = 0;
   sh[W_RXSTALLED]  = 0;
   sh[W_TXBUSY]     = 0;
   sh[W_TXFRAMES]   = sh[W_TXERRORS] = 0;
@@ -1341,6 +1373,9 @@ static void PV_Out16 ( int addr, int data )
           if ( PV_Active )
             SYS_SetCallback ( &PV_RxCB, PV_RxWork, 0 );
           return;
+        case PVCMD_WHERE:
+          PV_WhereReads = 2;
+          return;
       }
       break;
   }
@@ -1358,6 +1393,12 @@ static int PV_In16 ( int addr )
   switch ( addr )
   {
     case PV_CMD:
+      if ( PV_WhereReads > 0 )
+      {
+        if ( --PV_WhereReads == 1 )
+          return PV_ShmARM != NULL ? (int) (PV_ShmPC >> 4) : 0;
+        return PV_ShmARM != NULL ? (int) (PV_ShmLen >> 4) : 0;
+      }
       return PV_ID;
     case PV_PARLO:
       return PV_VERSION;
@@ -1421,6 +1462,34 @@ static bool NE2_SetConfig ( void )
   char *p;
 
   NE2_IntNum = CFG.NE2000Int;
+
+  /* The fast path's shared block, once */
+  if ( PV_ShmARM == NULL &&
+       (CFG.SharedMemFlags & (SM_DONT_ALLOC | SM_DONT_USE)) == 0 )
+  {
+    struct SharedMem SM;
+    bool ok;
+
+    /* Windrv's share too, when it isn't to have one */
+    SM.length = (CFG.SharedMemFlags & SM_NOT_WINDRV) ? PV_SHM_BIGLEN
+                                                     : PV_SHM_LEN;
+    ok = CPU_AllocSharedMem ( &SM );
+    if ( !ok && SM.length != PV_SHM_LEN )
+    {
+      SM.length = PV_SHM_LEN;
+      ok = CPU_AllocSharedMem ( &SM );
+    }
+    if ( ok )
+    {
+      PV_ShmARM = SM.ARMaddr;
+      PV_ShmPC  = SM.PCaddr;
+      PV_ShmLen = SM.length;
+      SYS_trace("NE2000 fast path: shared block at %X, %X bytes", PV_ShmPC,
+                PV_ShmLen);
+    }
+    else
+      SYS_trace("NE2000 fast path: no shared memory left for it");
+  }
 
   if ( !SYS_IntAvailable (NE2_IntNum) )
     SYS_error ( true, "cene2int", NE2_IntNum );
