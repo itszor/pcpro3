@@ -729,7 +729,9 @@ static int  NE2_In16 ( int addr )
 
      PV_CMD   write: command; read: PV_ID if the fast path is there
      PV_PARLO write: parameter bits 0-15; read: PV_VERSION
-     PV_PARHI write: parameter bits 16-31
+     PV_PARHI write: parameter bits 16-31; read: how the last attach went
+              (PVA_*), as the status word says, but through the mailbox:
+              for when the PC can't see what the ARM wrote
      PV_KICK  write: frames are waiting to be sent; the value is the low
               16 bits of the new tx_head (see 'Write interlock'). Not
               needed while tx_busy is set: the ARM is already sending, and
@@ -807,6 +809,11 @@ static int  NE2_In16 ( int addr )
 
 #define PVERR_MAGIC     (-1)     /* status values */
 #define PVERR_LAYOUT    (-2)
+#define PVERR_ADDRESS   (-3)     /* not PC memory: given by PV_PARHI only */
+
+#define PVA_NONE        0        /* PV_PARHI's reading: no attach asked */
+#define PVA_ATTACHED    1        /*   attached; or a PVERR_* */
+#define PVA_PENDING     2        /*   asked, callback not yet run */
 
 #define PV_MAGIC        0x4E435041  /* "APCN" */
 
@@ -859,6 +866,7 @@ static unsigned PV_AttachAddr;    /* Commands waiting for PV_CmdWork */
 static bool     PV_AttachPending;
 static int      PV_RxOpts;
 static bool     PV_RxOptsPending;
+static int      PV_AttachResult;  /* PVA_* or PVERR_*, for PV_PARHI */
 static int      PV_Waits, PV_Timeouts;
 
 /* Ring copies, either way round the end ----------------------------- */
@@ -1159,6 +1167,7 @@ static void PV_Attach ( unsigned addr )
                           W_HDRWORDS*4 )
   {
     SYS_trace("NE2000 fast path: no memory at %X", addr);
+    PV_AttachResult = PVERR_ADDRESS;
     return;
   }
   sh = (volatile unsigned *) CPU_PCtoARMaddr ( addr );
@@ -1168,8 +1177,10 @@ static void PV_Attach ( unsigned addr )
   {
     if ( ++spins >= PV_SPINS )
     {
-      SYS_trace("NE2000 fast path: no magic at %X", addr);
+      SYS_trace("NE2000 fast path: no magic at %X (%X there)", addr,
+                sh[W_MAGIC]);
       sh[W_STATUS] = (unsigned) PVERR_MAGIC;
+      PV_AttachResult = PVERR_MAGIC;
       return;
     }
   }
@@ -1191,6 +1202,7 @@ static void PV_Attach ( unsigned addr )
   {
     SYS_trace("NE2000 fast path: bad layout at %X", addr);
     sh[W_STATUS] = (unsigned) PVERR_LAYOUT;
+    PV_AttachResult = PVERR_LAYOUT;
     return;
   }
 
@@ -1234,6 +1246,7 @@ static void PV_Attach ( unsigned addr )
   NE2_Enable(true);
 
   sh[W_STATUS] = 1;
+  PV_AttachResult = PVA_ATTACHED;
   SYS_trace("NE2000 fast path: attached at %X, rings %X+%X, %X+%X",
             addr, txoff, txsize, rxoff, rxsize);
 }
@@ -1309,12 +1322,14 @@ static void PV_Out16 ( int addr, int data )
           PV_Detach();
           PV_AttachAddr = (unsigned) PV_ParLo | ((unsigned) PV_ParHi << 16);
           PV_AttachPending = true;
+          PV_AttachResult = PVA_PENDING;
           PV_RxOptsPending = false;
           SYS_SetCallback ( &PV_CmdCB, PV_CmdWork, 0 );
           return;
         case PVCMD_DETACH:
           PV_AttachPending = false;
           PV_RxOptsPending = false;
+          PV_AttachResult = PVA_NONE;
           PV_Detach();
           return;
         case PVCMD_RXOPTS:
@@ -1346,6 +1361,8 @@ static int PV_In16 ( int addr )
       return PV_ID;
     case PV_PARLO:
       return PV_VERSION;
+    case PV_PARHI:
+      return PV_AttachResult & 0xFFFF;
     case PV_KICK:
       return PV_TakeCause();
   }
