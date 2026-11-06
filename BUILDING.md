@@ -122,6 +122,14 @@ allocation before it's released.
 The cmhg file has no list of service calls, as building the table under
 riscose fails, so PCNAT's handler sees every service call.
 
+## The NE2000's fast path
+
+`!RunImage` from this branch gives the NE2000 a fast path for a PC driver
+that knows of it (pccard-linux's apcnet): frames go through rings in memory
+the PC and the ARM share, rather than the 8390's ports.  See `FASTPATH.md`,
+which also records what was found about the Gemini card's shared memory, L2
+cache and write FIFO, and what !PCConfig's shared memory settings do.
+
 ## Building riscose
 
     git clone -b acorn-c-toolchain https://github.com/itszor/riscose.git
